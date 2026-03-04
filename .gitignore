@@ -1,0 +1,31 @@
+# Environment
+.env
+
+# Go
+/api/reelforge
+/api/reelforge.exe
+
+# .NET
+inference/**/bin/
+inference/**/obj/
+inference/**/*.user
+
+# Node / Next.js
+web/node_modules/
+web/.next/
+web/out/
+
+# IDE
+.vs/
+.vscode/
+*.suo
+*.swp
+*~
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Claude Code
+.claude/
