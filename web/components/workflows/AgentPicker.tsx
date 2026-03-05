@@ -2,6 +2,7 @@
 
 import { Select } from '@mantine/core';
 import { useAgents } from '@/lib/hooks/use-agents';
+import { getAgentGroup } from '@/lib/utils/constants';
 import { useMemo } from 'react';
 
 interface AgentPickerProps {
@@ -16,9 +17,9 @@ export function AgentPicker({ value, onChange }: AgentPickerProps) {
     if (!agents) return [];
     const groups: Record<string, { value: string; label: string }[]> = {};
     for (const agent of agents) {
-      const cat = agent.category || 'Custom';
-      if (!groups[cat]) groups[cat] = [];
-      groups[cat].push({ value: agent.id, label: agent.name });
+      const group = getAgentGroup(agent.agentType);
+      if (!groups[group]) groups[group] = [];
+      groups[group].push({ value: agent.id, label: agent.name });
     }
     return Object.entries(groups).map(([group, items]) => ({ group, items }));
   }, [agents]);

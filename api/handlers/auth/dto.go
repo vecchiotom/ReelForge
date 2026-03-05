@@ -9,6 +9,8 @@ type TokenResponse struct {
 	AccessToken        string `json:"accessToken"`
 	TokenType          string `json:"tokenType"`
 	ExpiresIn          int    `json:"expiresIn"`
+	Email              string `json:"email"`
+	IsAdmin            bool   `json:"isAdmin"`
 	MustChangePassword bool   `json:"mustChangePassword"`
 }
 

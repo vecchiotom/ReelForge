@@ -6,11 +6,21 @@ import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, us
 import type { DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
 import { StepCard } from './StepCard';
+import type { StepType } from '@/lib/types/workflow';
 
 export interface StepData {
   id: string;
   label: string;
   agentDefinitionId: string;
+  stepType: StepType;
+  conditionExpression: string | null;
+  loopSourceExpression: string | null;
+  loopTargetStepOrder: number | null;
+  maxIterations: number;
+  minScore: number | null;
+  inputMappingJson: string | null;
+  trueBranchStepOrder: string | null;
+  falseBranchStepOrder: string | null;
 }
 
 interface WorkflowStepListProps {
@@ -36,7 +46,23 @@ export function WorkflowStepList({ steps, onChange }: WorkflowStepListProps) {
   };
 
   const addStep = () => {
-    onChange([...steps, { id: `new-${nextId++}`, label: '', agentDefinitionId: '' }]);
+    onChange([
+      ...steps,
+      {
+        id: `new-${nextId++}`,
+        label: '',
+        agentDefinitionId: '',
+        stepType: 'Agent',
+        conditionExpression: null,
+        loopSourceExpression: null,
+        loopTargetStepOrder: null,
+        maxIterations: 3,
+        minScore: null,
+        inputMappingJson: null,
+        trueBranchStepOrder: null,
+        falseBranchStepOrder: null,
+      },
+    ]);
   };
 
   const updateStep = (index: number, updates: Partial<StepData>) => {
@@ -56,11 +82,9 @@ export function WorkflowStepList({ steps, onChange }: WorkflowStepListProps) {
           {steps.map((step, index) => (
             <StepCard
               key={step.id}
-              id={step.id}
-              label={step.label}
-              agentDefinitionId={step.agentDefinitionId}
-              onLabelChange={(label) => updateStep(index, { label })}
-              onAgentChange={(agentDefinitionId) => updateStep(index, { agentDefinitionId })}
+              step={step}
+              stepNumber={index + 1}
+              onChange={(updates) => updateStep(index, updates)}
               onRemove={() => removeStep(index)}
             />
           ))}

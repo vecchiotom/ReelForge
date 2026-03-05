@@ -1,8 +1,8 @@
 'use client';
 
 import { use, useState } from 'react';
-import { Tabs, Loader, Center, Text, Stack, Group, Button, ActionIcon } from '@mantine/core';
-import { IconFiles, IconTopologyRing, IconInfoCircle, IconEdit, IconTrash } from '@tabler/icons-react';
+import { Tabs, Loader, Center, Text, Stack, Group, Button, ActionIcon, Card } from '@mantine/core';
+import { IconFiles, IconTopologyRing, IconInfoCircle, IconEdit, IconTrash, IconArrowRight } from '@tabler/icons-react';
 import { useProject } from '@/lib/hooks/use-projects';
 import { useProjectFiles } from '@/lib/hooks/use-files';
 import { useWorkflows } from '@/lib/hooks/use-workflows';
@@ -16,6 +16,8 @@ import { FileSummaryDrawer } from '@/components/files/FileSummaryDrawer';
 import { ConfirmModal } from '@/components/shared/ConfirmModal';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { formatDate } from '@/lib/utils/format';
+import { StepTypeBadge } from '@/components/workflows/StepTypeBadge';
+import type { StepType } from '@/lib/types/workflow';
 import { notifications } from '@mantine/notifications';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -107,19 +109,32 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
             </Group>
             {workflows && workflows.length > 0 ? (
               <Stack gap="sm">
-                {workflows.map((wf) => (
-                  <Button
-                    key={wf.id}
-                    component={Link}
-                    href={`/projects/${id}/workflows/${wf.id}`}
-                    variant="outline"
-                    fullWidth
-                    justify="space-between"
-                    rightSection={<Text size="xs" c="dimmed">{wf.steps?.length || 0} steps</Text>}
-                  >
-                    {wf.name}
-                  </Button>
-                ))}
+                {workflows.map((wf) => {
+                  const typeCounts: Partial<Record<StepType, number>> = {};
+                  for (const step of wf.steps || []) {
+                    const t = (step.stepType || 'Agent') as StepType;
+                    typeCounts[t] = (typeCounts[t] || 0) + 1;
+                  }
+                  return (
+                    <Card key={wf.id} component={Link} href={`/projects/${id}/workflows/${wf.id}`} withBorder padding="sm" radius="md" style={{ textDecoration: 'none' }}>
+                      <Group justify="space-between" wrap="nowrap">
+                        <Stack gap={4}>
+                          <Text fw={500} size="sm">{wf.name}</Text>
+                          <Group gap={4}>
+                            <Text size="xs" c="dimmed">{wf.steps?.length || 0} steps</Text>
+                            {(Object.entries(typeCounts) as [StepType, number][]).map(([type, count]) => (
+                              <Group gap={2} key={type}>
+                                <StepTypeBadge stepType={type} />
+                                {count > 1 && <Text size="xs" c="dimmed">x{count}</Text>}
+                              </Group>
+                            ))}
+                          </Group>
+                        </Stack>
+                        <IconArrowRight size={16} style={{ opacity: 0.5 }} />
+                      </Group>
+                    </Card>
+                  );
+                })}
               </Stack>
             ) : (
               <EmptyState title="No workflows" description="Create a workflow to start generating videos." />

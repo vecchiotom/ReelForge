@@ -1,7 +1,7 @@
 'use client';
 
-import { use, useState } from 'react';
-import { TextInput, Textarea, Button, Stack, Group, Loader, Center, Text } from '@mantine/core';
+import { use, useState, useEffect } from 'react';
+import { TextInput, Button, Stack, Group, Loader, Center, Text, Divider } from '@mantine/core';
 import { IconPlayerPlay, IconTrash } from '@tabler/icons-react';
 import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
@@ -9,6 +9,7 @@ import { useWorkflow } from '@/lib/hooks/use-workflows';
 import { updateWorkflow, deleteWorkflow, executeWorkflow } from '@/lib/api/workflows';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { WorkflowStepList } from '@/components/workflows/WorkflowStepList';
+import { ExecutionHistory } from '@/components/workflows/ExecutionHistory';
 import { ConfirmModal } from '@/components/shared/ConfirmModal';
 import type { StepData } from '@/components/workflows/WorkflowStepList';
 import { useRouter } from 'next/navigation';
@@ -22,25 +23,40 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
   const [deleteOpened, setDeleteOpened] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [steps, setSteps] = useState<StepData[] | null>(null);
+  const [initialized, setInitialized] = useState(false);
 
   const form = useForm({
-    initialValues: { name: '', description: '' },
+    initialValues: { name: '' },
     validate: {
       name: (v) => (!v.trim() ? 'Name is required' : null),
     },
   });
 
-  // Initialize form when workflow loads
-  if (workflow && !form.isDirty()) {
-    form.setValues({ name: workflow.name, description: workflow.description });
-    if (steps === null) {
+  useEffect(() => {
+    if (workflow && !initialized) {
+      form.setValues({ name: workflow.name });
       setSteps(
         workflow.steps
           .sort((a, b) => a.stepOrder - b.stepOrder)
-          .map((s) => ({ id: s.id, label: s.label, agentDefinitionId: s.agentDefinitionId })),
+          .map((s) => ({
+            id: s.id,
+            label: s.label,
+            agentDefinitionId: s.agentDefinitionId,
+            stepType: s.stepType || 'Agent',
+            conditionExpression: s.conditionExpression ?? null,
+            loopSourceExpression: s.loopSourceExpression ?? null,
+            loopTargetStepOrder: s.loopTargetStepOrder ?? null,
+            maxIterations: s.maxIterations ?? 3,
+            minScore: s.minScore ?? null,
+            inputMappingJson: s.inputMappingJson ?? null,
+            trueBranchStepOrder: s.trueBranchStepOrder ?? null,
+            falseBranchStepOrder: s.falseBranchStepOrder ?? null,
+          })),
       );
+      setInitialized(true);
     }
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workflow, initialized]);
 
   if (isLoading) return <Center h={300}><Loader /></Center>;
   if (!workflow) return <Text>Workflow not found</Text>;
@@ -53,11 +69,20 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
     setSaving(true);
     try {
       await updateWorkflow(projectId, workflowId, {
-        ...values,
+        name: values.name,
         steps: steps.map((s, i) => ({
           agentDefinitionId: s.agentDefinitionId,
           stepOrder: i + 1,
           label: s.label || `Step ${i + 1}`,
+          stepType: s.stepType,
+          conditionExpression: s.conditionExpression,
+          loopSourceExpression: s.loopSourceExpression,
+          loopTargetStepOrder: s.loopTargetStepOrder,
+          maxIterations: s.maxIterations,
+          minScore: s.minScore,
+          inputMappingJson: s.inputMappingJson,
+          trueBranchStepOrder: s.trueBranchStepOrder,
+          falseBranchStepOrder: s.falseBranchStepOrder,
         })),
       });
       mutate();
@@ -123,13 +148,15 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
       <form onSubmit={handleSave}>
         <Stack gap="md" maw={800}>
           <TextInput label="Name" {...form.getInputProps('name')} />
-          <Textarea label="Description" rows={2} {...form.getInputProps('description')} />
           {steps && <WorkflowStepList steps={steps} onChange={setSteps} />}
           <Group>
             <Button type="submit" loading={saving}>Save Changes</Button>
           </Group>
         </Stack>
       </form>
+
+      <Divider my="lg" />
+      <ExecutionHistory projectId={projectId} workflowId={workflowId} />
 
       <ConfirmModal
         opened={deleteOpened}

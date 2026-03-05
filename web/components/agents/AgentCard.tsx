@@ -25,7 +25,7 @@ export function AgentCard({ agent }: { agent: AgentDefinition }) {
           </Group>
           {agent.isBuiltIn && <IconLock size={16} color="gray" />}
         </Group>
-        <AgentTypeBadge category={agent.category} />
+        <AgentTypeBadge agentType={agent.agentType} color={agent.color} />
         {agent.description && (
           <Text size="xs" c="dimmed" lineClamp={2}>
             {agent.description}

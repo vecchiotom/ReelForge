@@ -13,8 +13,8 @@ export function useExecution(
     data?.status === 'Passed' || data?.status === 'Failed';
 
   const { data, ...rest } = useSWR<WorkflowExecution>(
-    projectId && workflowId && executionId
-      ? `/api/v1/projects/${projectId}/workflows/${workflowId}/executions/${executionId}`
+    projectId && executionId
+      ? `/api/v1/projects/${projectId}/executions/${executionId}`
       : null,
     fetcher,
     {

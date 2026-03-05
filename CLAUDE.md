@@ -4,24 +4,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ReelForge is a microservices platform for generating promotional videos using [Remotion](https://www.remotion.dev/) via agentic workflows. Three services coordinate to handle the frontend, API requests, and AI/agent inference:
+ReelForge is a microservices platform for generating promotional videos using [Remotion](https://www.remotion.dev/) via agentic workflows. Four services coordinate to handle the frontend, API requests, and AI/agent inference:
 
 - **`/web`** — Next.js 15 App Router + Mantine v8 frontend
 - **`/api`** — Go REST API (Gorilla Mux, GORM, PostgreSQL)
-- **`/inference`** — .NET 9 ASP.NET Core service running Microsoft Agent Framework workflows
+- **`/inference/src/ReelForge.Inference.Api`** — .NET 9 REST API for projects, files, agents, workflows CRUD
+- **`/inference/src/ReelForge.WorkflowEngine`** — .NET 9 workflow execution engine consuming from RabbitMQ
 
 All services are containerized and accessed through an nginx reverse proxy on a single port.
 
 ## Architecture
 
 ```
-/nginx        Nginx reverse proxy — single entry point, cookie↔header JWT translation
-/web          Next.js frontend — Mantine v8 UI, SWR data fetching
-/api          Go REST API — user management, auth (JWT issuer), routes client requests
-/inference    .NET agent orchestration — runs agentic workflows, calls Remotion for video rendering
+                         ┌──────────────┐
+                         │    Nginx     │ :80
+                         └──────┬───────┘
+                    ┌───────────┼───────────┐
+                    ▼           ▼           ▼
+              ┌──────────┐ ┌────────┐ ┌─────────┐
+              │  Go API  │ │  Web   │ │Inference│
+              │  (auth)  │ │(Next)  │ │   API   │
+              └──────────┘ └────────┘ └────┬────┘
+                                           │ MassTransit/RabbitMQ
+                                           ▼
+                                    ┌─────────────┐
+                                    │  Workflow    │
+                                    │  Engine      │
+                                    └──────┬──────┘
+                    ┌──────────────────────┼────────────────┐
+                    ▼                      ▼                ▼
+              ┌──────────┐         ┌─────────────┐   ┌───────────┐
+              │PostgreSQL│         │Azure OpenAI │   │  RabbitMQ  │
+              └──────────┘         └─────────────┘   └───────────┘
 ```
 
-Nginx is the single entry point (port 80). It routes requests to the appropriate backend and translates httpOnly cookies into Authorization headers. The frontend calls `/api/v1/*` on the same origin — no CORS needed. The Go API is the authority for user management and JWT issuance. It delegates AI/generation work to the inference service. The inference service uses Microsoft's Agent Framework to orchestrate multi-step workflows that ultimately produce Remotion-rendered promotional videos.
+Nginx is the single entry point (port 80). It routes requests to the appropriate backend and translates httpOnly cookies into Authorization headers. The Go API is the authority for user management and JWT issuance. The Inference API handles CRUD and publishes execution requests to RabbitMQ. The Workflow Engine consumes execution requests and runs AI agents.
 
 ### Go API
 
@@ -78,7 +95,7 @@ api/
 2. Admin creates users via `/api/v1/admin/users` — each gets a random 16-char OTP (emailed via SMTP or logged to console)
 3. New users login via `/api/v1/auth/token` — response includes `mustChangePassword: true`
 4. User changes password via `/api/v1/auth/change-password` — clears the flag
-5. JWT tokens (24h expiry) are used for all authenticated endpoints in both Go API and inference service
+5. JWT tokens (24h expiry) are used for all authenticated endpoints in both Go API and inference services
 
 #### Middleware Chain
 
@@ -86,70 +103,98 @@ api/
 - **Authenticated routes:** `/api/v1/auth/change-password` — `middleware.Auth` (validates JWT, injects `UserContext`)
 - **Admin routes:** `/api/v1/admin/*` — `middleware.Auth` → `middleware.Admin` (checks `IsAdmin`)
 
-### Inference Service
+### Inference Service (Split Architecture)
 
-**Framework:** ASP.NET Core 9.0 + Microsoft Agent Framework (`Microsoft.Agents.AI` 1.0.0-rc2)
-**Database:** PostgreSQL via EF Core (Npgsql) — snake_case naming convention
-**Auth:** JWT Bearer tokens issued by Go API — validated via `Microsoft.AspNetCore.Authentication.JwtBearer`. `ICurrentUser` extracts `sub`, `email`, and `isAdmin` claims (camelCase).
-**Storage:** MinIO (S3-compatible) via `AWSSDK.S3`
-**AI Backend:** Azure OpenAI via `Azure.AI.OpenAI` — configurable endpoint/key/deployment in `appsettings.json`
+The inference layer is split into two microservices sharing a common `ReelForge.Shared` library:
 
-**Inference service ports:**
-- Local dev: HTTP `5200`, HTTPS `7123`
-- Docker: HTTP `8080`, HTTPS `8081`
+**Solution:** `inference/ReelForge.sln` containing three projects:
+- `ReelForge.Shared` — Class library with models, enums, integration events, `ICurrentUser` interface
+- `ReelForge.Inference.Api` — REST API for CRUD operations, file summarization
+- `ReelForge.WorkflowEngine` — Workflow execution engine consuming from RabbitMQ
+
+**Communication:** MassTransit over RabbitMQ with automatic dead letter queues and retry policies.
+
+**Database:** Both services share the same PostgreSQL database. Each owns specific tables via `ExcludeFromMigrations()`:
+- **Inference API** owns: `application_users`, `projects`, `project_files`, `agent_definitions` (history: `__EFMigrationsHistory_Api`)
+- **WorkflowEngine** owns: `workflow_definitions`, `workflow_steps`, `workflow_executions`, `workflow_step_results`, `review_scores` (history: `__EFMigrationsHistory_Workflow`)
+- **Startup order:** API migrates first (depends on postgres), Engine migrates second (depends on API healthy)
 
 ## Inference Service Structure
 
 ```
-inference/ReelForge.Inference/
-├── Agents/                        # Agent system
-│   ├── IReelForgeAgent.cs         # Agent interface
-│   ├── ReelForgeAgentBase.cs      # Abstract base (uses IChatClient.AsAIAgent())
-│   ├── IAgentRegistry.cs          # Registry interface
-│   ├── AgentRegistry.cs           # Resolves agents by AgentType enum
-│   ├── Tools/                     # Shared AIFunction tools for agents
-│   ├── Analysis/                  # 5 code analysis agents
-│   ├── Translation/               # RemotionComponentTranslator, AnimationStrategy
-│   ├── Production/                # Director, Scriptwriter, Author
-│   ├── Quality/                   # ReviewAgent (scores 1-10)
-│   └── FileProcessing/            # FileSummarizerAgent
-├── Controllers/                   # REST API (all under /api/v1/)
-│   ├── Dto/                       # Request/response DTOs
-│   ├── ProjectsController.cs      # CRUD for projects
-│   ├── ProjectFilesController.cs  # File upload/delete with async summarization
-│   ├── AgentsController.cs        # Agent definition CRUD
-│   ├── WorkflowsController.cs     # Workflow CRUD + execute + poll status
-│   └── HealthController.cs        # Anonymous /health endpoint
-├── Data/
-│   ├── Models/                    # EF Core entities (9 models + enums)
-│   ├── ReelForgeDbContext.cs      # DbContext with snake_case convention
-│   └── DatabaseSeeder.cs          # Auto-migrate + seed built-in agents
-├── Services/
-│   ├── Auth/                      # ICurrentUser — extracts JWT sub/email/is_admin claims
-│   ├── Storage/                   # IFileStorageService — S3/MinIO abstraction
-│   └── Background/                # Channel-based task queues + hosted services
-├── Workflows/
-│   └── WorkflowExecutorService.cs # Dynamic workflow execution from DB definitions
-├── Migrations/                    # EF Core migrations
-├── Program.cs                     # Full DI wiring
-└── appsettings.json               # Config: DB, JWT, MinIO, Azure OpenAI
+inference/
+├── ReelForge.sln
+├── src/
+│   ├── ReelForge.Shared/                         # Shared class library
+│   │   ├── Data/Models/                          # All EF Core entities + enums
+│   │   ├── IntegrationEvents/                    # MassTransit message contracts
+│   │   ├── Auth/ICurrentUser.cs                  # Interface only
+│   │   └── SnakeCaseNamingHelper.cs              # Shared DB naming convention
+│   │
+│   ├── ReelForge.Inference.Api/                  # Service 1: REST API
+│   │   ├── Controllers/                          # Projects, Files, Agents, Workflows CRUD
+│   │   ├── Controllers/Dto/                      # Request/response DTOs
+│   │   ├── Data/InferenceApiDbContext.cs          # Owns user/project/file/agent tables
+│   │   ├── Data/DatabaseSeeder.cs                # Auto-migrate + seed agents
+│   │   ├── Services/Auth/CurrentUser.cs          # JWT claims extraction
+│   │   ├── Services/Storage/                     # MinIO/S3 file storage
+│   │   ├── Services/Background/                  # File summarization queue
+│   │   ├── Agents/                               # FileSummarizerAgent only
+│   │   ├── Dockerfile
+│   │   ├── Program.cs
+│   │   └── appsettings.json
+│   │
+│   └── ReelForge.WorkflowEngine/                 # Service 2: Execution Engine
+│       ├── Agents/                               # All 11 workflow agents
+│       │   ├── Analysis/                         # 5 code analysis agents
+│       │   ├── Translation/                      # Remotion + Animation agents
+│       │   ├── Production/                       # Director, Scriptwriter, Author
+│       │   ├── Quality/                          # ReviewAgent
+│       │   └── Tools/                            # Shared AIFunction tools
+│       ├── Consumers/                            # MassTransit consumer
+│       ├── Execution/                            # Enhanced workflow executor
+│       │   ├── WorkflowExecutorService.cs        # Step-executor strategy pattern
+│       │   ├── IStepExecutor.cs                  # Strategy interface
+│       │   ├── ExpressionEvaluator.cs            # NCalc condition evaluator
+│       │   └── StepExecutors/                    # Agent, Conditional, ForEach, ReviewLoop
+│       ├── Workers/WorkflowWorkerPool.cs         # Health monitoring service
+│       ├── Controllers/                          # Health + admin endpoints
+│       ├── Observability/ReelForgeDiagnostics.cs # OTel instrumentation
+│       ├── Data/WorkflowEngineDbContext.cs        # Owns workflow tables
+│       ├── Dockerfile
+│       ├── Program.cs
+│       └── appsettings.json
 ```
 
 ### Key Patterns
 
 - **Agents** inherit from `ReelForgeAgentBase`, which wraps `IChatClient.AsAIAgent()`. Tools are registered via `AIFunctionFactory.Create()` and cast to `IList<AITool>`.
 - **System prompts** are read from `appsettings.json` key `Agents:<AgentName>:SystemPrompt` with hardcoded fallback defaults.
-- **Workflows** are dynamically constructed from `WorkflowDefinition` + `WorkflowStep` DB records. The `WorkflowExecutorService` iterates steps sequentially, handles the review loop (score < 9 → retry from Director, up to 3 iterations).
-- **Background processing** uses `System.Threading.Channels` via `IBackgroundTaskQueue<T>` — designed to be swappable for a Service Bus queue later.
-- **All controllers** require `[Authorize]` except `HealthController`. The `ICurrentUser` service extracts user identity (`UserId`, `Email`, `IsAdmin`) from JWT claims.
-- **Swagger** is available in development at `/swagger` with Bearer auth support (Swashbuckle 6.9.0).
+- **MassTransit** handles RabbitMQ messaging. Inference API publishes `WorkflowExecutionRequested`, WorkflowEngine consumes it.
+- **Step Executors** implement `IStepExecutor` strategy pattern: `AgentStepExecutor`, `ConditionalStepExecutor`, `ForEachStepExecutor`, `ReviewLoopStepExecutor`.
+- **ExpressionEvaluator** uses NCalc for condition evaluation with JSON parameter extraction.
+- **OpenTelemetry** provides distributed tracing and metrics via `ActivitySource` and `Meter`.
+- **All controllers** require `[Authorize]` except `HealthController`. `ICurrentUser` extracts user identity from JWT claims.
+- **Swagger** available in development at `/swagger` (both services).
 
-### Data Model
+### Enhanced Data Model
 
-`ApplicationUser` (+ `PasswordHash`, `IsAdmin`, `MustChangePassword`) → `Project` → `ProjectFile` (MinIO storage)
-`Project` → `WorkflowDefinition` → `WorkflowStep` (ordered, linked to `AgentDefinition`)
-`WorkflowDefinition` → `WorkflowExecution` → `WorkflowStepResult`, `ReviewScore`
-`AgentDefinition` — built-in (seeded) or custom (user-created, `AgentType.Custom`)
+**New enums:** `StepType` (Agent, Conditional, ForEach, ReviewLoop), `StepStatus` (Pending, Running, Completed, Failed, Skipped)
+
+**WorkflowStep** enhanced with: `StepType`, `ConditionExpression`, `LoopSourceExpression`, `LoopTargetStepOrder`, `MaxIterations`, `MinScore`, `InputMappingJson`, `TrueBranchStepOrder`, `FalseBranchStepOrder`
+
+**WorkflowStepResult** enhanced with: `InputJson`, `OutputJson`, `Status` (StepStatus), `ErrorDetails`, `IterationNumber`, `CompletedAt`
+
+**WorkflowExecution** enhanced with: `CorrelationId`, `InitiatedByUserId`, `ErrorMessage`
+
+### Integration Events (MassTransit)
+
+| Event | Publisher | Consumer |
+|-------|-----------|----------|
+| `WorkflowExecutionRequested` | Inference API | WorkflowEngine |
+| `WorkflowExecutionCompleted` | WorkflowEngine | (available for consumers) |
+| `WorkflowStepCompleted` | WorkflowEngine | (available for consumers) |
+| `WorkflowExecutionFailed` | WorkflowEngine | (available for consumers) |
 
 ### Agent Types (enum)
 
@@ -157,7 +202,7 @@ Analysis: `CodeStructureAnalyzer`, `DependencyAnalyzer`, `ComponentInventoryAnal
 Translation: `RemotionComponentTranslator`, `AnimationStrategyAgent`
 Production: `DirectorAgent`, `ScriptwriterAgent`, `AuthorAgent`
 Quality: `ReviewAgent`
-File Processing: `FileSummarizerAgent`
+File Processing: `FileSummarizerAgent` (in Inference API only)
 User-defined: `Custom`
 
 ### Default Workflow Pipeline
@@ -243,6 +288,7 @@ web/
 | `/api/v1/auth/token` | `go-api:8080` | Login response intercepted for cookie setting |
 | `/api/v1/auth/*` | `go-api:8080` | Cookie → Authorization header |
 | `/api/v1/admin/*` | `go-api:8080` | Cookie → Authorization header |
+| `/api/v1/workflow-engine/*` | `workflow-engine:8080` | Cookie → Authorization header |
 | `/api/v1/*` | `inference:8080` | Cookie → Authorization header |
 | `/health` | `go-api:8080` | None |
 | `/api/auth/logout` | — | Nginx clears cookies |
@@ -261,19 +307,22 @@ golangci-lint run           # Lint
 go get <module> && go mod tidy  # Add dependency
 ```
 
-### .NET Inference (`/inference/ReelForge.Inference`)
+### .NET Inference (from `/inference`)
 
 ```bash
-dotnet run                  # Run
-dotnet build                # Build
-dotnet test                 # Test
-dotnet test --filter "FullyQualifiedName~TestName"  # Single test
-dotnet restore              # Restore packages
-dotnet publish -c Release   # Publish
+dotnet build ReelForge.sln                          # Build entire solution
+dotnet run --project src/ReelForge.Inference.Api     # Run API
+dotnet run --project src/ReelForge.WorkflowEngine    # Run WorkflowEngine
+dotnet test                                          # Test all
+dotnet restore                                       # Restore packages
 
-# EF Core migrations
-dotnet-ef migrations add <Name>   # Create migration
-dotnet-ef database update         # Apply migrations
+# EF Core migrations (Inference API context)
+dotnet-ef migrations add <Name> --project src/ReelForge.Inference.Api --context InferenceApiDbContext
+dotnet-ef database update --project src/ReelForge.Inference.Api --context InferenceApiDbContext
+
+# EF Core migrations (WorkflowEngine context)
+dotnet-ef migrations add <Name> --project src/ReelForge.WorkflowEngine --context WorkflowEngineDbContext
+dotnet-ef database update --project src/ReelForge.WorkflowEngine --context WorkflowEngineDbContext
 ```
 
 ### Frontend (`/web`)
@@ -288,11 +337,12 @@ npm install <package>       # Add dependency
 
 ### Docker
 
-All three services have Dockerfiles and are orchestrated via `docker-compose.yml` at the repo root.
+All services have Dockerfiles and are orchestrated via `docker-compose.yml` at the repo root.
 
 **Dockerfiles:**
 - `api/Dockerfile` — multi-stage Go build (`golang:1.25-alpine` → `alpine:3.21`), injects version via `-ldflags`
-- `inference/ReelForge.Inference/Dockerfile` — multi-stage .NET build (`dotnet/sdk:9.0` → `dotnet/aspnet:9.0`)
+- `inference/src/ReelForge.Inference.Api/Dockerfile` — multi-stage .NET build, references shared library
+- `inference/src/ReelForge.WorkflowEngine/Dockerfile` — multi-stage .NET build, references shared library
 - `web/Dockerfile` — multi-stage Next.js build (`node:22-alpine`, standalone output)
 
 **Compose services:**
@@ -302,40 +352,32 @@ All three services have Dockerfiles and are orchestrated via `docker-compose.yml
 | `nginx` | `nginx:alpine` | 80 (`APP_PORT`) | 80 | Single entry point, njs cookie↔header translation |
 | `web` | Built from `./web` | — (internal) | 3000 | Next.js frontend |
 | `go-api` | Built from `./api` | — (internal) | 8080 | Depends on postgres (healthy) |
-| `inference` | Built from `./inference/ReelForge.Inference` | — (internal) | 8080 | Depends on postgres + minio-init |
+| `inference` | Built from `./inference` | — (internal) | 8080 | Inference API, depends on go-api + rabbitmq |
+| `workflow-engine` | Built from `./inference` | — (internal) | 8080 | Workflow engine, depends on inference + rabbitmq |
 | `postgres` | `postgres:16-alpine` | 5432 | 5432 | Volume `pgdata`, healthcheck via `pg_isready` |
 | `minio` | `minio/minio:latest` | 9000/9001 | 9000/9001 | Volume `miniodata`, console on 9001 |
 | `minio-init` | `minio/mc:latest` | — | — | One-shot: creates the `reelforge` bucket, then exits |
-
-All services share a `reelforge` bridge network and reference each other by service name. Nginx is the only externally-exposed service — go-api and inference are internal-only. Inference env vars use ASP.NET `__` separator convention to override `appsettings.json` sections.
+| `rabbitmq` | `rabbitmq:3-management-alpine` | 5672/15672 | 5672/15672 | Volume `rabbitmqdata`, management UI on 15672 |
 
 ```bash
-# Start the full stack (builds images if needed)
-docker compose up --build -d
-
-# Rebuild and restart a single service after code changes
-docker compose up --build -d <service-name>
-
-# View logs
-docker compose logs -f [service-name]
-
-# Stop everything
-docker compose down
-
-# Stop and remove volumes (full reset)
-docker compose down -v
+docker compose up --build -d              # Start full stack
+docker compose up --build -d <service>    # Rebuild single service
+docker compose logs -f [service-name]     # View logs
+docker compose down                       # Stop everything
+docker compose down -v                    # Full reset
 ```
 
 **Health endpoints (via nginx):**
 - App: `http://localhost/health` (Go API health)
+- Inference API: `http://localhost/api/v1/health`
+- Workflow Engine: `http://localhost/api/v1/workflow-engine/health`
 - Frontend: `http://localhost` (Next.js)
 - MinIO Console: `http://localhost:9001` (direct)
+- RabbitMQ Management: `http://localhost:15672` (direct)
 
 ## Configuration
 
 All configuration is driven by `.env` at the repo root (copy `.env.example` to `.env`). The `.env` file is git-ignored.
-
-**Dev vs Production** is controlled entirely by `.env` values — no separate compose files needed. Set `ASPNETCORE_ENVIRONMENT=Development` for Swagger, `Production` for prod. For future dev-specific overrides (hot reload, debug ports), use `docker-compose.override.yml`.
 
 ### Environment Variables (`.env`)
 
@@ -356,26 +398,31 @@ All configuration is driven by `.env` at the repo root (copy `.env.example` to `
 | `AZURE_OPENAI_ENDPOINT` | — | Azure OpenAI endpoint URL |
 | `AZURE_OPENAI_API_KEY` | — | Azure OpenAI API key |
 | `AZURE_OPENAI_DEPLOYMENT` | `gpt-4o-mini` | Azure OpenAI deployment/model name |
-| `APP_PORT` | `80` | Nginx reverse proxy host port (single entry point) |
-| `API_PORT` | `3000` | Go API host port (legacy, not used with nginx) |
-| `INFERENCE_PORT` | `3001` | Inference service host port (legacy, not used with nginx) |
+| `APP_PORT` | `80` | Nginx reverse proxy host port |
 | `ASPNETCORE_ENVIRONMENT` | `Development` | ASP.NET environment (`Development` / `Production`) |
-| `SMTP_HOST` | — | SMTP server hostname (optional — OTP logged to console if not set) |
+| `RABBITMQ_USER` | `guest` | RabbitMQ username |
+| `RABBITMQ_PASSWORD` | `guest` | RabbitMQ password |
+| `RABBITMQ_PORT` | `5672` | RabbitMQ AMQP port |
+| `RABBITMQ_MGMT_PORT` | `15672` | RabbitMQ management UI port |
+| `WORKFLOW_MAX_CONCURRENCY` | `4` | Max parallel workflow executions |
+| `SMTP_HOST` | — | SMTP server hostname (optional) |
 | `SMTP_PORT` | `587` | SMTP server port |
 | `SMTP_USERNAME` | — | SMTP auth username |
 | `SMTP_PASSWORD` | — | SMTP auth password |
 | `SMTP_FROM` | — | Sender email address |
-| `ADMIN_EMAIL` | `admin@reelforge.local` | Initial admin user email (seeded on first startup) |
+| `ADMIN_EMAIL` | `admin@reelforge.local` | Initial admin user email |
 | `ADMIN_PASSWORD` | — | Initial admin password (auto-generated if empty) |
 
 ### Inference `appsettings.json` Keys
 
-These are overridden by Docker Compose env vars in container deployments:
+Both services share these keys (overridden by Docker Compose env vars):
 
 | Key | Description |
 |-----|-------------|
 | `ConnectionStrings:DefaultConnection` | PostgreSQL connection string |
-| `Jwt:Issuer` / `Jwt:Audience` / `Jwt:SigningKey` | JWT validation (HS256, `SymmetricSecurityKey`) |
-| `MinIO:Endpoint` / `MinIO:AccessKey` / `MinIO:SecretKey` / `MinIO:BucketName` | S3-compatible storage |
+| `Jwt:Issuer` / `Jwt:Audience` / `Jwt:SigningKey` | JWT validation (HS256) |
+| `RabbitMQ:Host` / `RabbitMQ:Username` / `RabbitMQ:Password` | RabbitMQ connection |
 | `AzureOpenAI:Endpoint` / `AzureOpenAI:ApiKey` / `AzureOpenAI:DeploymentName` | AI model backend |
+| `MinIO:Endpoint` / `MinIO:AccessKey` / `MinIO:SecretKey` / `MinIO:BucketName` | S3-compatible storage (API only) |
+| `WorkflowEngine:MaxConcurrency` | Max parallel executions (Engine only) |
 | `Agents:<AgentName>:SystemPrompt` | Override any agent's system prompt |

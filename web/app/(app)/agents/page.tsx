@@ -8,8 +8,9 @@ import { PageHeader } from '@/components/shared/PageHeader';
 import { AgentCard } from '@/components/agents/AgentCard';
 import { AgentForm } from '@/components/agents/AgentForm';
 import { EmptyState } from '@/components/shared/EmptyState';
+import { getAgentGroup } from '@/lib/utils/constants';
 
-const CATEGORY_ORDER = ['Analysis', 'Translation', 'Production', 'Quality', 'FileProcessing', 'Custom'];
+const GROUP_ORDER = ['Analysis', 'Translation', 'Production', 'Quality', 'File Processing', 'Custom'];
 
 export default function AgentsPage() {
   const { data: agents, isLoading, mutate } = useAgents();
@@ -19,9 +20,9 @@ export default function AgentsPage() {
     if (!agents) return {};
     const groups: Record<string, typeof agents> = {};
     for (const agent of agents) {
-      const cat = agent.category || 'Custom';
-      if (!groups[cat]) groups[cat] = [];
-      groups[cat].push(agent);
+      const group = getAgentGroup(agent.agentType);
+      if (!groups[group]) groups[group] = [];
+      groups[group].push(agent);
     }
     return groups;
   }, [agents]);
@@ -40,11 +41,11 @@ export default function AgentsPage() {
 
       {agents && agents.length > 0 ? (
         <Stack gap="xl">
-          {CATEGORY_ORDER.filter((cat) => grouped[cat]).map((cat) => (
-            <div key={cat}>
-              <Text fw={600} size="lg" mb="sm">{cat}</Text>
+          {GROUP_ORDER.filter((group) => grouped[group]).map((group) => (
+            <div key={group}>
+              <Text fw={600} size="lg" mb="sm">{group}</Text>
               <SimpleGrid cols={{ base: 1, sm: 2, lg: 3 }}>
-                {grouped[cat].map((agent) => (
+                {grouped[group].map((agent) => (
                   <AgentCard key={agent.id} agent={agent} />
                 ))}
               </SimpleGrid>

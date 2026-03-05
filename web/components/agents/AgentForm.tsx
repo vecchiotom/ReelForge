@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Modal, TextInput, Textarea, Button, Stack } from '@mantine/core';
+import { Modal, TextInput, Textarea, Button, Stack, ColorInput } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
 import { createAgent, updateAgent } from '@/lib/api/agents';
@@ -23,6 +23,7 @@ export function AgentForm({ opened, onClose, onSuccess, agent }: AgentFormProps)
       name: agent?.name || '',
       description: agent?.description || '',
       systemPrompt: agent?.systemPrompt || '',
+      color: agent?.color || '',
     },
     validate: {
       name: (v) => (!v.trim() ? 'Name is required' : null),
@@ -61,6 +62,7 @@ export function AgentForm({ opened, onClose, onSuccess, agent }: AgentFormProps)
           <TextInput label="Name" placeholder="My Custom Agent" {...form.getInputProps('name')} />
           <Textarea label="Description" placeholder="What does this agent do?" rows={2} {...form.getInputProps('description')} />
           <Textarea label="System Prompt" placeholder="You are a..." rows={8} {...form.getInputProps('systemPrompt')} />
+          <ColorInput label="Color" placeholder="#3B82F6" {...form.getInputProps('color')} />
           <Button type="submit" loading={loading} fullWidth>
             {isEdit ? 'Update' : 'Create'}
           </Button>

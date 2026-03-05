@@ -56,7 +56,7 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
 
       <Stack gap="md">
         <Group>
-          <AgentTypeBadge category={agent.category} />
+          <AgentTypeBadge agentType={agent.agentType} color={agent.color} />
           {agent.isBuiltIn && <Text size="xs" c="dimmed">Built-in (read-only)</Text>}
         </Group>
 

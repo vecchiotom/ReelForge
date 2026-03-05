@@ -2,7 +2,9 @@ package auth
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/url"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
@@ -47,11 +49,35 @@ func handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set httpOnly cookie with the JWT token
+	http.SetCookie(w, &http.Cookie{
+		Name:     "reelforge_token",
+		Value:    token,
+		Path:     "/",
+		MaxAge:   86400,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	// Set readable cookie with user info for frontend UI state
+	userInfo := fmt.Sprintf(`{"email":%q,"isAdmin":%t,"mustChangePassword":%t}`,
+		user.Email, user.IsAdmin, user.MustChangePassword)
+	http.SetCookie(w, &http.Cookie{
+		Name:     "reelforge_user",
+		Value:    url.QueryEscape(userInfo),
+		Path:     "/",
+		MaxAge:   86400,
+		HttpOnly: false,
+		SameSite: http.SameSiteLaxMode,
+	})
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(TokenResponse{
 		AccessToken:        token,
 		TokenType:          "Bearer",
 		ExpiresIn:          86400,
+		Email:              user.Email,
+		IsAdmin:            user.IsAdmin,
 		MustChangePassword: user.MustChangePassword,
 	})
 }

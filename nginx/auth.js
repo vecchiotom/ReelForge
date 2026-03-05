@@ -22,39 +22,6 @@ function getAuthHeader(r) {
     return '';
 }
 
-// Intercept login response: extract accessToken, set cookies
-function handleLoginResponse(r, data, flags) {
-    // Accumulate chunks
-    if (!r._responseBody) {
-        r._responseBody = '';
-    }
-    r._responseBody += data;
-
-    if (flags.last) {
-        var body = r._responseBody;
-
-        try {
-            var json = JSON.parse(body);
-            if (json.accessToken) {
-                var userInfo = JSON.stringify({
-                    email: json.email || '',
-                    isAdmin: json.isAdmin || false,
-                    mustChangePassword: json.mustChangePassword || false
-                });
-
-                r.headersOut['Set-Cookie'] = [
-                    'reelforge_token=' + json.accessToken + '; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400',
-                    'reelforge_user=' + encodeURIComponent(userInfo) + '; Path=/; SameSite=Lax; Max-Age=86400'
-                ];
-            }
-        } catch (e) {
-            // Not JSON or parse error — pass through unchanged
-        }
-
-        r.sendBuffer(body, flags);
-    }
-}
-
 // Handle logout: clear cookies and return 200
 function handleLogout(r) {
     r.headersOut['Set-Cookie'] = [
@@ -65,4 +32,4 @@ function handleLogout(r) {
     r.return(200, '{"ok":true}');
 }
 
-export default { getAuthHeader, handleLoginResponse, handleLogout };
+export default { getAuthHeader, handleLogout };

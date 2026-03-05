@@ -43,3 +43,7 @@ export function executeWorkflow(projectId: string, workflowId: string): Promise<
     method: 'POST',
   });
 }
+
+export function getWorkflowExecutions(projectId: string, workflowId: string): Promise<WorkflowExecution[]> {
+  return apiFetch<WorkflowExecution[]>(`/api/v1/projects/${projectId}/workflows/${workflowId}/executions`);
+}

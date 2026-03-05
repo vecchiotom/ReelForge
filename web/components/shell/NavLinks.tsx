@@ -6,6 +6,7 @@ import {
   IconFolder,
   IconRobot,
   IconUsers,
+  IconSettings,
 } from '@tabler/icons-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -18,7 +19,8 @@ const links = [
 ];
 
 const adminLinks = [
-  { label: 'Users', href: '/admin/users', icon: IconUsers },
+  { label: 'Overview', href: '/admin', icon: IconSettings, exact: true },
+  { label: 'Users', href: '/admin/users', icon: IconUsers, exact: false },
 ];
 
 export function NavLinks({ onClick }: { onClick?: () => void }) {
@@ -48,7 +50,7 @@ export function NavLinks({ onClick }: { onClick?: () => void }) {
               href={link.href}
               label={link.label}
               leftSection={<link.icon size={20} />}
-              active={pathname.startsWith(link.href)}
+              active={link.exact ? pathname === link.href : pathname.startsWith(link.href)}
               onClick={onClick}
             />
           ))}

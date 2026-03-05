@@ -1,25 +1,33 @@
 export interface WorkflowDefinition {
   id: string;
-  projectId: string;
   name: string;
-  description: string;
   createdAt: string;
   updatedAt: string;
   steps: WorkflowStep[];
 }
 
+export type StepType = 'Agent' | 'Conditional' | 'ForEach' | 'ReviewLoop';
+export type StepStatus = 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Skipped';
+
 export interface WorkflowStep {
   id: string;
-  workflowDefinitionId: string;
   agentDefinitionId: string;
-  agentDefinition?: import('./agent').AgentDefinition;
   stepOrder: number;
   label: string;
+  edgeConditionJson?: string | null;
+  stepType?: StepType;
+  conditionExpression?: string | null;
+  loopSourceExpression?: string | null;
+  loopTargetStepOrder?: number | null;
+  maxIterations?: number;
+  minScore?: number | null;
+  inputMappingJson?: string | null;
+  trueBranchStepOrder?: string | null;
+  falseBranchStepOrder?: string | null;
 }
 
 export interface CreateWorkflowRequest {
   name: string;
-  description: string;
   steps: CreateWorkflowStepRequest[];
 }
 
@@ -27,12 +35,20 @@ export interface CreateWorkflowStepRequest {
   agentDefinitionId: string;
   stepOrder: number;
   label: string;
+  stepType?: StepType;
+  conditionExpression?: string | null;
+  loopSourceExpression?: string | null;
+  loopTargetStepOrder?: number | null;
+  maxIterations?: number;
+  minScore?: number | null;
+  inputMappingJson?: string | null;
+  trueBranchStepOrder?: string | null;
+  falseBranchStepOrder?: string | null;
 }
 
 export interface UpdateWorkflowRequest {
   name?: string;
-  description?: string;
-  steps?: CreateWorkflowStepRequest[];
+  steps: CreateWorkflowStepRequest[];
 }
 
 export interface WorkflowExecution {
@@ -41,29 +57,33 @@ export interface WorkflowExecution {
   status: 'Queued' | 'Running' | 'Passed' | 'Failed';
   startedAt: string | null;
   completedAt: string | null;
-  createdAt: string;
+  iterationCount: number;
+  resultJson: string | null;
+  correlationId?: string;
+  errorMessage?: string | null;
   stepResults: WorkflowStepResult[];
   reviewScores: ReviewScore[];
 }
 
 export interface WorkflowStepResult {
   id: string;
-  workflowExecutionId: string;
   workflowStepId: string;
-  agentDefinitionId: string;
-  status: 'Pending' | 'Running' | 'Completed' | 'Failed';
-  output: string | null;
+  output: string;
   tokensUsed: number;
   durationMs: number;
-  createdAt: string;
-  completedAt: string | null;
+  executedAt: string;
+  status?: StepStatus;
+  inputJson?: string | null;
+  outputJson?: string | null;
+  errorDetails?: string | null;
+  iterationNumber?: number | null;
+  completedAt?: string | null;
 }
 
 export interface ReviewScore {
   id: string;
-  workflowExecutionId: string;
-  iteration: number;
+  iterationNumber: number;
   score: number;
-  feedback: string;
+  comments: string;
   createdAt: string;
 }

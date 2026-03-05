@@ -1,5 +1,3 @@
-export type AgentCategory = 'Analysis' | 'Translation' | 'Production' | 'Quality' | 'FileProcessing' | 'Custom';
-
 export interface AgentDefinition {
   id: string;
   name: string;
@@ -7,19 +5,21 @@ export interface AgentDefinition {
   agentType: string;
   systemPrompt: string;
   isBuiltIn: boolean;
-  category: AgentCategory;
-  userId: string | null;
+  ownerId: string | null;
   createdAt: string;
+  color: string | null;
 }
 
 export interface CreateAgentRequest {
   name: string;
   description: string;
   systemPrompt: string;
+  color?: string;
 }
 
 export interface UpdateAgentRequest {
   name?: string;
   description?: string;
   systemPrompt?: string;
+  color?: string;
 }

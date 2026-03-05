@@ -5,9 +5,8 @@ import { TextInput, PasswordInput, Button, Stack, Alert } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { IconAlertCircle } from '@tabler/icons-react';
 import { login } from '@/lib/api/auth';
-import { notifyAuthChange, setUserCookie } from '@/lib/hooks/use-auth';
+import { notifyAuthChange } from '@/lib/hooks/use-auth';
 import { useRouter } from 'next/navigation';
-import type { UserInfo } from '../../lib/types/auth';
 
 export function LoginForm() {
   const [error, setError] = useState('');
@@ -27,11 +26,7 @@ export function LoginForm() {
     setLoading(true);
     try {
       const res = await login(values);
-      /* setUserCookie(new (UserInfo)({
-        email: values.email,
-        isAdmin: false, // This should ideally come from the server response
-        mustChangePassword: res.mustChangePassword,
-      })); */
+      // Cookies are set by the Go API via Set-Cookie headers
       notifyAuthChange();
       if (res.mustChangePassword) {
         router.push('/change-password');
