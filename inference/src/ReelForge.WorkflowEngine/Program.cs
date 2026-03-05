@@ -93,7 +93,9 @@ builder.Services.AddSingleton<IAgentRegistry, AgentRegistry>();
 builder.Services.AddSingleton<IAgentToolProvider, AgentToolProvider>();
 builder.Services.AddSingleton<IProjectFileWorkspace, ProjectFileWorkspace>();
 builder.Services.AddSingleton<ProjectFileAgentTools>();
+builder.Services.AddSingleton<ReactRemotionSandboxTools>();
 builder.Services.AddSingleton<IWorkflowExecutionContextAccessor, WorkflowExecutionContextAccessor>();
+builder.Services.AddHttpClient();
 
 // --- Step Executors ---
 builder.Services.AddSingleton<IStepExecutor, AgentStepExecutor>();

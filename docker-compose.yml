@@ -132,6 +132,7 @@ services:
       RabbitMQ__Host: rabbitmq
       RabbitMQ__Username: ${RABBITMQ_USER:-guest}
       RabbitMQ__Password: ${RABBITMQ_PASSWORD:-guest}
+      Sandbox__BaseUrl: http://sandbox-executor:8080
       WorkflowEngine__MaxConcurrency: ${WORKFLOW_MAX_CONCURRENCY:-4}
     depends_on:
       inference:
