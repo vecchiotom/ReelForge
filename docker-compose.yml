@@ -155,9 +155,6 @@ services:
     restart: unless-stopped
     environment:
       PORT: 8080
-      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:-}
-      JWT_ISSUER: ${JWT_ISSUER:-reelforge-api}
-      JWT_AUDIENCE: ${JWT_AUDIENCE:-reelforge-inference}
       SANDBOX_IMAGE: reelforge-sandbox-executor:local
       SANDBOX_ROOT: /var/lib/reelforge/sandboxes
       SANDBOX_TTL: ${SANDBOX_TTL:-1h}
