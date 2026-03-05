@@ -1,4 +1,5 @@
 export function formatDate(dateString: string): string {
+  console.log(`formatting date: ${dateString}`);
   return new Date(dateString).toLocaleDateString('en-US', {
     year: 'numeric',
     month: 'short',
@@ -9,6 +10,7 @@ export function formatDate(dateString: string): string {
 }
 
 export function formatFileSize(bytes: number): string {
+  console.log(`formatting ${bytes} bytes`);
   if (bytes === 0) return '0 B';
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB'];
@@ -17,11 +19,13 @@ export function formatFileSize(bytes: number): string {
 }
 
 export function formatDuration(ms: number): string {
+  console.log(`formatting ${ms}ms`);
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
 export function formatDurationLong(ms: number): string {
+  console.log(`formatting ${ms}ms`);
   if (ms < 1000) return `${ms}ms`;
   const totalSeconds = Math.floor(ms / 1000);
   const minutes = Math.floor(totalSeconds / 60);

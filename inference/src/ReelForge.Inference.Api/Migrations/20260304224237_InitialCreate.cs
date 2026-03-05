@@ -11,133 +11,89 @@ namespace ReelForge.Inference.Api.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.CreateTable(
-                name: "application_users",
-                columns: table => new
-                {
-                    id = table.Column<Guid>(type: "uuid", nullable: false),
-                    email = table.Column<string>(type: "text", nullable: false),
-                    display_name = table.Column<string>(type: "text", nullable: false),
-                    created_at = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
-                    password_hash = table.Column<string>(type: "text", nullable: false),
-                    is_admin = table.Column<bool>(type: "boolean", nullable: false),
-                    must_change_password = table.Column<bool>(type: "boolean", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("pk_application_users", x => x.id);
-                });
+            // Use PostgreSQL "IF NOT EXISTS" statements so the migration is resilient
+            // if the tables or indexes already exist.
+            migrationBuilder.Sql(@"
+CREATE TABLE IF NOT EXISTS application_users (
+    id uuid NOT NULL,
+    email text NOT NULL,
+    display_name text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    password_hash text NOT NULL,
+    is_admin boolean NOT NULL,
+    must_change_password boolean NOT NULL,
+    CONSTRAINT pk_application_users PRIMARY KEY (id)
+);");
 
-            migrationBuilder.CreateTable(
-                name: "agent_definitions",
-                columns: table => new
-                {
-                    id = table.Column<Guid>(type: "uuid", nullable: false),
-                    name = table.Column<string>(type: "text", nullable: false),
-                    description = table.Column<string>(type: "text", nullable: false),
-                    system_prompt = table.Column<string>(type: "text", nullable: false),
-                    agent_type = table.Column<string>(type: "text", nullable: false),
-                    is_built_in = table.Column<bool>(type: "boolean", nullable: false),
-                    owner_id = table.Column<Guid>(type: "uuid", nullable: true),
-                    config_json = table.Column<string>(type: "jsonb", nullable: true),
-                    created_at = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
-                    color = table.Column<string>(type: "text", nullable: true)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("pk_agent_definitions", x => x.id);
-                    table.ForeignKey(
-                        name: "fk_agent_definitions__application_users_owner_id",
-                        column: x => x.owner_id,
-                        principalTable: "application_users",
-                        principalColumn: "id",
-                        onDelete: ReferentialAction.SetNull);
-                });
+            migrationBuilder.Sql(@"
+CREATE TABLE IF NOT EXISTS agent_definitions (
+    id uuid NOT NULL,
+    name text NOT NULL,
+    description text NOT NULL,
+    system_prompt text NOT NULL,
+    agent_type text NOT NULL,
+    is_built_in boolean NOT NULL,
+    owner_id uuid,
+    config_json jsonb,
+    created_at timestamp with time zone NOT NULL,
+    color text,
+    CONSTRAINT pk_agent_definitions PRIMARY KEY (id),
+    CONSTRAINT fk_agent_definitions__application_users_owner_id FOREIGN KEY (owner_id)
+        REFERENCES application_users (id) ON DELETE SET NULL
+);");
 
-            migrationBuilder.CreateTable(
-                name: "projects",
-                columns: table => new
-                {
-                    id = table.Column<Guid>(type: "uuid", nullable: false),
-                    name = table.Column<string>(type: "text", nullable: false),
-                    description = table.Column<string>(type: "text", nullable: true),
-                    owner_id = table.Column<Guid>(type: "uuid", nullable: false),
-                    status = table.Column<string>(type: "text", nullable: false),
-                    created_at = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
-                    updated_at = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("pk_projects", x => x.id);
-                    table.ForeignKey(
-                        name: "fk_projects_application_users_owner_id",
-                        column: x => x.owner_id,
-                        principalTable: "application_users",
-                        principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
-                });
+            migrationBuilder.Sql(@"
+CREATE TABLE IF NOT EXISTS projects (
+    id uuid NOT NULL,
+    name text NOT NULL,
+    description text,
+    owner_id uuid NOT NULL,
+    status text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL,
+    CONSTRAINT pk_projects PRIMARY KEY (id),
+    CONSTRAINT fk_projects_application_users_owner_id FOREIGN KEY (owner_id)
+        REFERENCES application_users (id) ON DELETE CASCADE
+);");
 
-            migrationBuilder.CreateTable(
-                name: "project_files",
-                columns: table => new
-                {
-                    id = table.Column<Guid>(type: "uuid", nullable: false),
-                    project_id = table.Column<Guid>(type: "uuid", nullable: false),
-                    original_file_name = table.Column<string>(type: "text", nullable: false),
-                    storage_key = table.Column<string>(type: "text", nullable: false),
-                    mime_type = table.Column<string>(type: "text", nullable: false),
-                    size_bytes = table.Column<long>(type: "bigint", nullable: false),
-                    agent_summary = table.Column<string>(type: "text", nullable: true),
-                    summary_status = table.Column<string>(type: "text", nullable: false),
-                    uploaded_at = table.Column<DateTime>(type: "timestamp with time zone", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("pk_project_files", x => x.id);
-                    table.ForeignKey(
-                        name: "fk_project_files_projects_project_id",
-                        column: x => x.project_id,
-                        principalTable: "projects",
-                        principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
-                });
+            migrationBuilder.Sql(@"
+CREATE TABLE IF NOT EXISTS project_files (
+    id uuid NOT NULL,
+    project_id uuid NOT NULL,
+    original_file_name text NOT NULL,
+    storage_key text NOT NULL,
+    mime_type text NOT NULL,
+    size_bytes bigint NOT NULL,
+    agent_summary text,
+    summary_status text NOT NULL,
+    uploaded_at timestamp with time zone NOT NULL,
+    CONSTRAINT pk_project_files PRIMARY KEY (id),
+    CONSTRAINT fk_project_files_projects_project_id FOREIGN KEY (project_id)
+        REFERENCES projects (id) ON DELETE CASCADE
+);");
 
-            migrationBuilder.CreateIndex(
-                name: "ix_agent_definitions_owner_id",
-                table: "agent_definitions",
-                column: "owner_id");
+            // Create indexes only if they don't already exist
+            migrationBuilder.Sql(@"
+CREATE INDEX IF NOT EXISTS ix_agent_definitions_owner_id ON agent_definitions (owner_id);");
 
-            migrationBuilder.CreateIndex(
-                name: "IX_application_users_email",
-                table: "application_users",
-                column: "email",
-                unique: true);
+            migrationBuilder.Sql(@"
+CREATE UNIQUE INDEX IF NOT EXISTS IX_application_users_email ON application_users (email);");
 
-            migrationBuilder.CreateIndex(
-                name: "ix_project_files_project_id",
-                table: "project_files",
-                column: "project_id");
+            migrationBuilder.Sql(@"
+CREATE INDEX IF NOT EXISTS ix_project_files_project_id ON project_files (project_id);");
 
-            migrationBuilder.CreateIndex(
-                name: "ix_projects_owner_id",
-                table: "projects",
-                column: "owner_id");
+            migrationBuilder.Sql(@"
+CREATE INDEX IF NOT EXISTS ix_projects_owner_id ON projects (owner_id);");
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.DropTable(
-                name: "agent_definitions");
-
-            migrationBuilder.DropTable(
-                name: "project_files");
-
-            migrationBuilder.DropTable(
-                name: "projects");
-
-            migrationBuilder.DropTable(
-                name: "application_users");
+            // Drop tables only if they exist. Use CASCADE so dependent FKs and objects are removed safely.
+            migrationBuilder.Sql("DROP TABLE IF EXISTS agent_definitions CASCADE;");
+            migrationBuilder.Sql("DROP TABLE IF EXISTS project_files CASCADE;");
+            migrationBuilder.Sql("DROP TABLE IF EXISTS projects CASCADE;");
+            migrationBuilder.Sql("DROP TABLE IF EXISTS application_users CASCADE;");
         }
     }
 }

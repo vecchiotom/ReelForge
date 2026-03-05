@@ -14,11 +14,11 @@ export function FileSummaryDrawer({ file, opened, onClose }: FileSummaryDrawerPr
   if (!file) return null;
 
   return (
-    <Drawer opened={opened} onClose={onClose} title={file.fileName} position="right" size="lg">
+    <Drawer opened={opened} onClose={onClose} title={file.originalFileName} position="right" size="lg">
       <Stack gap="md">
         <div>
           <Text size="sm" fw={500}>Content Type</Text>
-          <Badge variant="light">{file.contentType}</Badge>
+          <Badge variant="light">{file.mimeType}</Badge>
         </div>
         <div>
           <Text size="sm" fw={500}>Summary Status</Text>
@@ -26,8 +26,8 @@ export function FileSummaryDrawer({ file, opened, onClose }: FileSummaryDrawerPr
         </div>
         <div>
           <Text size="sm" fw={500}>Summary</Text>
-          {file.summary ? (
-            <Code block>{file.summary}</Code>
+          {file.agentSummary ? (
+            <Code block>{file.agentSummary}</Code>
           ) : (
             <Text size="sm" c="dimmed">No summary available yet</Text>
           )}

@@ -27,10 +27,10 @@ export function FileList({ files, onDelete, onSelect }: FileListProps) {
       <Table.Tbody>
         {files.map((file) => (
           <Table.Tr key={file.id} onClick={() => onSelect(file)} style={{ cursor: 'pointer' }}>
-            <Table.Td>{file.fileName}</Table.Td>
-            <Table.Td>{formatFileSize(file.fileSize)}</Table.Td>
+            <Table.Td>{file.originalFileName}</Table.Td>
+            <Table.Td>{formatFileSize(file.sizeBytes)}</Table.Td>
             <Table.Td><StatusBadge status={file.summaryStatus} /></Table.Td>
-            <Table.Td>{formatDate(file.createdAt)}</Table.Td>
+            <Table.Td>{formatDate(file.uploadedAt)}</Table.Td>
             <Table.Td>
               <Group justify="flex-end">
                 <ActionIcon

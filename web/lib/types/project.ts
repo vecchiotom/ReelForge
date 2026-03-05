@@ -21,11 +21,11 @@ export interface UpdateProjectRequest {
 export interface ProjectFile {
   id: string;
   projectId: string;
-  fileName: string;
-  fileSize: number;
-  contentType: string;
-  storagePath: string;
-  summary: string | null;
+  originalFileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  storageKey: string;
+  agentSummary: string | null;
   summaryStatus: 'Pending' | 'Processing' | 'Completed' | 'Failed';
-  createdAt: string;
+  uploadedAt: string;
 }
