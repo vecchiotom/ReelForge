@@ -2,6 +2,7 @@
 
 import { Card, Text, Stack, Group, Badge, Loader, Center } from '@mantine/core';
 import { IconServer } from '@tabler/icons-react';
+import Link from 'next/link';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { useWorkflowEngineStatus } from '@/lib/hooks/use-workflow-engine';
 import { formatDate } from '@/lib/utils/format';
@@ -16,7 +17,14 @@ export default function AdminOverviewPage() {
         breadcrumbs={[{ label: 'Admin' }, { label: 'Overview' }]}
       />
       <Stack gap="md" maw={600}>
-        <Card withBorder padding="md" radius="md">
+        <Card
+          withBorder
+          padding="md"
+          radius="md"
+          component={Link}
+          href="/admin/workflow-service"
+          style={{ cursor: 'pointer' }}
+        >
           <Group justify="space-between" mb="sm">
             <Group gap="sm">
               <IconServer size={20} />
@@ -40,6 +48,7 @@ export default function AdminOverviewPage() {
           {error && !isLoading && (
             <Text size="sm" c="red">Could not connect to the Workflow Engine service.</Text>
           )}
+          <Text size="sm" mt="sm" c="cyan.4">Open live command center</Text>
         </Card>
       </Stack>
     </>

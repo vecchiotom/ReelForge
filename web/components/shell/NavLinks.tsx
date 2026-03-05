@@ -7,6 +7,7 @@ import {
   IconRobot,
   IconUsers,
   IconSettings,
+  IconBroadcast,
 } from '@tabler/icons-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -20,6 +21,7 @@ const links = [
 
 const adminLinks = [
   { label: 'Overview', href: '/admin', icon: IconSettings, exact: true },
+  { label: 'Workflow Service', href: '/admin/workflow-service', icon: IconBroadcast, exact: false },
   { label: 'Users', href: '/admin/users', icon: IconUsers, exact: false },
 ];
 
