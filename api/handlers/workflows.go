@@ -1,0 +1,105 @@
+package handlers
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/vecchiotom/reelforge/database"
+	"github.com/vecchiotom/reelforge/models"
+	"github.com/vecchiotom/reelforge/services"
+)
+
+// WorkflowStats holds aggregate execution counts by status.
+type WorkflowStats struct {
+	Queued    int64 `json:"queued"`
+	Active    int64 `json:"active"`
+	Completed int64 `json:"completed"`
+	Failed    int64 `json:"failed"`
+	Total     int64 `json:"total"`
+}
+
+// handleWorkflowStats returns aggregate execution statistics queried directly
+// from the workflow_executions table (owned by the WorkflowEngine service).
+func handleWorkflowStats(w http.ResponseWriter, r *http.Request) {
+	type statusCount struct {
+		Status string
+		Count  int64
+	}
+
+	var rows []statusCount
+	if err := database.DB.Model(&models.WorkflowExecution{}).
+		Select("status, count(*) as count").
+		Group("status").
+		Scan(&rows).Error; err != nil {
+		http.Error(w, `{"error":"failed to query workflow stats"}`, http.StatusInternalServerError)
+		return
+	}
+
+	stats := WorkflowStats{}
+	for _, row := range rows {
+		switch row.Status {
+		case "Queued":
+			stats.Queued = row.Count
+		case "Running":
+			stats.Active = row.Count
+		case "Completed":
+			stats.Completed = row.Count
+		case "Failed":
+			stats.Failed = row.Count
+		}
+		stats.Total += row.Count
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
+}
+
+// handleWorkflowEvents streams real-time workflow execution events to the client
+// using Server-Sent Events (SSE). The client must accept text/event-stream.
+func handleWorkflowEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, `{"error":"streaming not supported"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
+
+	ch := services.Hub.Subscribe()
+	defer services.Hub.Unsubscribe(ch)
+
+	// Send an initial "connected" event so the client knows the stream is live.
+	fmt.Fprintf(w, "event: connected\ndata: {\"ts\":%d}\n\n", time.Now().UnixMilli())
+	flusher.Flush()
+
+	// Keep-alive ping every 25 seconds to prevent proxy timeouts.
+	ticker := time.NewTicker(25 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+
+		case <-ticker.C:
+			fmt.Fprintf(w, ": ping\n\n")
+			flusher.Flush()
+
+		case event, open := <-ch:
+			if !open {
+				return
+			}
+			data, err := json.Marshal(event)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, data)
+			flusher.Flush()
+		}
+	}
+}

@@ -146,6 +146,36 @@ services:
       start_period: 20s
     networks:
       - reelforge
+
+  sandbox-executor:
+    build:
+      context: ./sandbox
+      dockerfile: Dockerfile
+    image: reelforge-sandbox-executor:local
+    restart: unless-stopped
+    environment:
+      PORT: 8080
+      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:-}
+      JWT_ISSUER: ${JWT_ISSUER:-reelforge-api}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-reelforge-inference}
+      SANDBOX_IMAGE: reelforge-sandbox-executor:local
+      SANDBOX_ROOT: /var/lib/reelforge/sandboxes
+      SANDBOX_TTL: ${SANDBOX_TTL:-1h}
+      SANDBOX_EXEC_TIMEOUT: ${SANDBOX_EXEC_TIMEOUT:-5m}
+      SANDBOX_MEMORY_LIMIT: ${SANDBOX_MEMORY_LIMIT:-2g}
+      SANDBOX_CPU_LIMIT: ${SANDBOX_CPU_LIMIT:-2}
+      SANDBOX_PIDS_LIMIT: ${SANDBOX_PIDS_LIMIT:-256}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - sandboxdata:/var/lib/reelforge/sandboxes
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO/dev/null http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - reelforge
       
   go-api:
     build:
@@ -165,10 +195,15 @@ services:
       SMTP_FROM: ${SMTP_FROM:-}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@reelforge.local}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
     depends_on:
       minio-init:
         condition: service_completed_successfully
       inference:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
       
     healthcheck:
@@ -223,6 +258,8 @@ services:
     depends_on:
       web:
         condition: service_healthy
+      sandbox-executor:
+        condition: service_healthy
     networks:
       - reelforge
 
@@ -230,6 +267,7 @@ volumes:
   pgdata:
   miniodata:
   rabbitmqdata:
+  sandboxdata:
 
 networks:
   reelforge:

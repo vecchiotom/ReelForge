@@ -20,13 +20,19 @@ type UserContext struct {
 
 func Auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+		var tokenString string
+
+		// Prefer Authorization header; fall back to httpOnly cookie (used by EventSource/SSE).
+		if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+			tokenString = strings.TrimPrefix(authHeader, "Bearer ")
+		} else if cookie, err := r.Cookie("reelforge_token"); err == nil {
+			tokenString = cookie.Value
+		}
+
+		if tokenString == "" {
 			http.Error(w, `{"error":"missing or invalid authorization header"}`, http.StatusUnauthorized)
 			return
 		}
-
-		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
 		claims, err := services.ValidateToken(tokenString)
 		if err != nil {
 			http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)

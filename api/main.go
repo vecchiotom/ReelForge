@@ -21,6 +21,7 @@ func main() {
 	}
 
 	services.EnsureAdminExists()
+	services.StartRabbitMQConsumer()
 
 	handlers.RegisterHandlers()
 

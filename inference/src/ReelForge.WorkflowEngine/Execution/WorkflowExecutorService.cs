@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.Text.Json;
+using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using ReelForge.Shared.Data.Models;
+using ReelForge.Shared.IntegrationEvents;
 using ReelForge.WorkflowEngine.Data;
 using ReelForge.WorkflowEngine.Observability;
 
@@ -15,15 +17,18 @@ public class WorkflowExecutorService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<WorkflowExecutorService> _logger;
     private readonly Dictionary<StepType, IStepExecutor> _executors;
+    private readonly IPublishEndpoint _publishEndpoint;
 
     public WorkflowExecutorService(
         IServiceScopeFactory scopeFactory,
         ILogger<WorkflowExecutorService> logger,
-        IEnumerable<IStepExecutor> executors)
+        IEnumerable<IStepExecutor> executors,
+        IPublishEndpoint publishEndpoint)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
         _executors = executors.ToDictionary(e => e.StepType);
+        _publishEndpoint = publishEndpoint;
     }
 
     public async Task ExecuteAsync(Guid executionId, string correlationId, CancellationToken ct)
@@ -131,6 +136,19 @@ public class WorkflowExecutorService
                 }
 
                 await db.SaveChangesAsync(ct);
+
+                // Publish step-level event for real-time monitoring.
+                await _publishEndpoint.Publish(new WorkflowStepCompleted
+                {
+                    ExecutionId = executionId,
+                    StepId = step.Id,
+                    StepResultId = stepResult.Id,
+                    CorrelationId = correlationId,
+                    StepStatus = result.Status.ToString(),
+                    TokensUsed = result.TokensUsed,
+                    DurationMs = result.DurationMs,
+                    CompletedAt = DateTime.UtcNow
+                }, ct);
 
                 ReelForgeDiagnostics.StepDuration.Record(result.DurationMs,
                     new KeyValuePair<string, object?>("step.type", step.StepType.ToString()),

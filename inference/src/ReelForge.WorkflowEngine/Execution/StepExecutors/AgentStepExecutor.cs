@@ -22,17 +22,24 @@ public class AgentStepExecutor : IStepExecutor
 
     public async Task<StepExecutionResult> ExecuteAsync(StepExecutionContext context)
     {
-        IReelForgeAgent? agent = _agentRegistry.GetByType(context.Step.AgentDefinition.AgentType);
+        Guid? customAgentId = context.Step.AgentDefinition.AgentType == AgentType.Custom
+            ? context.Step.AgentDefinitionId
+            : null;
+
+        IReelForgeAgent? agent = _agentRegistry.GetByType(context.Step.AgentDefinition.AgentType, customAgentId);
         if (agent == null)
         {
-            _logger.LogWarning("No agent found for type {AgentType}, skipping", context.Step.AgentDefinition.AgentType);
+            _logger.LogWarning(
+                "No agent found for type {AgentType} (AgentDefinitionId: {AgentDefinitionId}), skipping",
+                context.Step.AgentDefinition.AgentType,
+                context.Step.AgentDefinitionId);
             return new StepExecutionResult
             {
                 Output = context.AccumulatedOutput,
                 NextStepIndex = context.CurrentStepIndex + 1,
                 NewIterationCount = context.IterationCount,
                 Status = StepStatus.Skipped,
-                ErrorDetails = $"No agent registered for type {context.Step.AgentDefinition.AgentType}"
+                ErrorDetails = $"No agent registered for type {context.Step.AgentDefinition.AgentType} and agent definition id {context.Step.AgentDefinitionId}"
             };
         }
 

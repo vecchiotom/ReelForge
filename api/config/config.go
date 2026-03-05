@@ -20,6 +20,11 @@ type AppConfig struct {
 
 	AdminEmail    string
 	AdminPassword string
+
+	RabbitMQHost     string
+	RabbitMQPort     string
+	RabbitMQUsername string
+	RabbitMQPassword string
 }
 
 var Cfg AppConfig
@@ -41,6 +46,11 @@ func Load() {
 
 		AdminEmail:    getEnv("ADMIN_EMAIL", "admin@reelforge.local"),
 		AdminPassword: getEnv("ADMIN_PASSWORD", ""),
+
+		RabbitMQHost:     getEnv("RABBITMQ_HOST", "localhost"),
+		RabbitMQPort:     getEnv("RABBITMQ_PORT", "5672"),
+		RabbitMQUsername: getEnv("RABBITMQ_USER", "guest"),
+		RabbitMQPassword: getEnv("RABBITMQ_PASSWORD", "guest"),
 	}
 }
 

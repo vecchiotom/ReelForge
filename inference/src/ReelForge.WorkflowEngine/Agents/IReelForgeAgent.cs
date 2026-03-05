@@ -6,6 +6,7 @@ namespace ReelForge.WorkflowEngine.Agents;
 
 public interface IReelForgeAgent
 {
+    Guid? AgentId { get; }
     string Name { get; }
     string Description { get; }
     string SystemPrompt { get; }

@@ -16,11 +16,13 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
         string description,
         AgentType agentType,
         string defaultSystemPrompt,
-        IEnumerable<AIFunction>? tools = null)
+        IEnumerable<AIFunction>? tools = null,
+        Guid? agentId = null)
     {
         Name = name;
         Description = description;
         AgentType = agentType;
+        AgentId = agentId;
         _tools = tools?.ToList() ?? new List<AIFunction>();
 
         string configKey = $"Agents:{name}:SystemPrompt";
@@ -32,6 +34,7 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
             tools: _tools.Cast<AITool>().ToList());
     }
 
+    public Guid? AgentId { get; }
     public string Name { get; }
     public string Description { get; }
     public string SystemPrompt { get; }

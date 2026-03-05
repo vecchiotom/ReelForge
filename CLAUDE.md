@@ -59,11 +59,13 @@ api/
 │   ├── user_service.go           # User CRUD, bcrypt password ops, OTP generation, admin seeding
 │   ├── jwt_service.go            # HS256 JWT generation + validation
 │   └── smtp_service.go           # Optional SMTP email (falls back to console logging)
+│   └── rabbitmq_service.go       # RabbitMQ consumer + in-memory SSE hub (workflow events)
 ├── middleware/
 │   ├── auth.go                   # Bearer token extraction, validation, UserContext injection
 │   └── admin.go                  # IsAdmin check (403 if not admin)
 ├── handlers/
 │   ├── handlers.go               # Route registration hub with subrouter middleware chaining
+│   ├── workflows.go              # GET /api/v1/workflows/stats + GET /api/v1/workflows/events (SSE)
 │   ├── health/health.go          # GET /health
 │   ├── auth/
 │   │   ├── auth.go               # POST /api/v1/auth/token, POST /api/v1/auth/change-password
@@ -71,7 +73,10 @@ api/
 │   └── admin/
 │       ├── users.go              # Admin user CRUD (POST/GET/PUT/DELETE /api/v1/admin/users)
 │       └── dto.go                # CreateUserRequest/Response, UpdateUserRequest, UserResponse
-├── main.go                       # Entry point: config load, DB init, admin seed, server start
+├── models/
+│   ├── user.go                   # ApplicationUser GORM model
+│   └── workflow_execution.go     # WorkflowExecution GORM model (read-only, WorkflowEngine-owned table)
+├── main.go                       # Entry point: config load, DB init, admin seed, RabbitMQ consumer, server start
 ├── Dockerfile                    # Multi-stage Go build
 ├── go.mod / go.sum
 ```
@@ -83,6 +88,8 @@ api/
 | `GET` | `/health` | Public | Health check |
 | `POST` | `/api/v1/auth/token` | Public | Login (email + password → JWT) |
 | `POST` | `/api/v1/auth/change-password` | Authenticated | Change password (clears `must_change_password`) |
+| `GET` | `/api/v1/workflows/stats` | Authenticated | Workflow execution aggregate stats (queued/active/completed/failed) |
+| `GET` | `/api/v1/workflows/events` | Authenticated | SSE stream of real-time workflow events (`execution.completed`, `execution.failed`, `step.completed`) |
 | `POST` | `/api/v1/admin/users` | Admin | Create user (returns temporary password, sends email if SMTP configured) |
 | `GET` | `/api/v1/admin/users` | Admin | List all users |
 | `GET` | `/api/v1/admin/users/{id}` | Admin | Get single user |

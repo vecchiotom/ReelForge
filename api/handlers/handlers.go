@@ -29,6 +29,8 @@ func RegisterHandlers() {
 	authenticated := Router.PathPrefix("").Subrouter()
 	authenticated.Use(middleware.Auth)
 	auth.RegisterAuthenticatedRoutes(authenticated)
+	authenticated.HandleFunc("/api/v1/workflows/stats", handleWorkflowStats).Methods("GET")
+	authenticated.HandleFunc("/api/v1/workflows/events", handleWorkflowEvents).Methods("GET")
 
 	// Admin routes (auth + admin required)
 	adminRouter := Router.PathPrefix("/api/v1/admin").Subrouter()
