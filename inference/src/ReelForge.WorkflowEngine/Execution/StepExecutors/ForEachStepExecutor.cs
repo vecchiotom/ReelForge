@@ -11,11 +11,19 @@ namespace ReelForge.WorkflowEngine.Execution.StepExecutors;
 public class ForEachStepExecutor : IStepExecutor
 {
     private readonly IAgentRegistry _agentRegistry;
+    private readonly IWorkflowExecutionContextAccessor _executionContextAccessor;
+    private readonly int _maxParallelism;
     private readonly ILogger<ForEachStepExecutor> _logger;
 
-    public ForEachStepExecutor(IAgentRegistry agentRegistry, ILogger<ForEachStepExecutor> logger)
+    public ForEachStepExecutor(
+        IAgentRegistry agentRegistry,
+        IWorkflowExecutionContextAccessor executionContextAccessor,
+        IConfiguration configuration,
+        ILogger<ForEachStepExecutor> logger)
     {
         _agentRegistry = agentRegistry;
+        _executionContextAccessor = executionContextAccessor;
+        _maxParallelism = Math.Max(1, configuration.GetValue("WorkflowEngine:AgentParallelism", 4));
         _logger = logger;
     }
 
@@ -57,17 +65,29 @@ public class ForEachStepExecutor : IStepExecutor
             context.Step.StepOrder, items.Count);
 
         int maxIterations = context.Step.MaxIterations > 0 ? context.Step.MaxIterations : items.Count;
-        var results = new List<string>();
+        int iterations = Math.Min(items.Count, maxIterations);
+        string[] results = new string[iterations];
         long totalDuration = 0;
+        using IDisposable _ = _executionContextAccessor.BeginScope(
+            context.Execution.Id,
+            context.Execution.ProjectId,
+            context.CorrelationId);
 
-        for (int i = 0; i < Math.Min(items.Count, maxIterations); i++)
-        {
-            Stopwatch sw = Stopwatch.StartNew();
-            string output = await agent.RunAsync(items[i], context.CancellationToken);
-            sw.Stop();
-            totalDuration += sw.ElapsedMilliseconds;
-            results.Add(output);
-        }
+        await Parallel.ForEachAsync(
+            Enumerable.Range(0, iterations),
+            new ParallelOptions
+            {
+                CancellationToken = context.CancellationToken,
+                MaxDegreeOfParallelism = _maxParallelism
+            },
+            async (index, token) =>
+            {
+                Stopwatch sw = Stopwatch.StartNew();
+                string output = await agent.RunAsync(items[index], token);
+                sw.Stop();
+                Interlocked.Add(ref totalDuration, sw.ElapsedMilliseconds);
+                results[index] = output;
+            });
 
         string aggregatedOutput = JsonSerializer.Serialize(new { results, sourceCount = items.Count });
 

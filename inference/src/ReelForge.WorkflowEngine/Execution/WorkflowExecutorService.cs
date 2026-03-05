@@ -15,17 +15,20 @@ namespace ReelForge.WorkflowEngine.Execution;
 public class WorkflowExecutorService
 {
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IWorkflowEventPublisher _eventPublisher;
     private readonly ILogger<WorkflowExecutorService> _logger;
     private readonly Dictionary<StepType, IStepExecutor> _executors;
     private readonly IPublishEndpoint _publishEndpoint;
 
     public WorkflowExecutorService(
         IServiceScopeFactory scopeFactory,
+        IWorkflowEventPublisher eventPublisher,
         ILogger<WorkflowExecutorService> logger,
         IEnumerable<IStepExecutor> executors,
         IPublishEndpoint publishEndpoint)
     {
         _scopeFactory = scopeFactory;
+        _eventPublisher = eventPublisher;
         _logger = logger;
         _executors = executors.ToDictionary(e => e.StepType);
         _publishEndpoint = publishEndpoint;
@@ -136,6 +139,7 @@ public class WorkflowExecutorService
                 }
 
                 await db.SaveChangesAsync(ct);
+                await _eventPublisher.PublishStepCompletedAsync(execution, step, stepResult, ct);
 
                 // Publish step-level event for real-time monitoring.
                 await _publishEndpoint.Publish(new WorkflowStepCompleted
@@ -166,6 +170,7 @@ public class WorkflowExecutorService
             execution.CompletedAt = DateTime.UtcNow;
             execution.CurrentStepId = null;
             await db.SaveChangesAsync(ct);
+            await _eventPublisher.PublishExecutionCompletedAsync(execution, ct);
 
             ReelForgeDiagnostics.CompletedWorkflows.Add(1,
                 new KeyValuePair<string, object?>("status", "passed"));
@@ -179,6 +184,7 @@ public class WorkflowExecutorService
             execution.ErrorMessage = ex.Message;
             execution.CompletedAt = DateTime.UtcNow;
             await db.SaveChangesAsync(ct);
+            await _eventPublisher.PublishExecutionFailedAsync(execution, ct);
 
             ReelForgeDiagnostics.CompletedWorkflows.Add(1,
                 new KeyValuePair<string, object?>("status", "failed"));

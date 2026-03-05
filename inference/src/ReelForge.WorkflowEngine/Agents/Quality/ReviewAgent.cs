@@ -1,5 +1,6 @@
 using Microsoft.Extensions.AI;
 using ReelForge.Shared.Data.Models;
+using ReelForge.WorkflowEngine.Agents.Tools;
 
 namespace ReelForge.WorkflowEngine.Agents.Quality;
 
@@ -27,9 +28,13 @@ public class ReviewAgentImpl : ReelForgeAgentBase
         significant issues.
         """;
 
-    public ReviewAgentImpl(IChatClient chatClient, IConfiguration configuration)
+    public ReviewAgentImpl(
+        IChatClient chatClient,
+        IConfiguration configuration,
+        IAgentToolProvider toolProvider)
         : base(chatClient, configuration, "Review",
             "Scores output quality and provides structured feedback.",
-            AgentType.ReviewAgent, DefaultPrompt)
+            AgentType.ReviewAgent, DefaultPrompt,
+            toolProvider.GetTools(AgentType.ReviewAgent))
     { }
 }

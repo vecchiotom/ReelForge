@@ -1,4 +1,5 @@
 using System.Text;
+using Amazon.S3;
 using Azure.AI.OpenAI;
 using MassTransit;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -13,12 +14,14 @@ using ReelForge.WorkflowEngine.Agents;
 using ReelForge.WorkflowEngine.Agents.Analysis;
 using ReelForge.WorkflowEngine.Agents.Production;
 using ReelForge.WorkflowEngine.Agents.Quality;
+using ReelForge.WorkflowEngine.Agents.Tools;
 using ReelForge.WorkflowEngine.Agents.Translation;
 using ReelForge.WorkflowEngine.Consumers;
 using ReelForge.WorkflowEngine.Data;
 using ReelForge.WorkflowEngine.Execution;
 using ReelForge.WorkflowEngine.Execution.StepExecutors;
 using ReelForge.WorkflowEngine.Observability;
+using ReelForge.WorkflowEngine.Services.Storage;
 using ReelForge.WorkflowEngine.Workers;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
@@ -60,6 +63,20 @@ builder.Services.AddSingleton<IChatClient>(sp =>
     return client.GetChatClient(deploymentName).AsIChatClient();
 });
 
+// --- MinIO / S3 ---
+builder.Services.AddSingleton<IAmazonS3>(sp =>
+{
+    AmazonS3Config config = new()
+    {
+        ServiceURL = builder.Configuration["MinIO:Endpoint"] ?? "http://localhost:9000",
+        ForcePathStyle = true
+    };
+    return new AmazonS3Client(
+        builder.Configuration["MinIO:AccessKey"] ?? string.Empty,
+        builder.Configuration["MinIO:SecretKey"] ?? string.Empty,
+        config);
+});
+
 // --- Agents ---
 builder.Services.AddSingleton<IReelForgeAgent, CodeStructureAnalyzerAgent>();
 builder.Services.AddSingleton<IReelForgeAgent, DependencyAnalyzerAgent>();
@@ -73,6 +90,10 @@ builder.Services.AddSingleton<IReelForgeAgent, ScriptwriterAgentImpl>();
 builder.Services.AddSingleton<IReelForgeAgent, AuthorAgentImpl>();
 builder.Services.AddSingleton<IReelForgeAgent, ReviewAgentImpl>();
 builder.Services.AddSingleton<IAgentRegistry, AgentRegistry>();
+builder.Services.AddSingleton<IAgentToolProvider, AgentToolProvider>();
+builder.Services.AddSingleton<IProjectFileWorkspace, ProjectFileWorkspace>();
+builder.Services.AddSingleton<ProjectFileAgentTools>();
+builder.Services.AddSingleton<IWorkflowExecutionContextAccessor, WorkflowExecutionContextAccessor>();
 
 // --- Step Executors ---
 builder.Services.AddSingleton<IStepExecutor, AgentStepExecutor>();
@@ -82,6 +103,7 @@ builder.Services.AddSingleton<IStepExecutor, ReviewLoopStepExecutor>();
 
 // --- Workflow Executor ---
 builder.Services.AddScoped<WorkflowExecutorService>();
+builder.Services.AddScoped<IWorkflowEventPublisher, WorkflowEventPublisher>();
 
 // --- MassTransit / RabbitMQ ---
 int maxConcurrency = builder.Configuration.GetValue("WorkflowEngine:MaxConcurrency", 4);

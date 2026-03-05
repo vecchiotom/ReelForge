@@ -14,10 +14,13 @@ public class StyleAndThemeExtractorAgent : ReelForgeAgentBase
         of all design tokens suitable for recreating the visual identity in Remotion.
         """;
 
-    public StyleAndThemeExtractorAgent(IChatClient chatClient, IConfiguration configuration)
+    public StyleAndThemeExtractorAgent(
+        IChatClient chatClient,
+        IConfiguration configuration,
+        IAgentToolProvider toolProvider)
         : base(chatClient, configuration, "StyleAndThemeExtractor",
             "Extracts color palette, typography, spacing, and branding tokens.",
             AgentType.StyleAndThemeExtractor, DefaultPrompt,
-            new AIFunction[] { AIFunctionFactory.Create(FileSystemTools.ReadStyleConfig), AIFunctionFactory.Create(FileSystemTools.ReadFileContent) })
+            toolProvider.GetTools(AgentType.StyleAndThemeExtractor))
     { }
 }

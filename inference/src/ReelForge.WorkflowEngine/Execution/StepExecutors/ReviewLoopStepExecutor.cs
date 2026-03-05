@@ -11,11 +11,16 @@ namespace ReelForge.WorkflowEngine.Execution.StepExecutors;
 public class ReviewLoopStepExecutor : IStepExecutor
 {
     private readonly IAgentRegistry _agentRegistry;
+    private readonly IWorkflowExecutionContextAccessor _executionContextAccessor;
     private readonly ILogger<ReviewLoopStepExecutor> _logger;
 
-    public ReviewLoopStepExecutor(IAgentRegistry agentRegistry, ILogger<ReviewLoopStepExecutor> logger)
+    public ReviewLoopStepExecutor(
+        IAgentRegistry agentRegistry,
+        IWorkflowExecutionContextAccessor executionContextAccessor,
+        ILogger<ReviewLoopStepExecutor> logger)
     {
         _agentRegistry = agentRegistry;
+        _executionContextAccessor = executionContextAccessor;
         _logger = logger;
     }
 
@@ -37,6 +42,10 @@ public class ReviewLoopStepExecutor : IStepExecutor
         }
 
         Stopwatch sw = Stopwatch.StartNew();
+        using IDisposable _ = _executionContextAccessor.BeginScope(
+            context.Execution.Id,
+            context.Execution.ProjectId,
+            context.CorrelationId);
         string output = await agent.RunAsync(context.AccumulatedOutput, context.CancellationToken);
         sw.Stop();
 

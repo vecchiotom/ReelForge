@@ -192,10 +192,23 @@ namespace ReelForge.Inference.Api.Migrations
                         .HasColumnType("bigint")
                         .HasColumnName("size_bytes");
 
+                    b.Property<string>("StorageBucket")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("storage_bucket");
+
                     b.Property<string>("StorageKey")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("storage_key");
+
+                    b.Property<string>("StorageMetadataJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("storage_metadata_json");
+
+                    b.Property<string>("StoragePrefix")
+                        .HasColumnType("text")
+                        .HasColumnName("storage_prefix");
 
                     b.Property<string>("SummaryStatus")
                         .IsRequired()

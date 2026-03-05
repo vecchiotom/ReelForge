@@ -1,5 +1,6 @@
 using Amazon.S3;
 using Amazon.S3.Model;
+using System.Text.Json;
 
 namespace ReelForge.Inference.Api.Services.Storage;
 
@@ -19,9 +20,16 @@ public class S3FileStorageService : IFileStorageService
         _logger = logger;
     }
 
-    public async Task<string> UploadAsync(Stream content, string fileName, string contentType, CancellationToken ct)
+    public async Task<StoredFileObject> UploadAsync(
+        Guid projectId,
+        Stream content,
+        string fileName,
+        string contentType,
+        IReadOnlyDictionary<string, string>? metadata,
+        CancellationToken ct)
     {
-        string storageKey = $"{Guid.NewGuid()}/{fileName}";
+        string storagePrefix = $"projects/{projectId}/";
+        string storageKey = $"{storagePrefix}{Guid.NewGuid()}/{fileName}";
         PutObjectRequest request = new()
         {
             BucketName = _bucketName,
@@ -29,20 +37,37 @@ public class S3FileStorageService : IFileStorageService
             InputStream = content,
             ContentType = contentType
         };
+        request.Metadata["project-id"] = projectId.ToString();
+        if (metadata != null)
+        {
+            foreach (var (key, value) in metadata)
+            {
+                request.Metadata[key] = value;
+            }
+        }
+
         await _s3Client.PutObjectAsync(request, ct);
         _logger.LogInformation("Uploaded file {FileName} as {StorageKey}", fileName, storageKey);
-        return storageKey;
+        string metadataJson = JsonSerializer.Serialize(request.Metadata.Keys
+            .ToDictionary(k => k, k => request.Metadata[k]));
+        return new StoredFileObject(storageKey, _bucketName, storagePrefix, metadataJson);
     }
 
-    public async Task<Stream> DownloadAsync(string storageKey, CancellationToken ct)
+    public async Task<Stream> DownloadAsync(Guid projectId, string storageKey, CancellationToken ct)
     {
+        if (!storageKey.StartsWith($"projects/{projectId}/", StringComparison.Ordinal))
+            throw new UnauthorizedAccessException("Requested file is not in the project's storage scope.");
+
         GetObjectRequest request = new() { BucketName = _bucketName, Key = storageKey };
         GetObjectResponse response = await _s3Client.GetObjectAsync(request, ct);
         return response.ResponseStream;
     }
 
-    public async Task DeleteAsync(string storageKey, CancellationToken ct)
+    public async Task DeleteAsync(Guid projectId, string storageKey, CancellationToken ct)
     {
+        if (!storageKey.StartsWith($"projects/{projectId}/", StringComparison.Ordinal))
+            throw new UnauthorizedAccessException("Requested file is not in the project's storage scope.");
+
         DeleteObjectRequest request = new() { BucketName = _bucketName, Key = storageKey };
         await _s3Client.DeleteObjectAsync(request, ct);
         _logger.LogInformation("Deleted file {StorageKey}", storageKey);

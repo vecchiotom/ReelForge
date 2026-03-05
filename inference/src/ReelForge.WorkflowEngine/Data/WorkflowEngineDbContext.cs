@@ -62,6 +62,8 @@ public class WorkflowEngineDbContext : DbContext
                 .OnDelete(DeleteBehavior.Cascade);
             entity.Property(e => e.SummaryStatus)
                 .HasConversion<string>();
+            entity.Property(e => e.StorageMetadataJson)
+                .HasColumnType("jsonb");
             entity.ToTable("project_files", t => t.ExcludeFromMigrations());
         });
 

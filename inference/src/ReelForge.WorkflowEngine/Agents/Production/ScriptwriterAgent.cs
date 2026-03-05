@@ -1,5 +1,6 @@
 using Microsoft.Extensions.AI;
 using ReelForge.Shared.Data.Models;
+using ReelForge.WorkflowEngine.Agents.Tools;
 
 namespace ReelForge.WorkflowEngine.Agents.Production;
 
@@ -20,9 +21,13 @@ public class ScriptwriterAgentImpl : ReelForgeAgentBase
         Output a structured JSON script document keyed by scene.
         """;
 
-    public ScriptwriterAgentImpl(IChatClient chatClient, IConfiguration configuration)
+    public ScriptwriterAgentImpl(
+        IChatClient chatClient,
+        IConfiguration configuration,
+        IAgentToolProvider toolProvider)
         : base(chatClient, configuration, "Scriptwriter",
             "Writes the voiceover/caption script for each scene.",
-            AgentType.ScriptwriterAgent, DefaultPrompt)
+            AgentType.ScriptwriterAgent, DefaultPrompt,
+            toolProvider.GetTools(AgentType.ScriptwriterAgent))
     { }
 }

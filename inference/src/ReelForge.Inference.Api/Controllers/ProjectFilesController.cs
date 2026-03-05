@@ -53,15 +53,33 @@ public class ProjectFilesController : ControllerBase
         if (project == null) return NotFound();
         if (project.OwnerId != _currentUser.UserId) return Forbid();
 
+        Guid fileId = Guid.NewGuid();
+        Dictionary<string, string> storageMetadata = new()
+        {
+            ["project-id"] = projectId.ToString(),
+            ["owner-id"] = project.OwnerId.ToString(),
+            ["uploaded-by"] = _currentUser.UserId.ToString(),
+            ["project-file-id"] = fileId.ToString()
+        };
+
         using Stream stream = file.OpenReadStream();
-        string storageKey = await _fileStorage.UploadAsync(stream, file.FileName, file.ContentType, ct);
+        StoredFileObject storedObject = await _fileStorage.UploadAsync(
+            projectId,
+            stream,
+            file.FileName,
+            file.ContentType,
+            storageMetadata,
+            ct);
 
         ProjectFile projectFile = new()
         {
-            Id = Guid.NewGuid(),
+            Id = fileId,
             ProjectId = projectId,
             OriginalFileName = file.FileName,
-            StorageKey = storageKey,
+            StorageKey = storedObject.StorageKey,
+            StorageBucket = storedObject.BucketName,
+            StoragePrefix = storedObject.StoragePrefix,
+            StorageMetadataJson = storedObject.StorageMetadataJson,
             MimeType = file.ContentType,
             SizeBytes = file.Length,
             SummaryStatus = SummaryStatus.Pending,
@@ -86,7 +104,7 @@ public class ProjectFilesController : ControllerBase
         ProjectFile? file = await _db.ProjectFiles.FirstOrDefaultAsync(f => f.Id == fileId && f.ProjectId == projectId, ct);
         if (file == null) return NotFound();
 
-        await _fileStorage.DeleteAsync(file.StorageKey, ct);
+        await _fileStorage.DeleteAsync(projectId, file.StorageKey, ct);
         _db.ProjectFiles.Remove(file);
         await _db.SaveChangesAsync(ct);
         return NoContent();

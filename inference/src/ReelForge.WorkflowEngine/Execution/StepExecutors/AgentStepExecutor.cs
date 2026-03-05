@@ -10,11 +10,16 @@ namespace ReelForge.WorkflowEngine.Execution.StepExecutors;
 public class AgentStepExecutor : IStepExecutor
 {
     private readonly IAgentRegistry _agentRegistry;
+    private readonly IWorkflowExecutionContextAccessor _executionContextAccessor;
     private readonly ILogger<AgentStepExecutor> _logger;
 
-    public AgentStepExecutor(IAgentRegistry agentRegistry, ILogger<AgentStepExecutor> logger)
+    public AgentStepExecutor(
+        IAgentRegistry agentRegistry,
+        IWorkflowExecutionContextAccessor executionContextAccessor,
+        ILogger<AgentStepExecutor> logger)
     {
         _agentRegistry = agentRegistry;
+        _executionContextAccessor = executionContextAccessor;
         _logger = logger;
     }
 
@@ -51,6 +56,10 @@ public class AgentStepExecutor : IStepExecutor
             context.Step.StepOrder, agent.Name);
 
         Stopwatch sw = Stopwatch.StartNew();
+        using IDisposable _ = _executionContextAccessor.BeginScope(
+            context.Execution.Id,
+            context.Execution.ProjectId,
+            context.CorrelationId);
         string output = await agent.RunAsync(stepInput, context.CancellationToken);
         sw.Stop();
 

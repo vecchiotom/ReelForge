@@ -6,7 +6,7 @@ namespace ReelForge.WorkflowEngine.Agents;
 
 public abstract class ReelForgeAgentBase : IReelForgeAgent
 {
-    private readonly AIAgent _aiAgent;
+    private readonly IChatClient _chatClient;
     private readonly List<AIFunction> _tools;
 
     protected ReelForgeAgentBase(
@@ -19,6 +19,7 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
         IEnumerable<AIFunction>? tools = null,
         Guid? agentId = null)
     {
+        _chatClient = chatClient;
         Name = name;
         Description = description;
         AgentType = agentType;
@@ -27,11 +28,6 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
 
         string configKey = $"Agents:{name}:SystemPrompt";
         SystemPrompt = configuration[configKey] ?? defaultSystemPrompt;
-
-        _aiAgent = chatClient.AsAIAgent(
-            instructions: SystemPrompt,
-            name: name,
-            tools: _tools.Cast<AITool>().ToList());
     }
 
     public Guid? AgentId { get; }
@@ -40,11 +36,18 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
     public string SystemPrompt { get; }
     public AgentType AgentType { get; }
     public IReadOnlyList<AIFunction> Tools => _tools.AsReadOnly();
-    public AIAgent AIAgent => _aiAgent;
+    public AIAgent AIAgent => CreateAgent();
 
     public async Task<string> RunAsync(string prompt, CancellationToken ct = default)
     {
-        AgentResponse result = await _aiAgent.RunAsync(prompt);
+        AIAgent agent = CreateAgent();
+        AgentResponse result = await agent.RunAsync(prompt);
         return result.AsChatResponse().Text ?? string.Empty;
     }
+
+    private AIAgent CreateAgent() =>
+        _chatClient.AsAIAgent(
+            instructions: SystemPrompt,
+            name: Name,
+            tools: _tools.Cast<AITool>().ToList());
 }

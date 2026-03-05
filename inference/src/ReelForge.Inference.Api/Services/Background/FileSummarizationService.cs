@@ -63,7 +63,7 @@ public class FileSummarizationService : BackgroundService
 
         try
         {
-            using Stream stream = await fileStorage.DownloadAsync(file.StorageKey, ct);
+            using Stream stream = await fileStorage.DownloadAsync(file.ProjectId, file.StorageKey, ct);
             using StreamReader reader = new(stream);
             string content = await reader.ReadToEndAsync(ct);
 

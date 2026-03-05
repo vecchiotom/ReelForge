@@ -14,10 +14,13 @@ public class CodeStructureAnalyzerAgent : ReelForgeAgentBase
         JSON summary of the project architecture.
         """;
 
-    public CodeStructureAnalyzerAgent(IChatClient chatClient, IConfiguration configuration)
+    public CodeStructureAnalyzerAgent(
+        IChatClient chatClient,
+        IConfiguration configuration,
+        IAgentToolProvider toolProvider)
         : base(chatClient, configuration, "CodeStructureAnalyzer",
             "Maps the overall directory/module structure of the webapp source.",
             AgentType.CodeStructureAnalyzer, DefaultPrompt,
-            new AIFunction[] { AIFunctionFactory.Create(FileSystemTools.ReadFileTree), AIFunctionFactory.Create(FileSystemTools.ReadFileContent) })
+            toolProvider.GetTools(AgentType.CodeStructureAnalyzer))
     { }
 }

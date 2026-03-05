@@ -1,5 +1,6 @@
 using Microsoft.Extensions.AI;
 using ReelForge.Shared.Data.Models;
+using ReelForge.WorkflowEngine.Agents.Tools;
 
 namespace ReelForge.WorkflowEngine.Agents.Translation;
 
@@ -22,9 +23,13 @@ public class RemotionComponentTranslatorAgent : ReelForgeAgentBase
         Remotion best practices for video rendering.
         """;
 
-    public RemotionComponentTranslatorAgent(IChatClient chatClient, IConfiguration configuration)
+    public RemotionComponentTranslatorAgent(
+        IChatClient chatClient,
+        IConfiguration configuration,
+        IAgentToolProvider toolProvider)
         : base(chatClient, configuration, "RemotionComponentTranslator",
             "Produces Remotion React component code that recreates app screens as video frames.",
-            AgentType.RemotionComponentTranslator, DefaultPrompt)
+            AgentType.RemotionComponentTranslator, DefaultPrompt,
+            toolProvider.GetTools(AgentType.RemotionComponentTranslator))
     { }
 }

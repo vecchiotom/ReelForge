@@ -9,6 +9,9 @@ public class ProjectFile
     public Guid ProjectId { get; set; }
     public string OriginalFileName { get; set; } = string.Empty;
     public string StorageKey { get; set; } = string.Empty;
+    public string StorageBucket { get; set; } = string.Empty;
+    public string? StoragePrefix { get; set; }
+    public string? StorageMetadataJson { get; set; }
     public string MimeType { get; set; } = string.Empty;
     public long SizeBytes { get; set; }
     public string? AgentSummary { get; set; }

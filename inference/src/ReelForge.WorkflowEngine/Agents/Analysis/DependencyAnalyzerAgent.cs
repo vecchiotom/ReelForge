@@ -14,10 +14,13 @@ public class DependencyAnalyzerAgent : ReelForgeAgentBase
         testing, build tools, etc.). Output a structured JSON summary.
         """;
 
-    public DependencyAnalyzerAgent(IChatClient chatClient, IConfiguration configuration)
+    public DependencyAnalyzerAgent(
+        IChatClient chatClient,
+        IConfiguration configuration,
+        IAgentToolProvider toolProvider)
         : base(chatClient, configuration, "DependencyAnalyzer",
             "Enumerates frameworks, libraries, and major dependencies.",
             AgentType.DependencyAnalyzer, DefaultPrompt,
-            new AIFunction[] { AIFunctionFactory.Create(FileSystemTools.ReadPackageManifest), AIFunctionFactory.Create(FileSystemTools.ReadFileContent) })
+            toolProvider.GetTools(AgentType.DependencyAnalyzer))
     { }
 }

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.AI;
 using ReelForge.Shared.Data.Models;
+using ReelForge.WorkflowEngine.Agents.Tools;
 
 namespace ReelForge.WorkflowEngine.Agents.Translation;
 
@@ -19,9 +20,13 @@ public class AnimationStrategyAgentImpl : ReelForgeAgentBase
         - Frame-accurate timing for each sequence
         """;
 
-    public AnimationStrategyAgentImpl(IChatClient chatClient, IConfiguration configuration)
+    public AnimationStrategyAgentImpl(
+        IChatClient chatClient,
+        IConfiguration configuration,
+        IAgentToolProvider toolProvider)
         : base(chatClient, configuration, "AnimationStrategy",
             "Defines transition timing, animation sequencing, and scene ordering.",
-            AgentType.AnimationStrategyAgent, DefaultPrompt)
+            AgentType.AnimationStrategyAgent, DefaultPrompt,
+            toolProvider.GetTools(AgentType.AnimationStrategyAgent))
     { }
 }

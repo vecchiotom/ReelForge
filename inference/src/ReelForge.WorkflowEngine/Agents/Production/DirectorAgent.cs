@@ -1,5 +1,6 @@
 using Microsoft.Extensions.AI;
 using ReelForge.Shared.Data.Models;
+using ReelForge.WorkflowEngine.Agents.Tools;
 
 namespace ReelForge.WorkflowEngine.Agents.Production;
 
@@ -21,9 +22,13 @@ public class DirectorAgentImpl : ReelForgeAgentBase
         cohesive promotional video narrative.
         """;
 
-    public DirectorAgentImpl(IChatClient chatClient, IConfiguration configuration)
+    public DirectorAgentImpl(
+        IChatClient chatClient,
+        IConfiguration configuration,
+        IAgentToolProvider toolProvider)
         : base(chatClient, configuration, "Director",
             "Composes the overall video narrative structure.",
-            AgentType.DirectorAgent, DefaultPrompt)
+            AgentType.DirectorAgent, DefaultPrompt,
+            toolProvider.GetTools(AgentType.DirectorAgent))
     { }
 }

@@ -14,10 +14,13 @@ public class RouteAndApiAnalyzerAgent : ReelForgeAgentBase
         structured JSON summary of the complete routing/API map.
         """;
 
-    public RouteAndApiAnalyzerAgent(IChatClient chatClient, IConfiguration configuration)
+    public RouteAndApiAnalyzerAgent(
+        IChatClient chatClient,
+        IConfiguration configuration,
+        IAgentToolProvider toolProvider)
         : base(chatClient, configuration, "RouteAndApiAnalyzer",
             "Extracts all routes, API endpoints, and navigation structure.",
             AgentType.RouteAndApiAnalyzer, DefaultPrompt,
-            new AIFunction[] { AIFunctionFactory.Create(FileSystemTools.ReadFileContent), AIFunctionFactory.Create(FileSystemTools.SearchPatterns) })
+            toolProvider.GetTools(AgentType.RouteAndApiAnalyzer))
     { }
 }

@@ -14,10 +14,13 @@ public class ComponentInventoryAnalyzerAgent : ReelForgeAgentBase
         .vue files. Output a structured JSON inventory of all components.
         """;
 
-    public ComponentInventoryAnalyzerAgent(IChatClient chatClient, IConfiguration configuration)
+    public ComponentInventoryAnalyzerAgent(
+        IChatClient chatClient,
+        IConfiguration configuration,
+        IAgentToolProvider toolProvider)
         : base(chatClient, configuration, "ComponentInventoryAnalyzer",
             "Enumerates all UI components, their props and basic responsibilities.",
             AgentType.ComponentInventoryAnalyzer, DefaultPrompt,
-            new AIFunction[] { AIFunctionFactory.Create(FileSystemTools.ReadFileContent), AIFunctionFactory.Create(FileSystemTools.ListFilesByExtension) })
+            toolProvider.GetTools(AgentType.ComponentInventoryAnalyzer))
     { }
 }
