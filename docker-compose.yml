@@ -79,36 +79,6 @@ services:
     networks:
       - reelforge
 
-  go-api:
-    build:
-      context: ./api
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-reelforge}?sslmode=disable
-      INFERENCE_URL: http://inference:8080
-      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:-}
-      JWT_ISSUER: ${JWT_ISSUER:-reelforge-api}
-      JWT_AUDIENCE: ${JWT_AUDIENCE:-reelforge-inference}
-      SMTP_HOST: ${SMTP_HOST:-}
-      SMTP_PORT: ${SMTP_PORT:-587}
-      SMTP_USERNAME: ${SMTP_USERNAME:-}
-      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
-      SMTP_FROM: ${SMTP_FROM:-}
-      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@reelforge.local}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
-    depends_on:
-      minio-init:
-        condition: service_completed_successfully
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO/dev/null http://localhost:8080/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    networks:
-      - reelforge
-
   inference:
     build:
       context: ./inference
@@ -132,8 +102,6 @@ services:
       RabbitMQ__Username: ${RABBITMQ_USER:-guest}
       RabbitMQ__Password: ${RABBITMQ_PASSWORD:-guest}
     depends_on:
-      go-api:
-        condition: service_healthy
       rabbitmq:
         condition: service_healthy
     healthcheck:
@@ -144,6 +112,7 @@ services:
       start_period: 20s
     networks:
       - reelforge
+      
 
   workflow-engine:
     build:
@@ -175,6 +144,39 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    networks:
+      - reelforge
+      
+  go-api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-reelforge}?sslmode=disable
+      INFERENCE_URL: http://inference:8080
+      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:-}
+      JWT_ISSUER: ${JWT_ISSUER:-reelforge-api}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-reelforge-inference}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@reelforge.local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+      inference:
+        condition: service_healthy
+      
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO/dev/null http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     networks:
       - reelforge
 
