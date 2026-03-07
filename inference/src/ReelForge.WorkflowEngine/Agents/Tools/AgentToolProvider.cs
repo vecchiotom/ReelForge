@@ -19,28 +19,28 @@ public class AgentToolProvider : IAgentToolProvider
         {
             [AgentType.CodeStructureAnalyzer] = () =>
             [
-                AIFunctionFactory.Create(FileSystemTools.ReadFileTree),
-                AIFunctionFactory.Create(FileSystemTools.ReadFileContent)
+                AIFunctionFactory.Create(ProjectDataFormatterTools.ReadFileTree),
+                AIFunctionFactory.Create(ProjectDataFormatterTools.ReadFileContent)
             ],
             [AgentType.DependencyAnalyzer] = () =>
             [
-                AIFunctionFactory.Create(FileSystemTools.ReadPackageManifest),
-                AIFunctionFactory.Create(FileSystemTools.ReadFileContent)
+                AIFunctionFactory.Create(ProjectDataFormatterTools.ReadPackageManifest),
+                AIFunctionFactory.Create(ProjectDataFormatterTools.ReadFileContent)
             ],
             [AgentType.ComponentInventoryAnalyzer] = () =>
             [
-                AIFunctionFactory.Create(FileSystemTools.ReadFileContent),
-                AIFunctionFactory.Create(FileSystemTools.ListFilesByExtension)
+                AIFunctionFactory.Create(ProjectDataFormatterTools.ReadFileContent),
+                AIFunctionFactory.Create(ProjectDataFormatterTools.ListFilesByExtension)
             ],
             [AgentType.RouteAndApiAnalyzer] = () =>
             [
-                AIFunctionFactory.Create(FileSystemTools.ReadFileContent),
-                AIFunctionFactory.Create(FileSystemTools.SearchPatterns)
+                AIFunctionFactory.Create(ProjectDataFormatterTools.ReadFileContent),
+                AIFunctionFactory.Create(ProjectDataFormatterTools.SearchPatterns)
             ],
             [AgentType.StyleAndThemeExtractor] = () =>
             [
-                AIFunctionFactory.Create(FileSystemTools.ReadStyleConfig),
-                AIFunctionFactory.Create(FileSystemTools.ReadFileContent)
+                AIFunctionFactory.Create(ProjectDataFormatterTools.ReadStyleConfig),
+                AIFunctionFactory.Create(ProjectDataFormatterTools.ReadFileContent)
             ]
         };
     }
@@ -52,14 +52,18 @@ public class AgentToolProvider : IAgentToolProvider
             AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
             AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
             AIFunctionFactory.Create(_projectFileTools.WriteProjectFile),
+            AIFunctionFactory.Create(_sandboxTools.GetSandboxStatus),
             AIFunctionFactory.Create(_sandboxTools.EnsureSandbox),
             AIFunctionFactory.Create(_sandboxTools.GetSandbox),
             AIFunctionFactory.Create(_sandboxTools.ListSandboxFiles),
             AIFunctionFactory.Create(_sandboxTools.ReadSandboxFile),
             AIFunctionFactory.Create(_sandboxTools.WriteSandboxFile),
             AIFunctionFactory.Create(_sandboxTools.DeleteSandboxPath),
+            AIFunctionFactory.Create(_sandboxTools.InstallNpmPackages),
+            AIFunctionFactory.Create(_sandboxTools.CheckLintAndTypeErrors),
             AIFunctionFactory.Create(_sandboxTools.RunSandboxNpmScript),
             AIFunctionFactory.Create(_sandboxTools.RunSandboxRemotionCommand),
+            AIFunctionFactory.Create(_sandboxTools.RenderVideoAndUploadToStorage),
             AIFunctionFactory.Create(_sandboxTools.CompleteSandbox)
         ];
 

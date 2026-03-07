@@ -34,6 +34,10 @@ namespace ReelForge.Inference.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("agent_type");
 
+                    b.Property<string>("AvailableToolsJson")
+                        .HasColumnType("text")
+                        .HasColumnName("available_tools_json");
+
                     b.Property<string>("Color")
                         .HasColumnType("text")
                         .HasColumnName("color");
@@ -51,6 +55,10 @@ namespace ReelForge.Inference.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("description");
 
+                    b.Property<bool>("GeneratesOutput")
+                        .HasColumnType("boolean")
+                        .HasColumnName("generates_output");
+
                     b.Property<bool>("IsBuiltIn")
                         .HasColumnType("boolean")
                         .HasColumnName("is_built_in");
@@ -59,6 +67,14 @@ namespace ReelForge.Inference.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("name");
+
+                    b.Property<string>("OutputSchemaJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("output_schema_json");
+
+                    b.Property<string>("OutputSchemaName")
+                        .HasColumnType("text")
+                        .HasColumnName("output_schema_name");
 
                     b.Property<Guid?>("OwnerId")
                         .HasColumnType("uuid")

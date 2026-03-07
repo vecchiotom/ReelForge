@@ -1,5 +1,6 @@
 using Microsoft.Extensions.AI;
 using ReelForge.Shared.Data.Models;
+using ReelForge.Shared.Data.OutputSchemas;
 using ReelForge.WorkflowEngine.Agents.Tools;
 
 namespace ReelForge.WorkflowEngine.Agents.Translation;
@@ -12,15 +13,27 @@ public class RemotionComponentTranslatorAgent : ReelForgeAgentBase
         application's components, styles, and structure, produce Remotion React component code
         that faithfully recreates each app screen as a renderable video frame.
 
-        Output structured JSON with the following format for each component:
+        Output structured JSON with the following format:
         {
-            "componentName": "string",
-            "remotionCode": "string (valid JSX/TSX)",
-            "durationInFrames": number
+            "components": [
+                {
+                    "componentName": "string (e.g., 'LoginScreen', 'DashboardHero')",
+                    "remotionCode": "string (valid JSX/TSX)",
+                    "durationInFrames": number,
+                    "description": "string (brief description of component's purpose)",
+                    "defaultProps": { object (key-value pairs of default props) }
+                }
+            ],
+            "remotionVersion": "string (e.g., '4.0' - target Remotion version)",
+            "requiredImports": ["string (e.g., '@remotion/player', 'framer-motion')"]
         }
 
-        Ensure all Remotion components use proper imports from 'remotion' package and follow
-        Remotion best practices for video rendering.
+        Ensure:
+        - All components in 'components' array are complete and properly structured
+        - 'description' explains each component's role in the video
+        - 'defaultProps' includes sensible defaults for component configuration
+        - 'requiredImports' lists all external packages needed beyond 'remotion'
+        - All Remotion components use proper imports from 'remotion' package and follow Remotion best practices
         """;
 
     public RemotionComponentTranslatorAgent(
@@ -30,6 +43,8 @@ public class RemotionComponentTranslatorAgent : ReelForgeAgentBase
         : base(chatClient, configuration, "RemotionComponentTranslator",
             "Produces Remotion React component code that recreates app screens as video frames.",
             AgentType.RemotionComponentTranslator, DefaultPrompt,
-            toolProvider.GetTools(AgentType.RemotionComponentTranslator))
+            toolProvider.GetTools(AgentType.RemotionComponentTranslator),
+            agentId: null,
+            outputSchemaType: typeof(RemotionComponentOutput))
     { }
 }

@@ -1,20 +1,31 @@
 FROM node:22-alpine AS base
 
-# Install dependencies
+# Install dependencies only
 FROM base AS deps
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci || npm install
 
-# Build
+# Development stage - runs dev server with Turbopack and hot reload
+# Use with volume mounts for live code updates
+FROM deps AS development
+WORKDIR /app
+COPY . .
+ENV NODE_ENV=development
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+EXPOSE 3000
+CMD ["npx", "next", "dev", "--turbopack", "-H", "0.0.0.0"]
+
+# Build production bundle
 FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
 
-# Production
-FROM base AS runner
+# Production stage - runs optimized precompiled Next.js standalone server
+FROM base AS production
 WORKDIR /app
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1

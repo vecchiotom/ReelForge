@@ -68,6 +68,7 @@ public class ForEachStepExecutor : IStepExecutor
         int iterations = Math.Min(items.Count, maxIterations);
         string[] results = new string[iterations];
         long totalDuration = 0;
+        int totalTokens = 0;
         using IDisposable _ = _executionContextAccessor.BeginScope(
             context.Execution.Id,
             context.Execution.ProjectId,
@@ -83,10 +84,11 @@ public class ForEachStepExecutor : IStepExecutor
             async (index, token) =>
             {
                 Stopwatch sw = Stopwatch.StartNew();
-                string output = await agent.RunAsync(items[index], token);
+                AgentRunResult result = await agent.RunAsync(items[index], token);
                 sw.Stop();
                 Interlocked.Add(ref totalDuration, sw.ElapsedMilliseconds);
-                results[index] = output;
+                Interlocked.Add(ref totalTokens, result.TokensUsed);
+                results[index] = result.Output;
             });
 
         string aggregatedOutput = JsonSerializer.Serialize(new { results, sourceCount = items.Count });
@@ -97,6 +99,7 @@ public class ForEachStepExecutor : IStepExecutor
             NextStepIndex = context.CurrentStepIndex + 1,
             NewIterationCount = context.IterationCount,
             DurationMs = totalDuration,
+            TokensUsed = totalTokens,
             Status = StepStatus.Completed
         };
     }

@@ -1,3 +1,6 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.Json.Serialization.Metadata;
 using Microsoft.EntityFrameworkCore;
 using ReelForge.Shared.Data.Models;
 
@@ -260,6 +263,15 @@ public static class DatabaseSeeder
                 if (string.IsNullOrEmpty(existing.SystemPrompt))
                     existing.SystemPrompt = systemPrompt;
 
+                // Update output schema if not set
+                if (string.IsNullOrEmpty(existing.OutputSchemaJson))
+                    existing.OutputSchemaJson = GetOutputSchemaJson(agentType);
+
+                // Always refresh capability metadata
+                existing.AvailableToolsJson = GetAvailableToolsJson(agentType);
+                existing.GeneratesOutput = GetOutputSchemaName(agentType) != null;
+                existing.OutputSchemaName = GetOutputSchemaName(agentType);
+
                 continue;
             }
 
@@ -273,10 +285,523 @@ public static class DatabaseSeeder
                 IsBuiltIn = true,
                 OwnerId = null,
                 Color = color,
+                OutputSchemaJson = GetOutputSchemaJson(agentType),
+                AvailableToolsJson = GetAvailableToolsJson(agentType),
+                GeneratesOutput = GetOutputSchemaName(agentType) != null,
+                OutputSchemaName = GetOutputSchemaName(agentType),
                 CreatedAt = DateTime.UtcNow
             });
         }
 
         await db.SaveChangesAsync();
     }
+
+    private static readonly string[] BaseTools =
+    [
+        "ListProjectFiles", "ReadProjectFile", "WriteProjectFile",
+        "EnsureSandbox", "GetSandbox", "ListSandboxFiles", "ReadSandboxFile",
+        "WriteSandboxFile", "DeleteSandboxPath", "RunSandboxNpmScript",
+        "RunSandboxRemotionCommand", "CompleteSandbox"
+    ];
+
+    private static string GetAvailableToolsJson(AgentType agentType)
+    {
+        string[] extra = agentType switch
+        {
+            AgentType.CodeStructureAnalyzer => ["ReadFileTree", "ReadFileContent"],
+            AgentType.DependencyAnalyzer => ["ReadPackageManifest", "ReadFileContent"],
+            AgentType.ComponentInventoryAnalyzer => ["ReadFileContent", "ListFilesByExtension"],
+            AgentType.RouteAndApiAnalyzer => ["ReadFileContent", "SearchPatterns"],
+            AgentType.StyleAndThemeExtractor => ["ReadStyleConfig", "ReadFileContent"],
+            _ => []
+        };
+        string[] all = [.. BaseTools, .. extra];
+        return JsonSerializer.Serialize(all);
+    }
+
+    private static string? GetOutputSchemaName(AgentType agentType) => agentType switch
+    {
+        AgentType.CodeStructureAnalyzer => "CodeStructureOutput",
+        AgentType.DependencyAnalyzer => "DependencyAnalysisOutput",
+        AgentType.ComponentInventoryAnalyzer => "ComponentInventoryOutput",
+        AgentType.RouteAndApiAnalyzer => "RouteAndApiOutput",
+        AgentType.StyleAndThemeExtractor => "StyleAndThemeOutput",
+        AgentType.RemotionComponentTranslator => "RemotionComponentOutput",
+        AgentType.AnimationStrategyAgent => "AnimationStrategyOutput",
+        AgentType.DirectorAgent => "DirectorOutput",
+        AgentType.ScriptwriterAgent => "ScriptwriterOutput",
+        AgentType.AuthorAgent => "RenderManifestOutput",
+        AgentType.ReviewAgent => "ReviewOutput",
+        _ => null
+    };
+
+    private static string? GetOutputSchemaJson(AgentType agentType)
+    {
+        object? schema = agentType switch
+        {
+            AgentType.CodeStructureAnalyzer => GenerateCodeStructureSchema(),
+            AgentType.DependencyAnalyzer => GenerateDependencyAnalysisSchema(),
+            AgentType.ComponentInventoryAnalyzer => GenerateComponentInventorySchema(),
+            AgentType.RouteAndApiAnalyzer => GenerateRouteAndApiSchema(),
+            AgentType.StyleAndThemeExtractor => GenerateStyleAndThemeSchema(),
+            AgentType.RemotionComponentTranslator => GenerateRemotionComponentSchema(),
+            AgentType.AnimationStrategyAgent => GenerateAnimationStrategySchema(),
+            AgentType.DirectorAgent => GenerateDirectorSchema(),
+            AgentType.ScriptwriterAgent => GenerateScriptwriterSchema(),
+            AgentType.AuthorAgent => GenerateRenderManifestSchema(),
+            AgentType.ReviewAgent => GenerateReviewSchema(),
+            _ => null
+        };
+
+        if (schema == null)
+            return null;
+
+        try
+        {
+            return JsonSerializer.Serialize(schema, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static object GenerateCodeStructureSchema() => new
+    {
+        type = "object",
+        properties = new
+        {
+            projectType = new { type = "string", description = "Type of project (e.g., 'React SPA', 'Next.js', 'Vue.js')" },
+            framework = new { type = "string", description = "Framework name and version" },
+            directories = new
+            {
+                type = "array",
+                items = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        path = new { type = "string" },
+                        purpose = new { type = "string" },
+                        fileCount = new { type = "integer" }
+                    }
+                }
+            },
+            entryPoints = new { type = "array", items = new { type = "string" } },
+            overallArchitecture = new { type = "string", description = "Description of the architectural pattern" }
+        },
+        required = new[] { "projectType", "framework", "directories" }
+    };
+
+    private static object GenerateDependencyAnalysisSchema() => new
+    {
+        type = "object",
+        properties = new
+        {
+            dependencies = new
+            {
+                type = "array",
+                items = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        name = new { type = "string" },
+                        version = new { type = "string" },
+                        purpose = new { type = "string" },
+                        isCore = new { type = "boolean" }
+                    }
+                }
+            },
+            devDependencies = new { type = "array", items = new { type = "string" } },
+            packageManager = new { type = "string", description = "npm, yarn, pnpm, etc." },
+            recommendations = new
+            {
+                type = "array",
+                items = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        type = new { type = "string" },
+                        description = new { type = "string" }
+                    }
+                }
+            }
+        }
+    };
+
+    private static object GenerateComponentInventorySchema() => new
+    {
+        type = "object",
+        properties = new
+        {
+            components = new
+            {
+                type = "array",
+                items = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        name = new { type = "string" },
+                        filePath = new { type = "string" },
+                        props = new
+                        {
+                            type = "array",
+                            items = new
+                            {
+                                type = "object",
+                                properties = new
+                                {
+                                    name = new { type = "string" },
+                                    type = new { type = "string" },
+                                    required = new { type = "boolean" },
+                                    defaultValue = new { type = "string", nullable = true }
+                                }
+                            }
+                        },
+                        responsibility = new { type = "string" },
+                        dependencies = new { type = "array", items = new { type = "string" } }
+                    }
+                }
+            },
+            totalComponents = new { type = "integer" },
+            commonPatterns = new { type = "array", items = new { type = "string" } }
+        }
+    };
+
+    private static object GenerateRouteAndApiSchema() => new
+    {
+        type = "object",
+        properties = new
+        {
+            clientRoutes = new
+            {
+                type = "array",
+                items = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        path = new { type = "string" },
+                        componentName = new { type = "string" },
+                        parameters = new { type = "array", items = new { type = "string" } },
+                        requiresAuth = new { type = "boolean" }
+                    }
+                }
+            },
+            apiEndpoints = new
+            {
+                type = "array",
+                items = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        method = new { type = "string", description = "GET, POST, PUT, DELETE, etc." },
+                        path = new { type = "string" },
+                        purpose = new { type = "string" },
+                        parameters = new { type = "array", items = new { type = "string" } }
+                    }
+                }
+            },
+            routingStrategy = new { type = "string", description = "e.g., 'File-based routing', 'React Router', etc." }
+        }
+    };
+
+    private static object GenerateStyleAndThemeSchema() => new
+    {
+        type = "object",
+        properties = new
+        {
+            colors = new
+            {
+                type = "object",
+                properties = new
+                {
+                    primary = new { type = "string", description = "HEX color code" },
+                    secondary = new { type = "string", description = "HEX color code" },
+                    background = new { type = "string", description = "HEX color code" },
+                    text = new { type = "string", description = "HEX color code" },
+                    additional = new { type = "object", additionalProperties = new { type = "string" } }
+                }
+            },
+            typography = new
+            {
+                type = "object",
+                properties = new
+                {
+                    primaryFont = new { type = "string" },
+                    secondaryFont = new { type = "string" },
+                    fontSizes = new { type = "object", additionalProperties = new { type = "string" } }
+                }
+            },
+            spacing = new
+            {
+                type = "object",
+                properties = new
+                {
+                    unit = new { type = "string", description = "e.g., 'px', 'rem'" },
+                    scale = new { type = "object", additionalProperties = new { type = "string" } }
+                }
+            },
+            componentStyles = new { type = "array", items = new { type = "string" } },
+            stylingApproach = new { type = "string", description = "CSS, SCSS, CSS-in-JS, Tailwind, etc." }
+        }
+    };
+
+    private static object GenerateRemotionComponentSchema() => new
+    {
+        type = "object",
+        properties = new
+        {
+            components = new
+            {
+                type = "array",
+                items = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        componentName = new { type = "string" },
+                        remotionCode = new { type = "string", description = "Valid JSX/TSX code for Remotion component" },
+                        durationInFrames = new { type = "integer" },
+                        description = new { type = "string" },
+                        defaultProps = new { type = "object", additionalProperties = true }
+                    },
+                    required = new[] { "componentName", "remotionCode", "durationInFrames" }
+                }
+            },
+            remotionVersion = new { type = "string", description = "Remotion version (e.g., '4.0')" },
+            requiredImports = new { type = "array", items = new { type = "string" } }
+        }
+    };
+
+    private static object GenerateAnimationStrategySchema() => new
+    {
+        type = "object",
+        properties = new
+        {
+            scenes = new
+            {
+                type = "array",
+                items = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        id = new { type = "string" },
+                        componentName = new { type = "string" },
+                        startFrame = new { type = "integer" },
+                        durationInFrames = new { type = "integer" },
+                        transitionType = new { type = "string", description = "fade, slide, zoom, etc." },
+                        transitionDurationInFrames = new { type = "integer" },
+                        animations = new
+                        {
+                            type = "array",
+                            items = new
+                            {
+                                type = "object",
+                                properties = new
+                                {
+                                    elementId = new { type = "string" },
+                                    animationType = new { type = "string" },
+                                    startFrame = new { type = "integer" },
+                                    durationInFrames = new { type = "integer" },
+                                    parameters = new { type = "object", additionalProperties = true }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            totalDurationInFrames = new { type = "integer" },
+            fps = new { type = "integer", description = "Frames per second (default: 30)" },
+            pacing = new
+            {
+                type = "object",
+                properties = new
+                {
+                    overallTone = new { type = "string" },
+                    averageSceneDuration = new { type = "integer" },
+                    pacingNotes = new { type = "array", items = new { type = "string" } }
+                }
+            }
+        }
+    };
+
+    private static object GenerateDirectorSchema() => new
+    {
+        type = "object",
+        properties = new
+        {
+            shots = new
+            {
+                type = "array",
+                items = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        shotId = new { type = "string" },
+                        sceneId = new { type = "string" },
+                        description = new { type = "string" },
+                        startTime = new { type = "integer" },
+                        duration = new { type = "integer" },
+                        camera = new
+                        {
+                            type = "object",
+                            properties = new
+                            {
+                                angle = new { type = "string" },
+                                movement = new { type = "string" },
+                                focus = new { type = "string" }
+                            }
+                        },
+                        visualElements = new { type = "array", items = new { type = "string" } }
+                    }
+                }
+            },
+            visualTheme = new
+            {
+                type = "object",
+                properties = new
+                {
+                    mood = new { type = "string" },
+                    colorGrading = new { type = "string" },
+                    visualMotifs = new { type = "array", items = new { type = "string" } }
+                }
+            },
+            audio = new
+            {
+                type = "object",
+                properties = new
+                {
+                    musicStyle = new { type = "string" },
+                    soundEffects = new { type = "string" },
+                    voiceover = new { type = "string" }
+                }
+            },
+            totalDurationInSeconds = new { type = "integer" }
+        }
+    };
+
+    private static object GenerateScriptwriterSchema() => new
+    {
+        type = "object",
+        properties = new
+        {
+            title = new { type = "string" },
+            durationInSeconds = new { type = "integer" },
+            scenes = new
+            {
+                type = "array",
+                items = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        sceneId = new { type = "string" },
+                        startTime = new { type = "integer" },
+                        duration = new { type = "integer" },
+                        voiceover = new { type = "string" },
+                        onScreenText = new { type = "array", items = new { type = "string" } },
+                        visualDescription = new { type = "string" }
+                    }
+                }
+            },
+            narrative = new { type = "string", description = "Overall narrative arc description" }
+        }
+    };
+
+    private static object GenerateRenderManifestSchema() => new
+    {
+        type = "object",
+        properties = new
+        {
+            projectName = new { type = "string" },
+            video = new
+            {
+                type = "object",
+                properties = new
+                {
+                    width = new { type = "integer", description = "Video width in pixels (default: 1920)" },
+                    height = new { type = "integer", description = "Video height in pixels (default: 1080)" },
+                    fps = new { type = "integer", description = "Frames per second (default: 30)" },
+                    durationInFrames = new { type = "integer" }
+                }
+            },
+            compositions = new
+            {
+                type = "array",
+                items = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        id = new { type = "string" },
+                        componentName = new { type = "string" },
+                        startFrame = new { type = "integer" },
+                        durationInFrames = new { type = "integer" },
+                        props = new { type = "object", additionalProperties = true },
+                        script = new
+                        {
+                            type = "object",
+                            properties = new
+                            {
+                                voiceover = new { type = "string" },
+                                captions = new { type = "array", items = new { type = "string" } }
+                            }
+                        }
+                    }
+                }
+            },
+            assets = new
+            {
+                type = "array",
+                items = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        id = new { type = "string" },
+                        type = new { type = "string" },
+                        path = new { type = "string" },
+                        properties = new { type = "object", additionalProperties = true }
+                    }
+                }
+            },
+            metadata = new { type = "object", additionalProperties = true }
+        },
+        required = new[] { "projectName", "video", "compositions" }
+    };
+
+    private static object GenerateReviewSchema() => new
+    {
+        type = "object",
+        properties = new
+        {
+            overallScore = new { type = "integer", minimum = 1, maximum = 10, description = "Overall quality score from 1 to 10" },
+            criteria = new
+            {
+                type = "array",
+                items = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        name = new { type = "string" },
+                        score = new { type = "integer", minimum = 1, maximum = 10 },
+                        feedback = new { type = "string" }
+                    }
+                }
+            },
+            strengths = new { type = "array", items = new { type = "string" } },
+            improvementAreas = new { type = "array", items = new { type = "string" } },
+            passesReview = new { type = "boolean", description = "Whether the output meets quality standards" },
+            summary = new { type = "string", description = "Overall review summary" }
+        },
+        required = new[] { "overallScore", "passesReview", "summary" }
+    };
 }

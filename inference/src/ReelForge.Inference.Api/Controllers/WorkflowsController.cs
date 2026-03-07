@@ -52,6 +52,16 @@ public class WorkflowsController : ControllerBase
         return Ok(workflows);
     }
 
+    [HttpGet("{id:guid}")]
+    public async Task<ActionResult<WorkflowDefinitionResponse>> Get(Guid id, CancellationToken ct)
+    {
+        WorkflowDefinition? workflow = await _db.WorkflowDefinitions
+            .Include(w => w.Steps)
+            .FirstOrDefaultAsync(w => w.Id == id, ct);
+        if (workflow == null) return NotFound();
+        return Ok(MapWorkflowResponse(workflow));
+    }
+
     [HttpPost]
     public async Task<ActionResult<WorkflowDefinitionResponse>> Create(Guid projectId, [FromBody] CreateWorkflowRequest request, CancellationToken ct)
     {
@@ -243,11 +253,12 @@ public class WorkflowsController : ControllerBase
         new(execution.Id, execution.WorkflowDefinitionId, execution.Status.ToString(),
             execution.StartedAt, execution.CompletedAt, execution.IterationCount,
             execution.ResultJson, execution.CorrelationId, execution.ErrorMessage,
-            execution.StepResults.OrderBy(r => r.ExecutedAt).Select(r =>
+            (execution.StepResults ?? Enumerable.Empty<WorkflowStepResult>()).OrderBy(r => r.ExecutedAt).Select(r =>
                 new StepResultResponse(r.Id, r.WorkflowStepId, r.Output, r.TokensUsed, r.DurationMs, r.ExecutedAt,
-                    r.InputJson, r.OutputJson, r.Status.ToString(), r.ErrorDetails, r.IterationNumber, r.CompletedAt)
+                    r.InputJson, r.OutputJson, r.Status.ToString(), r.ErrorDetails, r.IterationNumber, r.CompletedAt,
+                    r.OutputStorageKey)
             ).ToList(),
-            execution.ReviewScores.OrderBy(rs => rs.IterationNumber).Select(rs =>
+            (execution.ReviewScores ?? Enumerable.Empty<ReviewScore>()).OrderBy(rs => rs.IterationNumber).Select(rs =>
                 new ReviewScoreResponse(rs.Id, rs.IterationNumber, rs.Score, rs.Comments, rs.CreatedAt)
             ).ToList());
 }

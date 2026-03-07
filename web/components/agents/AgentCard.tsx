@@ -4,6 +4,7 @@ import { Card, Text, Group, Stack } from '@mantine/core';
 import { IconRobot, IconLock } from '@tabler/icons-react';
 import Link from 'next/link';
 import { AgentTypeBadge } from './AgentTypeBadge';
+import { AgentCapabilityBadge } from './AgentCapabilityBadge';
 import type { AgentDefinition } from '@/lib/types/agent';
 
 export function AgentCard({ agent }: { agent: AgentDefinition }) {
@@ -26,6 +27,7 @@ export function AgentCard({ agent }: { agent: AgentDefinition }) {
           {agent.isBuiltIn && <IconLock size={16} color="gray" />}
         </Group>
         <AgentTypeBadge agentType={agent.agentType} color={agent.color} />
+        <AgentCapabilityBadge agent={agent} />
         {agent.description && (
           <Text size="xs" c="dimmed" lineClamp={2}>
             {agent.description}

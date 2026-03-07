@@ -13,8 +13,12 @@ public class AgentDefinition
     public bool IsBuiltIn { get; set; }
     public Guid? OwnerId { get; set; }
     public string? ConfigJson { get; set; }
+    public string? OutputSchemaJson { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public string? Color { get; set; }
+    public string? AvailableToolsJson { get; set; }
+    public bool GeneratesOutput { get; set; }
+    public string? OutputSchemaName { get; set; }
 
     public ApplicationUser? Owner { get; set; }
     public ICollection<WorkflowStep> WorkflowSteps { get; set; } = new List<WorkflowStep>();

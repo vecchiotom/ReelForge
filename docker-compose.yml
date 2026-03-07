@@ -126,6 +126,10 @@ services:
       Jwt__Issuer: ${JWT_ISSUER:-reelforge-api}
       Jwt__Audience: ${JWT_AUDIENCE:-reelforge-inference}
       Jwt__SigningKey: ${JWT_SIGNING_KEY:-}
+      MinIO__Endpoint: http://minio:9000
+      MinIO__AccessKey: ${MINIO_ACCESS_KEY:-minioadmin}
+      MinIO__SecretKey: ${MINIO_SECRET_KEY:-minioadmin}
+      MinIO__BucketName: ${MINIO_BUCKET:-reelforge}
       AzureOpenAI__Endpoint: ${AZURE_OPENAI_ENDPOINT:-}
       AzureOpenAI__ApiKey: ${AZURE_OPENAI_API_KEY:-}
       AzureOpenAI__DeploymentName: ${AZURE_OPENAI_DEPLOYMENT:-gpt-4o-mini}
@@ -223,14 +227,19 @@ services:
     build:
       context: ./web
       dockerfile: Dockerfile
-      target: deps
-    command: sh -c "npx next dev --turbopack -H 0.0.0.0"
-    volumes:
-      - ./web:/app
-      - /app/node_modules
-      - /app/.next
+      # Switch between 'development' (Turbopack hot reload) and 'production' (precompiled standalone)
+      target: ${WEB_BUILD_TARGET:-development}
+    # ── Volume Mounts ──────────────────────────────────────
+    # REQUIRED for development mode (hot reload)
+    # MUST BE REMOVED/COMMENTED for production mode
+    # ───────────────────────────────────────────────────────
+    # volumes:
+    #   - ./web:/app
+    #   - /app/node_modules
+    #   - /app/.next
+    # ───────────────────────────────────────────────────────
     environment:
-      - NODE_ENV=development
+      - NODE_ENV=${WEB_NODE_ENV:-development}
       - NODE_OPTIONS=--inspect=0.0.0.0:9229
       - PORT=3000
     ports:

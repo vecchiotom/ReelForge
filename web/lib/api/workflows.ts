@@ -47,3 +47,13 @@ export function executeWorkflow(projectId: string, workflowId: string): Promise<
 export function getWorkflowExecutions(projectId: string, workflowId: string): Promise<WorkflowExecution[]> {
   return apiFetch<WorkflowExecution[]>(`/api/v1/projects/${projectId}/workflows/${workflowId}/executions`);
 }
+
+export function getWorkflowExecution(
+  projectId: string,
+  workflowId: string,
+  executionId: string,
+): Promise<WorkflowExecution> {
+  return apiFetch<WorkflowExecution>(
+    `/api/v1/projects/${projectId}/workflows/${workflowId}/executions/${executionId}`
+  );
+}

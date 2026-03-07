@@ -481,6 +481,10 @@ namespace ReelForge.WorkflowEngine.Migrations
                         .HasColumnType("jsonb")
                         .HasColumnName("output_json");
 
+                    b.Property<string>("OutputStorageKey")
+                        .HasColumnType("text")
+                        .HasColumnName("output_storage_key");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasColumnType("text")

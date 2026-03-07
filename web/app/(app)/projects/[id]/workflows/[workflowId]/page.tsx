@@ -8,7 +8,7 @@ import { notifications } from '@mantine/notifications';
 import { useWorkflow } from '@/lib/hooks/use-workflows';
 import { updateWorkflow, deleteWorkflow, executeWorkflow } from '@/lib/api/workflows';
 import { PageHeader } from '@/components/shared/PageHeader';
-import { WorkflowStepList } from '@/components/workflows/WorkflowStepList';
+import { FlowchartBuilderWrapper } from '@/components/workflows/FlowchartBuilder';
 import { ExecutionHistory } from '@/components/workflows/ExecutionHistory';
 import { ConfirmModal } from '@/components/shared/ConfirmModal';
 import type { StepData } from '@/components/workflows/WorkflowStepList';
@@ -137,7 +137,13 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
           { label: workflow.name },
         ]}
       >
-        <Button leftSection={<IconPlayerPlay size={16} />} onClick={handleExecute} loading={executing}>
+        <Button
+          leftSection={<IconPlayerPlay size={16} />}
+          onClick={handleExecute}
+          loading={executing}
+          variant="gradient"
+          gradient={{ from: 'violet', to: 'purple' }}
+        >
           Execute
         </Button>
         <Button color="red" variant="outline" leftSection={<IconTrash size={16} />} onClick={() => setDeleteOpened(true)}>
@@ -146,16 +152,18 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
       </PageHeader>
 
       <form onSubmit={handleSave}>
-        <Stack gap="md" maw={800}>
-          <TextInput label="Name" {...form.getInputProps('name')} />
-          {steps && <WorkflowStepList steps={steps} onChange={setSteps} />}
+        <Stack gap="lg" maw={1200}>
+          <TextInput label="Workflow Name" size="lg" {...form.getInputProps('name')} />
+          {steps && <FlowchartBuilderWrapper steps={steps} onChange={setSteps} />}
           <Group>
-            <Button type="submit" loading={saving}>Save Changes</Button>
+            <Button type="submit" loading={saving} size="lg" variant="gradient" gradient={{ from: 'violet', to: 'purple' }}>
+              Save Changes
+            </Button>
           </Group>
         </Stack>
       </form>
 
-      <Divider my="lg" />
+      <Divider my="xl" />
       <ExecutionHistory projectId={projectId} workflowId={workflowId} />
 
       <ConfirmModal

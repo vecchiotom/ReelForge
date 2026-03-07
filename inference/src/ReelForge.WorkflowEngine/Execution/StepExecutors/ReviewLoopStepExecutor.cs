@@ -46,10 +46,10 @@ public class ReviewLoopStepExecutor : IStepExecutor
             context.Execution.Id,
             context.Execution.ProjectId,
             context.CorrelationId);
-        string output = await agent.RunAsync(context.AccumulatedOutput, context.CancellationToken);
+        AgentRunResult result = await agent.RunAsync(context.AccumulatedOutput, context.CancellationToken);
         sw.Stop();
 
-        int score = ParseReviewScore(output);
+        int score = ParseReviewScore(result.Output);
         int minScore = context.Step.MinScore ?? 9;
         int maxIterations = context.Step.MaxIterations;
         int newIterationCount = context.IterationCount + 1;
@@ -67,10 +67,11 @@ public class ReviewLoopStepExecutor : IStepExecutor
                 _logger.LogInformation("Looping back to step order {TargetOrder}", context.Step.LoopTargetStepOrder.Value);
                 return new StepExecutionResult
                 {
-                    Output = output,
+                    Output = result.Output,
                     NextStepIndex = targetIndex,
                     NewIterationCount = newIterationCount,
                     DurationMs = sw.ElapsedMilliseconds,
+                    TokensUsed = result.TokensUsed,
                     Status = StepStatus.Completed,
                     IterationNumber = newIterationCount
                 };
@@ -79,10 +80,11 @@ public class ReviewLoopStepExecutor : IStepExecutor
 
         return new StepExecutionResult
         {
-            Output = output,
+            Output = result.Output,
             NextStepIndex = context.CurrentStepIndex + 1,
             NewIterationCount = newIterationCount,
             DurationMs = sw.ElapsedMilliseconds,
+            TokensUsed = result.TokensUsed,
             Status = StepStatus.Completed,
             IterationNumber = newIterationCount
         };

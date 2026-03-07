@@ -2,7 +2,7 @@
 
 import { use, useState } from 'react';
 import { Tabs, Loader, Center, Text, Stack, Group, Button, ActionIcon, Card } from '@mantine/core';
-import { IconFiles, IconTopologyRing, IconInfoCircle, IconEdit, IconTrash, IconArrowRight } from '@tabler/icons-react';
+import { IconFiles, IconTopologyRing, IconInfoCircle, IconEdit, IconTrash, IconArrowRight, IconVideo } from '@tabler/icons-react';
 import { useProject } from '@/lib/hooks/use-projects';
 import { useProjectFiles } from '@/lib/hooks/use-files';
 import { useWorkflows } from '@/lib/hooks/use-workflows';
@@ -22,12 +22,15 @@ import { notifications } from '@mantine/notifications';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import type { ProjectFile } from '@/lib/types/project';
+import { useOutputVideos } from '@/lib/hooks/use-outputs';
+import { getOutputVideoUrl } from '@/lib/api/outputs';
 
 export default function ProjectDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { data: project, isLoading, mutate: mutateProject } = useProject(id);
   const { data: files, mutate: mutateFiles } = useProjectFiles(id);
   const { data: workflows } = useWorkflows(id);
+  const { data: outputs } = useOutputVideos(id);
   const router = useRouter();
 
   const [editOpened, setEditOpened] = useState(false);
@@ -80,6 +83,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
           <Tabs.Tab value="overview" leftSection={<IconInfoCircle size={16} />}>Overview</Tabs.Tab>
           <Tabs.Tab value="files" leftSection={<IconFiles size={16} />}>Files ({files?.length || 0})</Tabs.Tab>
           <Tabs.Tab value="workflows" leftSection={<IconTopologyRing size={16} />}>Workflows ({workflows?.length || 0})</Tabs.Tab>
+          <Tabs.Tab value="outputs" leftSection={<IconVideo size={16} />}>Outputs ({outputs?.length || 0})</Tabs.Tab>
         </Tabs.List>
 
         <Tabs.Panel value="overview">
@@ -140,6 +144,30 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
               <EmptyState title="No workflows" description="Create a workflow to start generating videos." />
             )}
           </Stack>
+        </Tabs.Panel>
+
+        <Tabs.Panel value="outputs">
+          {outputs && outputs.length > 0 ? (
+            <Stack gap="md">
+              {outputs.map((output) => (
+                <Card key={output.stepResultId} withBorder padding="md" radius="md">
+                  <Stack gap="sm">
+                    <Group justify="space-between">
+                      <Text fw={500} size="sm">{output.fileName}</Text>
+                      <Text size="xs" c="dimmed">{formatDate(output.producedAt)}</Text>
+                    </Group>
+                    <video
+                      controls
+                      style={{ width: '100%', borderRadius: 8 }}
+                      src={getOutputVideoUrl(id, output.stepResultId)}
+                    />
+                  </Stack>
+                </Card>
+              ))}
+            </Stack>
+          ) : (
+            <EmptyState title="No outputs" description="Run a workflow to generate output videos." />
+          )}
         </Tabs.Panel>
       </Tabs>
 

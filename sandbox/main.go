@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -98,12 +99,16 @@ var (
 	errInvalidPath   = errors.New("invalid path")
 	errBadExec       = errors.New("command not allowed")
 	errBadExecution  = errors.New("invalid workflowExecutionId")
+	errBadPackage    = errors.New("invalid package name")
 	allowedNPMScript = map[string]struct{}{
 		"build":        {},
 		"render":       {},
 		"typecheck":    {},
 		"compositions": {},
+		"lint":         {},
 	}
+	// npmPackageNameRe matches valid npm package names including scoped packages.
+	npmPackageNameRe = regexp.MustCompile(`^(@[a-z0-9\-_]+/)?[a-z0-9\-_.]+(@[a-zA-Z0-9.\-_]+)?$`)
 )
 
 func newSandboxManager(cfg appConfig) *sandboxManager {
@@ -460,6 +465,21 @@ type writeFileRequest struct {
 	ContentBase64 string `json:"contentBase64"`
 }
 
+type installPackagesRequest struct {
+	Packages []string `json:"packages"`
+}
+
+type sandboxStatus struct {
+	Exists         bool      `json:"exists"`
+	Ready          bool      `json:"ready"`
+	HasPackageJson bool      `json:"hasPackageJson"`
+	HasNodeModules bool      `json:"hasNodeModules"`
+	ContainerName  string    `json:"containerName,omitempty"`
+	WorkspacePath  string    `json:"workspacePath,omitempty"`
+	CreatedAt      time.Time `json:"createdAt,omitempty"`
+	LastActivity   time.Time `json:"lastActivity,omitempty"`
+}
+
 type fileEntry struct {
 	Name    string    `json:"name"`
 	IsDir   bool      `json:"isDir"`
@@ -598,6 +618,85 @@ func (h *apiHandler) deleteFilePath(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+func (h *apiHandler) getSandboxStatus(w http.ResponseWriter, r *http.Request) {
+	workflowExecutionID := mux.Vars(r)["workflowExecutionId"]
+	sb, err := h.manager.getByExecution(workflowExecutionID)
+	if err != nil {
+		if errors.Is(err, errNotFound) {
+			writeJSON(w, http.StatusOK, sandboxStatus{Exists: false})
+			return
+		}
+		writeManagerError(w, err)
+		return
+	}
+
+	hasPackageJson := fileExists(filepath.Join(sb.WorkspacePath, "package.json"))
+	hasNodeModules := dirExists(filepath.Join(sb.WorkspacePath, "node_modules"))
+	ready := hasPackageJson && hasNodeModules
+
+	writeJSON(w, http.StatusOK, sandboxStatus{
+		Exists:         true,
+		Ready:          ready,
+		HasPackageJson: hasPackageJson,
+		HasNodeModules: hasNodeModules,
+		ContainerName:  sb.ContainerName,
+		WorkspacePath:  sb.WorkspacePath,
+		CreatedAt:      sb.CreatedAt,
+		LastActivity:   sb.LastActivity,
+	})
+}
+
+func (h *apiHandler) installPackages(w http.ResponseWriter, r *http.Request) {
+	var req installPackagesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body")
+		return
+	}
+	if len(req.Packages) == 0 {
+		writeError(w, http.StatusBadRequest, "packages list is empty")
+		return
+	}
+	for _, pkg := range req.Packages {
+		if !npmPackageNameRe.MatchString(pkg) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid package name: %q", pkg))
+			return
+		}
+	}
+
+	workflowExecutionID := mux.Vars(r)["workflowExecutionId"]
+	sb, err := h.manager.getByExecution(workflowExecutionID)
+	if err != nil {
+		writeManagerError(w, err)
+		return
+	}
+
+	timeout := h.manager.cfg.ExecTimeout
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	args := append([]string{"exec", "-w", "/workspace", sb.ContainerName, "npm", "install", "--save"}, req.Packages...)
+	output, execErr := runDocker(ctx, args...)
+	h.manager.touch(workflowExecutionID)
+	if execErr != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error":  execErr.Error(),
+			"output": string(output),
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"output": string(output)})
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
 func writeManagerError(w http.ResponseWriter, err error) {
 	writeError(w, statusFromErr(err), err.Error())
 }
@@ -650,8 +749,10 @@ func main() {
 	api.HandleFunc("", handler.listSandboxes).Methods(http.MethodGet)
 	api.HandleFunc("/{workflowExecutionId}", handler.getSandbox).Methods(http.MethodGet)
 	api.HandleFunc("/{workflowExecutionId}", handler.deleteSandbox).Methods(http.MethodDelete)
+	api.HandleFunc("/{workflowExecutionId}/status", handler.getSandboxStatus).Methods(http.MethodGet)
 	api.HandleFunc("/{workflowExecutionId}/complete", handler.completeWorkflow).Methods(http.MethodPost)
 	api.HandleFunc("/{workflowExecutionId}/exec", handler.execSandbox).Methods(http.MethodPost)
+	api.HandleFunc("/{workflowExecutionId}/packages", handler.installPackages).Methods(http.MethodPost)
 	api.HandleFunc("/{workflowExecutionId}/files", handler.listFiles).Methods(http.MethodGet)
 	api.HandleFunc("/{workflowExecutionId}/files", handler.deleteFilePath).Methods(http.MethodDelete)
 	api.HandleFunc("/{workflowExecutionId}/files/content", handler.getFileContent).Methods(http.MethodGet)

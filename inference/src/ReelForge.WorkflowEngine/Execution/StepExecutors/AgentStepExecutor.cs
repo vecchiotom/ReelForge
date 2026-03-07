@@ -60,16 +60,20 @@ public class AgentStepExecutor : IStepExecutor
             context.Execution.Id,
             context.Execution.ProjectId,
             context.CorrelationId);
-        string output = await agent.RunAsync(stepInput, context.CancellationToken);
+        AgentRunResult result = await agent.RunAsync(stepInput, context.CancellationToken);
         sw.Stop();
+
+        string? outputStorageKey = _executionContextAccessor.Current?.PendingOutputStorageKey;
 
         return new StepExecutionResult
         {
-            Output = output,
+            Output = result.Output,
             NextStepIndex = context.CurrentStepIndex + 1,
             NewIterationCount = context.IterationCount,
             DurationMs = sw.ElapsedMilliseconds,
-            Status = StepStatus.Completed
+            TokensUsed = result.TokensUsed,
+            Status = StepStatus.Completed,
+            OutputStorageKey = outputStorageKey
         };
     }
 }

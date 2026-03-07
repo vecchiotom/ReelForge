@@ -14,6 +14,8 @@ namespace ReelForge.WorkflowEngine.Execution;
 /// </summary>
 public class WorkflowExecutorService
 {
+    private const int MaxStepRetries = 3;
+
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IWorkflowEventPublisher _eventPublisher;
     private readonly ILogger<WorkflowExecutorService> _logger;
@@ -102,7 +104,7 @@ public class WorkflowExecutorService
                     CancellationToken = ct
                 };
 
-                StepExecutionResult result = await executor.ExecuteAsync(context);
+                StepExecutionResult result = await ExecuteStepWithRetryAsync(executor, context, step, ct);
 
                 // Persist step result
                 WorkflowStepResult stepResult = new()
@@ -119,7 +121,8 @@ public class WorkflowExecutorService
                     Status = result.Status,
                     ErrorDetails = result.ErrorDetails,
                     IterationNumber = result.IterationNumber,
-                    CompletedAt = DateTime.UtcNow
+                    CompletedAt = DateTime.UtcNow,
+                    OutputStorageKey = result.OutputStorageKey
                 };
                 db.WorkflowStepResults.Add(stepResult);
 
@@ -195,6 +198,71 @@ public class WorkflowExecutorService
         {
             ReelForgeDiagnostics.ActiveWorkflows.Add(-1);
         }
+    }
+
+    private async Task<StepExecutionResult> ExecuteStepWithRetryAsync(
+        IStepExecutor executor,
+        StepExecutionContext context,
+        WorkflowStep step,
+        CancellationToken ct)
+    {
+        int attemptNumber = 0;
+        Exception? lastException = null;
+
+        while (attemptNumber < MaxStepRetries)
+        {
+            attemptNumber++;
+            try
+            {
+                StepExecutionResult result = await executor.ExecuteAsync(context);
+
+                // Check if step failed
+                if (result.Status == StepStatus.Failed)
+                {
+                    if (attemptNumber < MaxStepRetries)
+                    {
+                        double delaySeconds = Math.Pow(2, attemptNumber);
+                        _logger.LogWarning(
+                            "Step {StepOrder} ({StepType}) failed on attempt {Attempt}/{Max}. Error: {Error}. Retrying in {Delay}s...",
+                            step.StepOrder, step.StepType, attemptNumber, MaxStepRetries,
+                            result.ErrorDetails, delaySeconds);
+
+                        await Task.Delay(TimeSpan.FromSeconds(delaySeconds), ct);
+                        continue;
+                    }
+                    else
+                    {
+                        // Max retries exceeded - throw to trigger workflow failure
+                        throw new InvalidOperationException(
+                            $"Step {step.StepOrder} ({step.StepType}) failed after {MaxStepRetries} attempts. Last error: {result.ErrorDetails}");
+                    }
+                }
+
+                // Success - return result
+                if (attemptNumber > 1)
+                {
+                    _logger.LogInformation(
+                        "Step {StepOrder} ({StepType}) succeeded on attempt {Attempt}",
+                        step.StepOrder, step.StepType, attemptNumber);
+                }
+                return result;
+            }
+            catch (Exception ex) when (ex is not InvalidOperationException && attemptNumber < MaxStepRetries)
+            {
+                lastException = ex;
+                double delaySeconds = Math.Pow(2, attemptNumber);
+                _logger.LogWarning(ex,
+                    "Step {StepOrder} ({StepType}) threw exception on attempt {Attempt}/{Max}. Retrying in {Delay}s...",
+                    step.StepOrder, step.StepType, attemptNumber, MaxStepRetries, delaySeconds);
+
+                await Task.Delay(TimeSpan.FromSeconds(delaySeconds), ct);
+            }
+        }
+
+        // If we get here, all retries are exhausted
+        throw new InvalidOperationException(
+            $"Step {step.StepOrder} ({step.StepType}) failed after {MaxStepRetries} attempts",
+            lastException);
     }
 
     private static int ParseReviewScore(string reviewOutput)

@@ -3,7 +3,7 @@ using Microsoft.Extensions.AI;
 
 namespace ReelForge.WorkflowEngine.Agents.Tools;
 
-public static class FileSystemTools
+public static class ProjectDataFormatterTools
 {
     [Description("Read the file tree structure of a project. Returns directory and file listing.")]
     public static string ReadFileTree([Description("The file listing data to parse")] string fileListingData) => fileListingData;

@@ -25,12 +25,11 @@ public class AgentsController : ControllerBase
     [HttpGet]
     public async Task<ActionResult<List<AgentDefinitionResponse>>> List(CancellationToken ct)
     {
-        List<AgentDefinitionResponse> agents = await _db.AgentDefinitions
+        List<AgentDefinition> agents = await _db.AgentDefinitions
             .Where(a => a.IsBuiltIn || a.OwnerId == _currentUser.UserId)
             .OrderBy(a => a.Name)
-            .Select(a => new AgentDefinitionResponse(a.Id, a.Name, a.Description, a.SystemPrompt, a.AgentType.ToString(), a.IsBuiltIn, a.OwnerId, a.ConfigJson, a.CreatedAt, a.Color))
             .ToListAsync(ct);
-        return Ok(agents);
+        return Ok(agents.Select(MapToResponse));
     }
 
     [HttpGet("{id:guid}")]
@@ -39,7 +38,7 @@ public class AgentsController : ControllerBase
         AgentDefinition? agent = await _db.AgentDefinitions.FirstOrDefaultAsync(a => a.Id == id, ct);
         if (agent == null) return NotFound();
         if (!agent.IsBuiltIn && agent.OwnerId != _currentUser.UserId) return Forbid();
-        return Ok(new AgentDefinitionResponse(agent.Id, agent.Name, agent.Description, agent.SystemPrompt, agent.AgentType.ToString(), agent.IsBuiltIn, agent.OwnerId, agent.ConfigJson, agent.CreatedAt, agent.Color));
+        return Ok(MapToResponse(agent));
     }
 
     [HttpPost]
@@ -62,8 +61,7 @@ public class AgentsController : ControllerBase
         _db.AgentDefinitions.Add(agent);
         await _db.SaveChangesAsync(ct);
 
-        AgentDefinitionResponse response = new(agent.Id, agent.Name, agent.Description, agent.SystemPrompt, agent.AgentType.ToString(), agent.IsBuiltIn, agent.OwnerId, agent.ConfigJson, agent.CreatedAt, agent.Color);
-        return CreatedAtAction(nameof(Get), new { id = agent.Id }, response);
+        return CreatedAtAction(nameof(Get), new { id = agent.Id }, MapToResponse(agent));
     }
 
     [HttpPut("{id:guid}")]
@@ -81,7 +79,7 @@ public class AgentsController : ControllerBase
         agent.Color = request.Color;
         await _db.SaveChangesAsync(ct);
 
-        return Ok(new AgentDefinitionResponse(agent.Id, agent.Name, agent.Description, agent.SystemPrompt, agent.AgentType.ToString(), agent.IsBuiltIn, agent.OwnerId, agent.ConfigJson, agent.CreatedAt, agent.Color));
+        return Ok(MapToResponse(agent));
     }
 
     [HttpDelete("{id:guid}")]
@@ -95,5 +93,17 @@ public class AgentsController : ControllerBase
         _db.AgentDefinitions.Remove(agent);
         await _db.SaveChangesAsync(ct);
         return NoContent();
+    }
+
+    private static AgentDefinitionResponse MapToResponse(AgentDefinition a)
+    {
+        string[]? tools = a.AvailableToolsJson != null
+            ? System.Text.Json.JsonSerializer.Deserialize<string[]>(a.AvailableToolsJson)
+            : null;
+        return new AgentDefinitionResponse(
+            a.Id, a.Name, a.Description, a.SystemPrompt,
+            a.AgentType.ToString(), a.IsBuiltIn, a.OwnerId, a.ConfigJson,
+            a.CreatedAt, a.Color, a.OutputSchemaJson,
+            tools, a.GeneratesOutput, a.OutputSchemaName);
     }
 }

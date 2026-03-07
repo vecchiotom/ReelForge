@@ -78,6 +78,7 @@ export interface WorkflowStepResult {
   errorDetails?: string | null;
   iterationNumber?: number | null;
   completedAt?: string | null;
+  outputStorageKey?: string | null;
 }
 
 export interface ReviewScore {

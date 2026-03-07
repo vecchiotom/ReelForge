@@ -8,6 +8,10 @@ export interface AgentDefinition {
   ownerId: string | null;
   createdAt: string;
   color: string | null;
+  outputSchemaJson: string | null;
+  availableTools: string[] | null;
+  generatesOutput: boolean;
+  outputSchemaName: string | null;
 }
 
 export interface CreateAgentRequest {

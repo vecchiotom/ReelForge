@@ -30,4 +30,10 @@ public class StepExecutionResult
     public StepStatus Status { get; init; } = StepStatus.Completed;
     public string? ErrorDetails { get; init; }
     public int? IterationNumber { get; init; }
+
+    /// <summary>
+    /// S3/MinIO storage key for a video or image artifact produced during this step.
+    /// Set by the RenderVideoAndUploadToStorage sandbox tool.
+    /// </summary>
+    public string? OutputStorageKey { get; init; }
 }

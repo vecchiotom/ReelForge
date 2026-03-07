@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gorilla/mux"
 	"github.com/vecchiotom/reelforge/database"
+	"github.com/vecchiotom/reelforge/middleware"
 	"github.com/vecchiotom/reelforge/models"
 	"github.com/vecchiotom/reelforge/services"
 )
@@ -93,6 +95,83 @@ func handleWorkflowEvents(w http.ResponseWriter, r *http.Request) {
 		case event, open := <-ch:
 			if !open {
 				return
+			}
+			data, err := json.Marshal(event)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Type, data)
+			flusher.Flush()
+		}
+	}
+}
+
+// handleExecutionEvents streams real-time workflow events for a SINGLE execution ID.
+// Security: verifies user owns the project OR is an admin before allowing access.
+func handleExecutionEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, `{"error":"streaming not supported"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// Extract route parameters
+	vars := mux.Vars(r)
+	projectID := vars["projectId"]
+	executionID := vars["executionId"]
+
+	// Get user context from auth middleware
+	uc, ok := r.Context().Value(middleware.UserContextKey).(middleware.UserContext)
+	if !ok {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// Verify project ownership (admins bypass this check)
+	if !uc.IsAdmin {
+		var project models.Project
+		if err := database.DB.Where("id = ?", projectID).First(&project).Error; err != nil {
+			http.Error(w, `{"error":"project not found"}`, http.StatusNotFound)
+			return
+		}
+		if project.OwnerID.String() != uc.UserID {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
+
+	ch := services.Hub.Subscribe()
+	defer services.Hub.Unsubscribe(ch)
+
+	// Send an initial "connected" event so the client knows the stream is live.
+	fmt.Fprintf(w, "event: connected\ndata: {\"ts\":%d}\n\n", time.Now().UnixMilli())
+	flusher.Flush()
+
+	// Keep-alive ping every 25 seconds to prevent proxy timeouts.
+	ticker := time.NewTicker(25 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+
+		case <-ticker.C:
+			fmt.Fprintf(w, ": ping\n\n")
+			flusher.Flush()
+
+		case event, open := <-ch:
+			if !open {
+				return
+			}
+			// Filter: only stream events for the requested execution ID
+			if event.ExecutionID != executionID {
+				continue
 			}
 			data, err := json.Marshal(event)
 			if err != nil {

@@ -6,7 +6,7 @@ import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
 import { createWorkflow } from '@/lib/api/workflows';
 import { PageHeader } from '@/components/shared/PageHeader';
-import { WorkflowStepList } from '@/components/workflows/WorkflowStepList';
+import { FlowchartBuilderWrapper } from '@/components/workflows/FlowchartBuilder';
 import type { StepData } from '@/components/workflows/WorkflowStepList';
 import { useRouter } from 'next/navigation';
 
@@ -83,10 +83,17 @@ export default function NewWorkflowPage({ params }: { params: Promise<{ id: stri
         ]}
       />
       <form onSubmit={handleSubmit}>
-        <Stack gap="md" maw={800}>
-          <TextInput label="Name" placeholder="My Workflow" {...form.getInputProps('name')} />
-          <WorkflowStepList steps={steps} onChange={setSteps} />
-          <Button type="submit" loading={loading}>Create Workflow</Button>
+        <Stack gap="lg" maw={1200}>
+          <TextInput
+            label="Workflow Name"
+            placeholder="My Workflow"
+            size="lg"
+            {...form.getInputProps('name')}
+          />
+          <FlowchartBuilderWrapper steps={steps} onChange={setSteps} />
+          <Button type="submit" loading={loading} size="lg" variant="gradient" gradient={{ from: 'violet', to: 'purple' }}>
+            Create Workflow
+          </Button>
         </Stack>
       </form>
     </>

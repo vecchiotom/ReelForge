@@ -21,6 +21,13 @@ public class WorkflowStepResult
     public int? IterationNumber { get; set; }
     public DateTime? CompletedAt { get; set; }
 
+    /// <summary>
+    /// S3/MinIO storage key for a video or image artifact produced by this step.
+    /// Null when the step produces no media output.
+    /// Key format: outputs/{executionId}/{fileName}
+    /// </summary>
+    public string? OutputStorageKey { get; set; }
+
     public WorkflowExecution WorkflowExecution { get; set; } = null!;
     public WorkflowStep WorkflowStep { get; set; } = null!;
 }

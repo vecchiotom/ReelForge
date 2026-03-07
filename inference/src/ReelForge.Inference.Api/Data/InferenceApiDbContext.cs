@@ -76,6 +76,8 @@ public class InferenceApiDbContext : DbContext
                 .HasConversion<string>();
             entity.Property(e => e.ConfigJson)
                 .HasColumnType("jsonb");
+            entity.Property(e => e.OutputSchemaJson)
+                .HasColumnType("jsonb");
         });
 
         // --- Referenced tables (excluded from migrations) ---

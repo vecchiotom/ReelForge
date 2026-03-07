@@ -76,14 +76,15 @@ public class FileSummarizationService : BackgroundService
                 return;
             }
 
-            string summary = await summarizer.RunAsync(
+            var result = await summarizer.RunAsync(
                 $"Summarize this file ({file.OriginalFileName}):\n\n{content}", ct);
 
-            file.AgentSummary = summary;
+            file.AgentSummary = result.Output;
             file.SummaryStatus = SummaryStatus.Done;
             await db.SaveChangesAsync(ct);
 
-            _logger.LogInformation("Summarized file {FileId}: {FileName}", task.FileId, file.OriginalFileName);
+            _logger.LogInformation("Summarized file {FileId}: {FileName} ({TokensUsed} tokens)",
+                task.FileId, file.OriginalFileName, result.TokensUsed);
         }
         catch (Exception ex)
         {

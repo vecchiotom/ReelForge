@@ -7,6 +7,12 @@ public sealed class WorkflowExecutionContext
     public required Guid ExecutionId { get; init; }
     public required Guid ProjectId { get; init; }
     public required string CorrelationId { get; init; }
+
+    /// <summary>
+    /// Set by the RenderVideoAndUploadToStorage tool when it produces a video artifact.
+    /// The workflow executor reads this after agent completion and persists it to WorkflowStepResult.
+    /// </summary>
+    public string? PendingOutputStorageKey { get; set; }
 }
 
 public interface IWorkflowExecutionContextAccessor

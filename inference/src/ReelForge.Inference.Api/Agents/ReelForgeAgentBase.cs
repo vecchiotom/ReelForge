@@ -42,9 +42,31 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
     public IReadOnlyList<AIFunction> Tools => _tools.AsReadOnly();
     public AIAgent AIAgent => _aiAgent;
 
-    public async Task<string> RunAsync(string prompt, CancellationToken ct = default)
+    public async Task<AgentRunResult> RunAsync(string prompt, CancellationToken ct = default)
     {
-        AgentResponse result = await _aiAgent.RunAsync(prompt);
-        return result.AsChatResponse().Text ?? string.Empty;
+        AgentResponse agentResponse = await _aiAgent.RunAsync(prompt, cancellationToken: ct);
+        var chatResponse = agentResponse.AsChatResponse();
+        string output = chatResponse.Text ?? string.Empty;
+
+        // Extract token usage from the response
+        int totalTokens = 0;
+        int? inputTokens = null;
+        int? outputTokens = null;
+
+        if (chatResponse.Usage != null)
+        {
+            inputTokens = (int?)(chatResponse.Usage.InputTokenCount ?? 0);
+            outputTokens = (int?)(chatResponse.Usage.OutputTokenCount ?? 0);
+            totalTokens = (int)(chatResponse.Usage.TotalTokenCount ??
+                          ((inputTokens ?? 0) + (outputTokens ?? 0)));
+        }
+
+        return new AgentRunResult
+        {
+            Output = output,
+            TokensUsed = totalTokens,
+            InputTokens = inputTokens,
+            OutputTokens = outputTokens
+        };
     }
 }
