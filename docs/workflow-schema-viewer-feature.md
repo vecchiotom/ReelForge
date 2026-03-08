@@ -80,7 +80,22 @@ Shows available collection fields to iterate over, such as:
 
 Shows available fields from previous steps, with a note that the ReviewLoop agent expects a `score` field (1-10) in the target step output.
 
-### 4. Enhanced Workflow Nodes
+### 4. Parallel Step & Schema
+
+**File**: `web/components/workflows/nodes/ParallelNode.tsx`
+
+The `Parallel` step type is a special case — it does **not** have a single output schema. Instead it merges the outputs of all configured agents into a JSON array:
+
+```json
+[
+  { "agentName": "CodeStructureAnalyzer", "output": "{...}" },
+  { "agentName": "DependencyAnalyzer",    "output": "{...}" }
+]
+```
+
+When a step follows a `Parallel` step, the schema viewer displays this generic array structure. A `ForEach` step can iterate directly over the parallel output array using the loop source expression `$.` (root array).
+
+### 5. Enhanced Workflow Nodes
 
 All workflow node components now feature a **Settings icon** (⚙️) button that opens a configuration modal with the full schema viewer:
 

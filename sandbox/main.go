@@ -27,6 +27,7 @@ type appConfig struct {
 	Port         string
 	SandboxImage string
 	SandboxRoot  string
+	SandboxNetwork string   // docker network used for sandbox containers
 	SandboxTTL   time.Duration
 	ExecTimeout  time.Duration
 	MemoryLimit  string
@@ -37,13 +38,14 @@ type appConfig struct {
 func loadConfig() appConfig {
 	return appConfig{
 		Port:         getEnv("PORT", "8080"),
-		SandboxImage: getEnv("SANDBOX_IMAGE", "reelforge-sandbox-executor:local"),
-		SandboxRoot:  getEnv("SANDBOX_ROOT", "/var/lib/reelforge/sandboxes"),
-		SandboxTTL:   getDurationEnv("SANDBOX_TTL", time.Hour),
-		ExecTimeout:  getDurationEnv("SANDBOX_EXEC_TIMEOUT", 5*time.Minute),
-		MemoryLimit:  getEnv("SANDBOX_MEMORY_LIMIT", "2g"),
-		CPULimit:     getEnv("SANDBOX_CPU_LIMIT", "2"),
-		PIDsLimit:    getIntEnv("SANDBOX_PIDS_LIMIT", 256),
+		SandboxImage:   getEnv("SANDBOX_IMAGE", "reelforge-sandbox-executor:local"),
+		SandboxRoot:    getEnv("SANDBOX_ROOT", "/var/lib/reelforge/sandboxes"),
+		SandboxNetwork: getEnv("SANDBOX_NETWORK", "sandbox-net"),
+		SandboxTTL:     getDurationEnv("SANDBOX_TTL", time.Hour),
+		ExecTimeout:    getDurationEnv("SANDBOX_EXEC_TIMEOUT", 5*time.Minute),
+		MemoryLimit:    getEnv("SANDBOX_MEMORY_LIMIT", "2g"),
+		CPULimit:       getEnv("SANDBOX_CPU_LIMIT", "2"),
+		PIDsLimit:      getIntEnv("SANDBOX_PIDS_LIMIT", 256),
 	}
 }
 
@@ -150,13 +152,15 @@ func (m *sandboxManager) create(workflowExecutionID string) (*sandbox, bool, err
 	_ = os.Chmod(workspace, 0o777)
 
 	containerName := "rf-sbx-" + id
-	initCommand := "if [ ! -f /workspace/package.json ]; then cp -a /opt/remotion-template/. /workspace/; fi; sleep infinity"
-	args := []string{
-		"run", "-d",
-		"--name", containerName,
-		"--network", "none",
+	initCommand := "if [ ! -f /workspace/package.json ]; then cp -r /opt/remotion-template/. /workspace/; fi; sleep infinity"
+	args := []string{"run", "-d", "--name", containerName}
+	if m.cfg.SandboxNetwork != "" {
+		args = append(args, "--network", m.cfg.SandboxNetwork)
+	}
+	args = append(args,
 		"--read-only",
 		"--tmpfs", "/tmp:rw,nosuid,nodev,size=256m",
+		"--tmpfs", "/home/node/.npm:rw,nosuid,nodev,size=512m",
 		"--memory", m.cfg.MemoryLimit,
 		"--cpus", m.cfg.CPULimit,
 		"--pids-limit", strconv.Itoa(m.cfg.PIDsLimit),
@@ -165,13 +169,36 @@ func (m *sandboxManager) create(workflowExecutionID string) (*sandbox, bool, err
 		"--user", "node",
 		"-v", workspace + ":/workspace",
 		"-w", "/workspace",
+		"--entrypoint", "sh",
 		m.cfg.SandboxImage,
-		"sh", "-lc", initCommand,
-	}
-	if _, err := runDocker(context.Background(), args...); err != nil {
+		"-c", initCommand,
+	)
+	if out, err := runDocker(context.Background(), args...); err != nil {
+		log.Printf("failed to start sandbox container, output: %s, err: %v", string(out), err)
 		_ = os.RemoveAll(workspace)
-		return nil, false, fmt.Errorf("failed to start sandbox container: %w", err)
+		return nil, false, fmt.Errorf("failed to start sandbox container: %w\noutput: %s", err, string(out))
+	} else {
+		log.Printf("sandbox container %s created for workflow %s", containerName, workflowExecutionID)
 	}
+
+	// Wait for the container's init script to finish copying the Remotion template
+	// (cp -a runs asynchronously inside the detached container).
+	log.Printf("waiting for template init in sandbox %s (workflow %s)", containerName, workflowExecutionID)
+	pkgJsonPath := filepath.Join(workspace, "package.json")
+	initDeadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(initDeadline) {
+		if fileExists(pkgJsonPath) {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if !fileExists(pkgJsonPath) {
+		log.Printf("sandbox init timed out for container %s, cleaning up", containerName)
+		_, _ = runDocker(context.Background(), "rm", "-f", containerName)
+		_ = os.RemoveAll(workspace)
+		return nil, false, fmt.Errorf("sandbox init timed out: package.json not found after 60s")
+	}
+	log.Printf("sandbox %s ready (workflow %s)", containerName, workflowExecutionID)
 
 	now := time.Now().UTC()
 	sb := &sandbox{
@@ -241,8 +268,12 @@ func (m *sandboxManager) deleteByExecution(workflowExecutionID string) error {
 }
 
 func (m *sandboxManager) deleteInternal(id, workflowExecutionID, containerName, workspace string) error {
-	_, _ = runDocker(context.Background(), "rm", "-f", containerName)
+	log.Printf("deleting sandbox container %s and workspace %s", containerName, workspace)
+	if out, err := runDocker(context.Background(), "rm", "-f", containerName); err != nil {
+		log.Printf("error deleting container %s: %v, output: %s", containerName, err, string(out))
+	}
 	if err := os.RemoveAll(workspace); err != nil {
+		log.Printf("error removing workspace %s: %v", workspace, err)
 		return err
 	}
 
@@ -275,11 +306,14 @@ func (m *sandboxManager) runExec(workflowExecutionID string, req execRequest) (s
 
 	args := []string{"exec", "-w", "/workspace", sb.ContainerName, req.Command}
 	args = append(args, req.Args...)
+	log.Printf("exec request for workflow %s: %s %v", workflowExecutionID, req.Command, req.Args)
 	output, err := runDocker(ctx, args...)
 	m.touch(workflowExecutionID)
 	if err != nil {
+		log.Printf("exec failed for workflow %s: %v; output: %s", workflowExecutionID, err, string(output))
 		return string(output), fmt.Errorf("execution failed: %w", err)
 	}
+	log.Printf("exec succeeded for workflow %s; output length %d", workflowExecutionID, len(output))
 	return string(output), nil
 }
 
@@ -441,6 +475,7 @@ func (m *sandboxManager) cleanupInactive() {
 	m.mu.RUnlock()
 
 	for _, sb := range toDelete {
+		log.Printf("janitor cleaning up sandbox %s (workflow %s)", sb.ID, sb.WorkflowExecutionID)
 		if err := m.deleteInternal(sb.ID, sb.WorkflowExecutionID, sb.ContainerName, sb.WorkspacePath); err != nil {
 			log.Printf("janitor failed to cleanup sandbox %s: %v", sb.ID, err)
 		}
@@ -493,8 +528,10 @@ func (h *apiHandler) createSandbox(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
+	log.Printf("API create sandbox request for workflow %s", req.WorkflowExecutionID)
 	sb, created, err := h.manager.create(req.WorkflowExecutionID)
 	if err != nil {
+		log.Printf("error creating sandbox for workflow %s: %v", req.WorkflowExecutionID, err)
 		writeManagerError(w, err)
 		return
 	}
@@ -506,11 +543,14 @@ func (h *apiHandler) createSandbox(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *apiHandler) listSandboxes(w http.ResponseWriter, r *http.Request) {
+	log.Printf("API list sandboxes request")
 	writeJSON(w, http.StatusOK, h.manager.list())
 }
 
 func (h *apiHandler) getSandbox(w http.ResponseWriter, r *http.Request) {
-	sb, err := h.manager.getByExecution(mux.Vars(r)["workflowExecutionId"])
+	workflowExecutionID := mux.Vars(r)["workflowExecutionId"]
+	log.Printf("API get sandbox request for workflow %s", workflowExecutionID)
+	sb, err := h.manager.getByExecution(workflowExecutionID)
 	if err != nil {
 		writeManagerError(w, err)
 		return
@@ -519,7 +559,10 @@ func (h *apiHandler) getSandbox(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *apiHandler) deleteSandbox(w http.ResponseWriter, r *http.Request) {
-	if err := h.manager.deleteByExecution(mux.Vars(r)["workflowExecutionId"]); err != nil {
+	workflowExecutionID := mux.Vars(r)["workflowExecutionId"]
+	log.Printf("API delete sandbox request for workflow %s", workflowExecutionID)
+	if err := h.manager.deleteByExecution(workflowExecutionID); err != nil {
+		log.Printf("API delete sandbox error for workflow %s: %v", workflowExecutionID, err)
 		writeManagerError(w, err)
 		return
 	}
@@ -527,7 +570,10 @@ func (h *apiHandler) deleteSandbox(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *apiHandler) completeWorkflow(w http.ResponseWriter, r *http.Request) {
-	if err := h.manager.deleteByExecution(mux.Vars(r)["workflowExecutionId"]); err != nil {
+	workflowExecutionID := mux.Vars(r)["workflowExecutionId"]
+	log.Printf("API complete workflow (delete sandbox) request for workflow %s", workflowExecutionID)
+	if err := h.manager.deleteByExecution(workflowExecutionID); err != nil {
+		log.Printf("API complete workflow error for workflow %s: %v", workflowExecutionID, err)
 		writeManagerError(w, err)
 		return
 	}
@@ -678,12 +724,14 @@ func (h *apiHandler) installPackages(w http.ResponseWriter, r *http.Request) {
 	output, execErr := runDocker(ctx, args...)
 	h.manager.touch(workflowExecutionID)
 	if execErr != nil {
+		log.Printf("install packages error for workflow %s: %v output: %s", workflowExecutionID, execErr, string(output))
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error":  execErr.Error(),
 			"output": string(output),
 		})
 		return
 	}
+	log.Printf("installed packages %v for workflow %s", req.Packages, workflowExecutionID)
 	writeJSON(w, http.StatusOK, map[string]string{"output": string(output)})
 }
 
@@ -723,14 +771,32 @@ func writeError(w http.ResponseWriter, status int, message string) {
 }
 
 func runDocker(ctx context.Context, args ...string) ([]byte, error) {
+	// log the docker command being executed for debugging purposes
+	log.Printf("[docker] running: docker %s", strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, "docker", args...)
-	return cmd.CombinedOutput()
+	output, err := cmd.CombinedOutput()
+	if len(output) > 0 {
+		// log output even on success so users can diagnose state
+		log.Printf("[docker] output: %s", string(output))
+	}
+	if err != nil {
+		log.Printf("[docker] error: %v", err)
+	}
+	return output, err
 }
 
 func main() {
 	cfg := loadConfig()
 	if err := os.MkdirAll(cfg.SandboxRoot, 0o755); err != nil {
 		log.Fatalf("failed to create sandbox root: %v", err)
+	}
+
+	// ensure sandbox network exists so that containers can reach npm registry
+	// while remaining isolated from the primary application network
+	if cfg.SandboxNetwork != "" {
+		// create network if missing (ignore errors if it already exists)
+		_, _ = runDocker(context.Background(), "network", "inspect", cfg.SandboxNetwork)
+		_, _ = runDocker(context.Background(), "network", "create", cfg.SandboxNetwork)
 	}
 
 	manager := newSandboxManager(cfg)

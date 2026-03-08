@@ -164,6 +164,42 @@ To verify the fix works correctly, run a workflow execution and check:
 
 - `inference/src/ReelForge.WorkflowEngine/Agents/ReelForgeAgentBase.cs`
 
+---
+
+## Parallel Step Output Format
+
+The `ParallelStepExecutor` produces a **structured JSON array** that merges the outputs of all agents that ran in parallel. This output is injected into `AccumulatedOutput` for use by subsequent steps.
+
+### Schema
+
+```json
+[
+  {
+    "agentName": "CodeStructureAnalyzer",
+    "output": "{...}"
+  },
+  {
+    "agentName": "DependencyAnalyzer",
+    "output": "{...}"
+  }
+]
+```
+
+- `agentName` — the string name of the `AgentType` enum value (or `Custom` with the definition name)
+- `output` — the raw string output produced by that agent (may itself be structured JSON)
+
+### Accessing Parallel Outputs in Subsequent Steps
+
+Use `ExpressionEvaluator` path syntax to reference agents by array index or by iterating:
+
+| Scenario                          | Expression                                   |
+| --------------------------------- | -------------------------------------------- |
+| ForEach over all parallel results | loop source: `$.` or `$`                     |
+| Access first agent's output       | `$.[0].output`                               |
+| Check a specific agent name       | `$.[0].agentName == "CodeStructureAnalyzer"` |
+
+A `ForEach` step placed immediately after a `Parallel` step will iterate over each `{"agentName":"...","output":"..."}` object in the array, passing each one as the input to the target agent step.
+
 ## Related Files (No Changes Needed)
 
 - `inference/src/ReelForge.Shared/Data/OutputSchemas.cs` - Contains all output schema POCOs

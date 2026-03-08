@@ -46,8 +46,9 @@ public class WorkflowsController : ControllerBase
                     new WorkflowStepResponse(s.Id, s.AgentDefinitionId, s.StepOrder, s.EdgeConditionJson, s.Label,
                         s.StepType.ToString(), s.ConditionExpression, s.LoopSourceExpression,
                         s.LoopTargetStepOrder, s.MaxIterations, s.MinScore, s.InputMappingJson,
-                        s.TrueBranchStepOrder, s.FalseBranchStepOrder)
-                ).ToList()))
+                        s.TrueBranchStepOrder, s.FalseBranchStepOrder, s.ParallelAgentIdsJson)
+                ).ToList(),
+                w.RequiresUserInput))
             .ToListAsync(ct);
         return Ok(workflows);
     }
@@ -74,6 +75,7 @@ public class WorkflowsController : ControllerBase
             Id = Guid.NewGuid(),
             Name = request.Name,
             ProjectId = projectId,
+            RequiresUserInput = request.RequiresUserInput,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };
@@ -96,15 +98,26 @@ public class WorkflowsController : ControllerBase
         if (project == null) return NotFound();
         if (project.OwnerId != _currentUser.UserId) return Forbid();
 
+        // load steps and any associated results so we can delete them in the correct order
         WorkflowDefinition? workflow = await _db.WorkflowDefinitions
             .Include(w => w.Steps)
+                .ThenInclude(s => s.Results)
             .FirstOrDefaultAsync(w => w.Id == id && w.ProjectId == projectId, ct);
         if (workflow == null) return NotFound();
 
-        _db.WorkflowSteps.RemoveRange(workflow.Steps);
+        // With cascading foreign keys in place we no longer need to manually purge
+        // step results. Deleting the steps will cascade through the database.
+        var oldSteps = workflow.Steps.ToList();
+        _db.WorkflowSteps.RemoveRange(oldSteps);
+
+        // also clear the navigation collection so we can safely re-populate it
+        workflow.Steps.Clear();
 
         if (!string.IsNullOrWhiteSpace(request.Name))
             workflow.Name = request.Name;
+
+        if (request.RequiresUserInput.HasValue)
+            workflow.RequiresUserInput = request.RequiresUserInput.Value;
 
         foreach (CreateWorkflowStepRequest stepReq in request.Steps)
         {
@@ -112,7 +125,15 @@ public class WorkflowsController : ControllerBase
         }
 
         workflow.UpdatedAt = DateTime.UtcNow;
-        await _db.SaveChangesAsync(ct);
+        try
+        {
+            await _db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            // the workflow or one of its steps was removed by another user/session
+            return Conflict("The workflow was modified or deleted by another process. Please reload and try again.");
+        }
 
         return Ok(MapWorkflowResponse(workflow));
     }
@@ -133,7 +154,10 @@ public class WorkflowsController : ControllerBase
     }
 
     [HttpPost("{id:guid}/execute")]
-    public async Task<ActionResult<WorkflowExecutionResponse>> Execute(Guid projectId, Guid id, CancellationToken ct)
+    public async Task<ActionResult<WorkflowExecutionResponse>> Execute(
+        Guid projectId, Guid id,
+        [FromBody] ExecuteWorkflowRequest? request,
+        CancellationToken ct)
     {
         Project? project = await _db.Projects.FirstOrDefaultAsync(p => p.Id == projectId, ct);
         if (project == null) return NotFound();
@@ -152,7 +176,8 @@ public class WorkflowsController : ControllerBase
             Status = ExecutionStatus.Queued,
             IterationCount = 0,
             CorrelationId = correlationId,
-            InitiatedByUserId = _currentUser.UserId
+            InitiatedByUserId = _currentUser.UserId,
+            UserRequest = request?.UserRequest
         };
 
         _db.WorkflowExecutions.Add(execution);
@@ -166,14 +191,16 @@ public class WorkflowsController : ControllerBase
             ProjectId = projectId,
             InitiatedByUserId = _currentUser.UserId,
             CorrelationId = correlationId,
-            RequestedAt = DateTime.UtcNow
+            RequestedAt = DateTime.UtcNow,
+            UserRequest = request?.UserRequest
         }, ct);
 
         return StatusCode(201, new WorkflowExecutionResponse(
             execution.Id, execution.WorkflowDefinitionId, execution.Status.ToString(),
             execution.StartedAt, execution.CompletedAt, execution.IterationCount,
             execution.ResultJson, execution.CorrelationId, execution.ErrorMessage,
-            new List<StepResultResponse>(), new List<ReviewScoreResponse>()));
+            new List<StepResultResponse>(), new List<ReviewScoreResponse>(),
+            execution.UserRequest));
     }
 
     [HttpGet("{id:guid}/executions")]
@@ -228,7 +255,8 @@ public class WorkflowsController : ControllerBase
             MinScore = req.MinScore,
             InputMappingJson = req.InputMappingJson,
             TrueBranchStepOrder = req.TrueBranchStepOrder,
-            FalseBranchStepOrder = req.FalseBranchStepOrder
+            FalseBranchStepOrder = req.FalseBranchStepOrder,
+            ParallelAgentIdsJson = req.ParallelAgentIdsJson
         };
 
         if (req.StepType != null && Enum.TryParse<StepType>(req.StepType, out var stepType))
@@ -246,8 +274,9 @@ public class WorkflowsController : ControllerBase
                 new WorkflowStepResponse(s.Id, s.AgentDefinitionId, s.StepOrder, s.EdgeConditionJson, s.Label,
                     s.StepType.ToString(), s.ConditionExpression, s.LoopSourceExpression,
                     s.LoopTargetStepOrder, s.MaxIterations, s.MinScore, s.InputMappingJson,
-                    s.TrueBranchStepOrder, s.FalseBranchStepOrder)
-            ).ToList());
+                    s.TrueBranchStepOrder, s.FalseBranchStepOrder, s.ParallelAgentIdsJson)
+            ).ToList(),
+            workflow.RequiresUserInput);
 
     private static WorkflowExecutionResponse MapExecutionResponse(WorkflowExecution execution) =>
         new(execution.Id, execution.WorkflowDefinitionId, execution.Status.ToString(),
@@ -260,5 +289,6 @@ public class WorkflowsController : ControllerBase
             ).ToList(),
             (execution.ReviewScores ?? Enumerable.Empty<ReviewScore>()).OrderBy(rs => rs.IterationNumber).Select(rs =>
                 new ReviewScoreResponse(rs.Id, rs.IterationNumber, rs.Score, rs.Comments, rs.CreatedAt)
-            ).ToList());
+            ).ToList(),
+            execution.UserRequest);
 }

@@ -1,8 +1,8 @@
 'use client';
 
 import { use, useEffect, useState, useCallback } from 'react';
-import { Stack, Card, Group, Text, Badge, Loader, Center, Progress, Timeline, Paper, Alert, Modal, Divider, ScrollArea } from '@mantine/core';
-import { IconPlayerPlay, IconCheck, IconX, IconClock, IconAlertCircle } from '@tabler/icons-react';
+import { Stack, Card, Group, Text, Badge, Loader, Center, Progress, Timeline, Paper, Alert, Modal, Divider, ScrollArea, Button } from '@mantine/core';
+import { IconPlayerPlay, IconCheck, IconX, IconClock, IconAlertCircle, IconPlayerStop } from '@tabler/icons-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ReactFlow,
@@ -21,6 +21,7 @@ import '@xyflow/react/dist/style.css';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { apiFetch } from '@/lib/api/client';
 import { getOutputVideoUrl } from '@/lib/api/outputs';
+import { getExecution, stopExecution } from '@/lib/api/executions';
 import type { WorkflowExecution, WorkflowDefinition, WorkflowStepResult } from '@/lib/types/workflow';
 import { formatDate, formatDurationLong } from '@/lib/utils/format';
 import { JsonViewer } from '@/components/workflows/JsonViewer';
@@ -124,7 +125,8 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
     const fetchData = async () => {
       try {
         const [execData, workflowData] = await Promise.all([
-          apiFetch<WorkflowExecution>(`/api/v1/projects/${projectId}/executions/${executionId}`),
+          // note: getExecution no longer requires workflowId
+          getExecution(projectId, executionId),
           apiFetch<WorkflowDefinition>(`/api/v1/projects/${projectId}/workflows/${workflowId}`),
         ]);
         setExecution(execData);
@@ -141,7 +143,7 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
 
   // SSE connection for real-time updates
   useEffect(() => {
-    if (!execution || execution.status === 'Passed' || execution.status === 'Failed') {
+    if (!execution || execution.status === 'Passed' || execution.status === 'Failed' || execution.status === 'Cancelled') {
       return;
     }
 
@@ -149,12 +151,12 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
     // For now, poll the execution endpoint
     const intervalId = setInterval(async () => {
       try {
-        const data = await apiFetch<WorkflowExecution>(`/api/v1/projects/${projectId}/executions/${executionId}`);
+        const data = await getExecution(projectId, executionId);
         setExecution(data);
         if (workflow) initializeFlow(workflow, data);
         
-        // Stop polling if execution completed
-        if (data.status === 'Passed' || data.status === 'Failed') {
+        // Stop polling if execution completed or cancelled
+        if (data.status === 'Passed' || data.status === 'Failed' || data.status === 'Cancelled') {
           clearInterval(intervalId);
         }
       } catch (error) {
@@ -220,9 +222,11 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
                         ? { from: 'green', to: 'teal', deg: 90 }
                         : execution.status === 'Failed'
                           ? { from: 'red', to: 'orange', deg: 90 }
-                          : execution.status === 'Running'
-                            ? { from: 'blue', to: 'cyan', deg: 90 }
-                            : { from: 'gray', to: 'dark', deg: 90 }
+                          : execution.status === 'Cancelled'
+                            ? { from: 'orange', to: 'red', deg: 90 }
+                            : execution.status === 'Running'
+                              ? { from: 'blue', to: 'cyan', deg: 90 }
+                              : { from: 'gray', to: 'dark', deg: 90 }
                     }
                     leftSection={
                       execution.status === 'Passed' ? <IconCheck size={16} />
@@ -241,6 +245,27 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
                 {execution.status === 'Running' && (
                   <Loader size="sm" />
                 )}
+                {execution.status === 'Running' && (
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    color="red"
+                    leftSection={<IconPlayerStop size={14} />}
+                    onClick={async () => {
+                      try {
+                        await stopExecution(projectId, workflowId, executionId);
+                        // refresh execution data immediately using root endpoint
+                        const data = await getExecution(projectId, executionId);
+                        setExecution(data);
+                        if (workflow) initializeFlow(workflow, data);
+                      } catch (err) {
+                        console.error('stop failed', err);
+                      }
+                    }}
+                  >
+                    Stop
+                  </Button>
+                )}
               </Group>
 
               <Progress
@@ -251,7 +276,8 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
                 color={
                   execution.status === 'Passed' ? 'green'
                     : execution.status === 'Failed' ? 'red'
-                      : 'blue'
+                      : execution.status === 'Cancelled' ? 'orange'
+                        : 'blue'
                 }
               />
 

@@ -46,6 +46,7 @@ export const STEP_TYPE_LABELS: Record<StepType, string> = {
   Conditional: 'Conditional Branch',
   ForEach: 'For Each',
   ReviewLoop: 'Review Loop',
+  Parallel: 'Parallel',
 };
 
 export const STEP_TYPE_COLORS: Record<StepType, string> = {
@@ -53,11 +54,13 @@ export const STEP_TYPE_COLORS: Record<StepType, string> = {
   Conditional: 'orange',
   ForEach: 'cyan',
   ReviewLoop: 'green',
+  Parallel: 'teal',
 };
 
 export const STEP_TYPE_DESCRIPTIONS: Record<StepType, string> = {
   Agent: 'Run a single AI agent to process data',
   Conditional: 'Branch execution based on a condition expression',
-  ForEach: 'Iterate over a collection and run an agent for each item',
-  ReviewLoop: 'Run an agent repeatedly until a quality score threshold is met',
+  ForEach: 'Iterate a step over each item in a collection',
+  ReviewLoop: 'Loop back to a target step until a quality score is met',
+  Parallel: 'Run multiple agents in parallel and merge their outputs',
 };

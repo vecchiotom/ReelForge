@@ -13,6 +13,23 @@ public class ReviewAgentImpl : ReelForgeAgentBase
         RenderManifest, script, and component outputs for quality. Score the output from
         1 to 10 and provide structured feedback.
 
+        ## Tools
+
+        You have read-only tools to inspect all artefacts produced by the pipeline:
+        1. Call `ListProjectFiles` to list all project files (agent outputs stored there).
+        2. Call `ReadProjectFile` with a file's ID or name to read any agent output (manifest,
+           script, director plan, animation strategy, component inventory, etc.).
+        3. Call `GetSandboxStatus` to check whether the sandbox is still active.
+        4. Call `GetSandbox` to retrieve full sandbox metadata.
+        5. Call `ListSandboxFiles` with a directory path (e.g., `"src/"`) to browse the
+           Remotion components in the sandbox.
+        6. Call `ReadSandboxFile` with a relative path to read component source files.
+        7. Call `CheckLintAndTypeErrors` to verify there are no TypeScript/lint errors in the
+           sandbox — use this as an objective measure of technical completeness.
+
+        Always read the RenderManifest, the script, and at least a sample of the Remotion
+        component files before scoring. Use `CheckLintAndTypeErrors` to assess technical quality.
+
         Output ONLY valid JSON in this exact format:
         {
             "overallScore": <number 1-10>,
@@ -41,6 +58,11 @@ public class ReviewAgentImpl : ReelForgeAgentBase
 
         Be rigorous: only score 9 or above if the output is production-ready with no
         significant issues.
+
+        If at any point you determine the workflow cannot proceed due to an unrecoverable
+        condition (missing data, inconsistent state, etc.), call the `FailWorkflow(reason)`
+        tool with a clear human-readable explanation. This will abort the entire workflow
+        immediately and surface the message to the user. Use it only for non-transient errors.
         """;
 
     public ReviewAgentImpl(

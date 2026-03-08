@@ -1,7 +1,7 @@
 'use client';
 
 import { use, useState, useEffect } from 'react';
-import { TextInput, Button, Stack, Group, Loader, Center, Text, Divider } from '@mantine/core';
+import { TextInput, Button, Stack, Group, Loader, Center, Text, Divider, Switch } from '@mantine/core';
 import { IconPlayerPlay, IconTrash } from '@tabler/icons-react';
 import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
@@ -11,6 +11,7 @@ import { PageHeader } from '@/components/shared/PageHeader';
 import { FlowchartBuilderWrapper } from '@/components/workflows/FlowchartBuilder';
 import { ExecutionHistory } from '@/components/workflows/ExecutionHistory';
 import { ConfirmModal } from '@/components/shared/ConfirmModal';
+import { ExecuteWithInputModal } from '@/components/workflows/ExecuteWithInputModal';
 import type { StepData } from '@/components/workflows/WorkflowStepList';
 import { useRouter } from 'next/navigation';
 
@@ -20,13 +21,14 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
   const router = useRouter();
   const [saving, setSaving] = useState(false);
   const [executing, setExecuting] = useState(false);
+  const [executeModalOpened, setExecuteModalOpened] = useState(false);
   const [deleteOpened, setDeleteOpened] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [steps, setSteps] = useState<StepData[] | null>(null);
   const [initialized, setInitialized] = useState(false);
 
   const form = useForm({
-    initialValues: { name: '' },
+    initialValues: { name: '', requiresUserInput: false },
     validate: {
       name: (v) => (!v.trim() ? 'Name is required' : null),
     },
@@ -34,7 +36,7 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
 
   useEffect(() => {
     if (workflow && !initialized) {
-      form.setValues({ name: workflow.name });
+      form.setValues({ name: workflow.name, requiresUserInput: workflow.requiresUserInput ?? false });
       setSteps(
         workflow.steps
           .sort((a, b) => a.stepOrder - b.stepOrder)
@@ -51,6 +53,7 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
             inputMappingJson: s.inputMappingJson ?? null,
             trueBranchStepOrder: s.trueBranchStepOrder ?? null,
             falseBranchStepOrder: s.falseBranchStepOrder ?? null,
+            parallelAgentIds: s.parallelAgentIdsJson ? JSON.parse(s.parallelAgentIdsJson) : [],
           })),
       );
       setInitialized(true);
@@ -70,6 +73,7 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
     try {
       await updateWorkflow(projectId, workflowId, {
         name: values.name,
+        requiresUserInput: values.requiresUserInput,
         steps: steps.map((s, i) => ({
           agentDefinitionId: s.agentDefinitionId,
           stepOrder: i + 1,
@@ -83,6 +87,7 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
           inputMappingJson: s.inputMappingJson,
           trueBranchStepOrder: s.trueBranchStepOrder,
           falseBranchStepOrder: s.falseBranchStepOrder,
+          parallelAgentIdsJson: s.parallelAgentIds.length > 0 ? JSON.stringify(s.parallelAgentIds) : null,
         })),
       });
       mutate();
@@ -98,10 +103,18 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
     }
   });
 
-  const handleExecute = async () => {
+  const handleExecuteClick = () => {
+    if (workflow.requiresUserInput) {
+      setExecuteModalOpened(true);
+    } else {
+      void doExecute(null);
+    }
+  };
+
+  const doExecute = async (userRequest: string | null) => {
     setExecuting(true);
     try {
-      const execution = await executeWorkflow(projectId, workflowId);
+      const execution = await executeWorkflow(projectId, workflowId, userRequest);
       notifications.show({ title: 'Started', message: 'Workflow execution started', color: 'blue' });
       router.push(`/projects/${projectId}/workflows/${workflowId}/executions/${execution.id}`);
     } catch (err: unknown) {
@@ -139,7 +152,7 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
       >
         <Button
           leftSection={<IconPlayerPlay size={16} />}
-          onClick={handleExecute}
+          onClick={handleExecuteClick}
           loading={executing}
           variant="gradient"
           gradient={{ from: 'violet', to: 'purple' }}
@@ -154,6 +167,12 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
       <form onSubmit={handleSave}>
         <Stack gap="lg" maw={1200}>
           <TextInput label="Workflow Name" size="lg" {...form.getInputProps('name')} />
+          <Switch
+            label="Require user input on execution"
+            description="When enabled, users are prompted to provide a free-text request before the workflow runs. The request is passed as context to all agents."
+            checked={form.values.requiresUserInput}
+            onChange={(e) => form.setFieldValue('requiresUserInput', e.currentTarget.checked)}
+          />
           {steps && <FlowchartBuilderWrapper steps={steps} onChange={setSteps} />}
           <Group>
             <Button type="submit" loading={saving} size="lg" variant="gradient" gradient={{ from: 'violet', to: 'purple' }}>
@@ -165,6 +184,16 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
 
       <Divider my="xl" />
       <ExecutionHistory projectId={projectId} workflowId={workflowId} />
+
+      <ExecuteWithInputModal
+        opened={executeModalOpened}
+        onClose={() => setExecuteModalOpened(false)}
+        onConfirm={(userRequest) => {
+          setExecuteModalOpened(false);
+          void doExecute(userRequest);
+        }}
+        executing={executing}
+      />
 
       <ConfirmModal
         opened={deleteOpened}

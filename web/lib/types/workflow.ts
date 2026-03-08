@@ -4,9 +4,10 @@ export interface WorkflowDefinition {
   createdAt: string;
   updatedAt: string;
   steps: WorkflowStep[];
+  requiresUserInput: boolean;
 }
 
-export type StepType = 'Agent' | 'Conditional' | 'ForEach' | 'ReviewLoop';
+export type StepType = 'Agent' | 'Conditional' | 'ForEach' | 'ReviewLoop' | 'Parallel';
 export type StepStatus = 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Skipped';
 
 export interface WorkflowStep {
@@ -24,11 +25,14 @@ export interface WorkflowStep {
   inputMappingJson?: string | null;
   trueBranchStepOrder?: string | null;
   falseBranchStepOrder?: string | null;
+  /** JSON array of AgentDefinition GUIDs to run in parallel (Parallel step type only). */
+  parallelAgentIdsJson?: string | null;
 }
 
 export interface CreateWorkflowRequest {
   name: string;
   steps: CreateWorkflowStepRequest[];
+  requiresUserInput?: boolean;
 }
 
 export interface CreateWorkflowStepRequest {
@@ -44,17 +48,20 @@ export interface CreateWorkflowStepRequest {
   inputMappingJson?: string | null;
   trueBranchStepOrder?: string | null;
   falseBranchStepOrder?: string | null;
+  /** JSON array of AgentDefinition GUIDs to run in parallel (Parallel step type only). */
+  parallelAgentIdsJson?: string | null;
 }
 
 export interface UpdateWorkflowRequest {
   name?: string;
   steps: CreateWorkflowStepRequest[];
+  requiresUserInput?: boolean;
 }
 
 export interface WorkflowExecution {
   id: string;
   workflowDefinitionId: string;
-  status: 'Queued' | 'Running' | 'Passed' | 'Failed';
+  status: 'Queued' | 'Running' | 'Passed' | 'Failed' | 'Cancelled';
   startedAt: string | null;
   completedAt: string | null;
   iterationCount: number;
@@ -63,6 +70,7 @@ export interface WorkflowExecution {
   errorMessage?: string | null;
   stepResults: WorkflowStepResult[];
   reviewScores: ReviewScore[];
+  userRequest?: string | null;
 }
 
 export interface WorkflowStepResult {

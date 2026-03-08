@@ -48,9 +48,7 @@ public class AgentStepExecutor : IStepExecutor
             };
         }
 
-        string stepInput = string.IsNullOrEmpty(context.AccumulatedOutput)
-            ? "Begin analysis of the project."
-            : context.AccumulatedOutput;
+        string stepInput = context.BuildAgentInput();
 
         _logger.LogInformation("Executing agent step {StepOrder}: {AgentName}",
             context.Step.StepOrder, agent.Name);

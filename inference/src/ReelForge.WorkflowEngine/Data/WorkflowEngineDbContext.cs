@@ -107,6 +107,8 @@ public class WorkflowEngineDbContext : DbContext
                 .HasColumnType("jsonb");
             entity.Property(e => e.InputMappingJson)
                 .HasColumnType("jsonb");
+            entity.Property(e => e.ParallelAgentIdsJson)
+                .HasColumnType("jsonb");
             entity.Property(e => e.StepType)
                 .HasConversion<string>();
         });
@@ -142,7 +144,8 @@ public class WorkflowEngineDbContext : DbContext
             entity.HasOne(e => e.WorkflowStep)
                 .WithMany(s => s.Results)
                 .HasForeignKey(e => e.WorkflowStepId)
-                .OnDelete(DeleteBehavior.Restrict);
+                // historically results no longer needed when a step definition is removed
+                .OnDelete(DeleteBehavior.Cascade);
             entity.Property(e => e.InputJson)
                 .HasColumnType("jsonb");
             entity.Property(e => e.OutputJson)

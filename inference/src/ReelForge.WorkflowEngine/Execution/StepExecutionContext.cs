@@ -15,6 +15,38 @@ public class StepExecutionContext
     public required int IterationCount { get; init; }
     public required string CorrelationId { get; init; }
     public CancellationToken CancellationToken { get; init; }
+
+    /// <summary>
+    /// Free-text user request provided at execution time.
+    /// Null when the workflow was executed without user input.
+    /// </summary>
+    public string? UserRequest { get; init; }
+
+    /// <summary>
+    /// Builds the final string input for an agent step by applying InputMappingJson field selection
+    /// (if present) and appending the user request as a clearly separated context section.
+    /// Expressions inside InputMappingJson are evaluated against <see cref="AccumulatedOutput"/>.
+    /// </summary>
+    public string BuildAgentInput()
+    {
+        string baseInput = string.IsNullOrEmpty(AccumulatedOutput)
+            ? "Begin analysis of the project."
+            : AccumulatedOutput;
+
+        // Apply field mapping when the step specifies InputMappingJson.
+        // This lets users compose a new JSON object by selecting fields from parallel or prior outputs.
+        if (!string.IsNullOrWhiteSpace(Step.InputMappingJson))
+        {
+            string? mapped = ExpressionEvaluator.ApplyInputMapping(AccumulatedOutput, Step.InputMappingJson);
+            if (mapped != null)
+                baseInput = mapped;
+        }
+
+        if (string.IsNullOrWhiteSpace(UserRequest))
+            return baseInput;
+
+        return $"{baseInput}\n\n---\nUser Request:\n{UserRequest}";
+    }
 }
 
 /// <summary>

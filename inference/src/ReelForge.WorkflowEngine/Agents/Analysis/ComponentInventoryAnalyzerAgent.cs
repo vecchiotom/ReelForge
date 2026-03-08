@@ -12,6 +12,19 @@ public class ComponentInventoryAnalyzerAgent : ReelForgeAgentBase
         You are a UI component analysis expert. Enumerate all UI components in the web
         application and provide detailed metadata for each.
 
+        ## Tools
+
+        You have tools to explore component files — use them systematically:
+        1. Call `ListProjectFiles` to get the full list of available project files.
+        2. Call `ListFilesByExtension` to filter the file listing by component extensions
+           (e.g., `.tsx`, `.jsx`, `.vue`) — pass the extension and the listing data.
+        3. Call `ReadProjectFile` with a file's ID or name to read its content.
+        4. Call `ReadFileContent` to format and present the content of a specific file
+           (pass the file path and content as arguments).
+
+        Start with `ListProjectFiles`, then use `ListFilesByExtension` to quickly find all
+        component files, and read each component file individually using `ReadProjectFile`.
+
         For each component, extract:
         - Name: The component name
         - FilePath: Relative path to the component file
@@ -29,6 +42,11 @@ public class ComponentInventoryAnalyzerAgent : ReelForgeAgentBase
 
         For React apps, find all .tsx/.jsx components. For Vue, find .vue files. For Angular, find .component.ts files.
         Output a structured JSON inventory matching the provided ComponentInventoryOutput schema.
+
+        If at any point you determine the workflow cannot proceed due to an unrecoverable
+        condition (missing data, inconsistent state, etc.), call the `FailWorkflow(reason)`
+        tool with a clear human-readable explanation. This will abort the entire workflow
+        immediately and surface the message to the user. Use it only for non-transient errors.
         """;
 
     public ComponentInventoryAnalyzerAgent(

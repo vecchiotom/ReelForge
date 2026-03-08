@@ -24,6 +24,7 @@ import { AgentNode } from './nodes/AgentNode';
 import { ConditionalNode } from './nodes/ConditionalNode';
 import { ForEachNode } from './nodes/ForEachNode';
 import { ReviewLoopNode } from './nodes/ReviewLoopNode';
+import { ParallelNode } from './nodes/ParallelNode';
 import { AddStepModal } from './AddStepModal';
 import type { StepData } from './WorkflowStepList';
 import type { StepType } from '@/lib/types/workflow';
@@ -33,6 +34,7 @@ const nodeTypes: NodeTypes = {
   conditional: ConditionalNode as any,
   forEach: ForEachNode as any,
   reviewLoop: ReviewLoopNode as any,
+  parallel: ParallelNode as any,
 };
 
 interface FlowchartBuilderProps {
@@ -54,6 +56,7 @@ export function FlowchartBuilder({ steps, onChange }: FlowchartBuilderProps) {
       const nodeType = step.stepType === 'Agent' ? 'agent'
         : step.stepType === 'Conditional' ? 'conditional'
         : step.stepType === 'ForEach' ? 'forEach'
+            : step.stepType === 'Parallel' ? 'parallel'
         : 'reviewLoop';
 
       newNodes.push({
@@ -119,6 +122,7 @@ export function FlowchartBuilder({ steps, onChange }: FlowchartBuilderProps) {
       inputMappingJson: null,
       trueBranchStepOrder: null,
       falseBranchStepOrder: null,
+      parallelAgentIds: [],
     };
     onChange([...steps, newStep]);
     setAddModalOpen(false);

@@ -1,7 +1,7 @@
 'use client';
 
 import { Modal, Stack, Button, Group, Text } from '@mantine/core';
-import { IconRobot, IconGitBranch, IconRepeat, IconStarFilled } from '@tabler/icons-react';
+import { IconRobot, IconGitBranch, IconRepeat, IconStarFilled, IconLayoutColumns } from '@tabler/icons-react';
 import type { StepType } from '@/lib/types/workflow';
 
 interface AddStepModalProps {
@@ -39,6 +39,13 @@ export function AddStepModal({ opened, onClose, onAdd }: AddStepModalProps) {
       icon: <IconStarFilled size={24} />,
       color: 'pink',
       description: 'Quality gate: loop back until minimum score is achieved',
+    },
+    {
+      type: 'Parallel',
+      label: 'Parallel Step',
+      icon: <IconLayoutColumns size={24} />,
+      color: 'teal',
+      description: 'Run multiple agents in parallel and merge their outputs',
     },
   ];
 

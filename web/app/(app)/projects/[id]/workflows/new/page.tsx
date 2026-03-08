@@ -30,8 +30,12 @@ export default function NewWorkflowPage({ params }: { params: Promise<{ id: stri
     }
 
     for (const [i, s] of steps.entries()) {
-      if (s.stepType !== 'Conditional' && !s.agentDefinitionId) {
+      if (s.stepType !== 'Conditional' && s.stepType !== 'Parallel' && !s.agentDefinitionId) {
         notifications.show({ title: 'Error', message: `Step ${i + 1} requires an agent`, color: 'red' });
+        return;
+      }
+      if (s.stepType === 'Parallel' && s.parallelAgentIds.length === 0) {
+        notifications.show({ title: 'Error', message: `Step ${i + 1} requires at least one agent`, color: 'red' });
         return;
       }
       if (s.stepType === 'Conditional' && !s.conditionExpression) {
@@ -57,6 +61,7 @@ export default function NewWorkflowPage({ params }: { params: Promise<{ id: stri
           inputMappingJson: s.inputMappingJson,
           trueBranchStepOrder: s.trueBranchStepOrder,
           falseBranchStepOrder: s.falseBranchStepOrder,
+          parallelAgentIdsJson: s.parallelAgentIds.length > 0 ? JSON.stringify(s.parallelAgentIds) : null,
         })),
       });
       notifications.show({ title: 'Created', message: 'Workflow created', color: 'green' });

@@ -13,6 +13,20 @@ public class ScriptwriterAgentImpl : ReelForgeAgentBase
         Write compelling scripts for each scene based on the app's purpose, features, and
         target audience.
 
+        ## Tools
+
+        You have tools to read all prior agent outputs before writing the script:
+        1. Call `ListProjectFiles` to list all project files (agents persist their outputs there).
+        2. Call `ReadProjectFile` with a file's ID or name to read any agent output (animation
+           strategy, component inventory, director plan, structure analysis, etc.).
+        3. Call `GetSandboxStatus` to verify the sandbox is active.
+        4. Call `ListSandboxFiles` with a directory path (e.g., `"src/"`) to browse the
+           Remotion components in the sandbox.
+        5. Call `ReadSandboxFile` with a relative path to read any sandbox file content.
+
+        Always call `ListProjectFiles` first, then read the director's plan and animation strategy
+        so the script aligns with the planned scenes and timing.
+
         Provide:
         - Title: A catchy title for the video script
         - DurationInSeconds: Total script duration across all scenes
@@ -30,6 +44,11 @@ public class ScriptwriterAgentImpl : ReelForgeAgentBase
         that emphasizes the app's value proposition.
 
         Output as ScriptwriterOutput JSON.
+
+        If at any point you determine the workflow cannot proceed due to an unrecoverable
+        condition (missing data, inconsistent state, etc.), call the `FailWorkflow(reason)`
+        tool with a clear human-readable explanation. This will abort the entire workflow
+        immediately and surface the message to the user. Use it only for non-transient errors.
         """;
 
     public ScriptwriterAgentImpl(

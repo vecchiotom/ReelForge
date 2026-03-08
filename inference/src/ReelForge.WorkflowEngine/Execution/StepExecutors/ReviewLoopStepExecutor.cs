@@ -46,7 +46,7 @@ public class ReviewLoopStepExecutor : IStepExecutor
             context.Execution.Id,
             context.Execution.ProjectId,
             context.CorrelationId);
-        AgentRunResult result = await agent.RunAsync(context.AccumulatedOutput, context.CancellationToken);
+        AgentRunResult result = await agent.RunAsync(context.BuildAgentInput(), context.CancellationToken);
         sw.Stop();
 
         int score = ParseReviewScore(result.Output);

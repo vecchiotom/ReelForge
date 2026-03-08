@@ -102,7 +102,8 @@ FlowchartBuilder
 │   ├── AgentNode (violet)
 │   ├── ConditionalNode (orange)
 │   ├── ForEachNode (cyan)
-│   └── ReviewLoopNode (pink)
+│   ├── ReviewLoopNode (pink)
+│   └── ParallelNode (teal)          ← new
 └── AddStepModal (step type selector)
 ```
 
@@ -146,6 +147,17 @@ ExecutionDetailPage
 - **Config:** Min score (1-10), max iterations, loop target
 - **Why Special:** Implements the ReviewAgent's quality assurance pattern with dedicated step type
 - **Handles:** Two source handles (continue/loop)
+
+### 5. Parallel Node (Teal)
+- **Purpose:** Run multiple AI agents simultaneously and merge their outputs
+- **Color:** `linear-gradient(135deg, #14b8a6 0%, #0d9488 100%)`
+- **Icon:** Columns / Fork
+- **Config:** List of agent definitions to run in parallel
+- **Output format:** JSON array `[{"agentName":"...","output":"..."},...]`
+- **UI features:** Expandable agent table with remove buttons; `AgentPicker` with `excludeIds` to prevent duplicates
+- **File:** `components/workflows/nodes/ParallelNode.tsx`
+
+**When to use:** When multiple independent analysis steps (e.g., CodeStructureAnalyzer + DependencyAnalyzer) can execute simultaneously, cutting total execution time proportionally to the degree of parallelism.
 
 ---
 
@@ -235,6 +247,40 @@ eventSource.addEventListener('step.completed', (e) => {
 3. Watch real-time progress with animated flow
 4. See events appear in timeline as they occur
 5. View final status and metrics when complete
+
+---
+
+## ExpressionEvaluator Bug Fixes
+
+The `ExpressionEvaluator` in `ReelForge.WorkflowEngine/Execution/ExpressionEvaluator.cs` was rewritten to fix six issues that affected Conditional, ForEach, and ReviewLoop steps.
+
+### Fixes Applied
+
+| #   | Issue                                                                                                                        | Fix                                                                                       |
+| --- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| 1   | **Nested key replacement order** — `score.value` was partially replaced before `score`, corrupting the expression            | Keys are now sorted by length descending before substitution                              |
+| 2   | **Bare key support** — expressions like `score > 8` failed because `$` prefix was required                                   | `ReplaceWholeWord()` helper substitutes both `$.score` and bare `score`                   |
+| 3   | **Array root in `ExtractJsonArray`** — ForEach after a Parallel step fails because the accumulated output is `[...]` at root | Empty path or `$` now returns all root-level array elements                               |
+| 4   | **Array index access in `ExtractJsonValue`** — `$.items[0].name` paths failed                                                | Integer path segments are now treated as array indices                                    |
+| 5   | **Truthiness evaluation** — `is true` C# pattern broke on non-bool types                                                     | Replaced with explicit `IsTruthy()` switch handling bool/int/long/double/decimal/string   |
+| 6   | **Nested object raw text at parent key** — accessing a parent key that held an object returned nothing                       | Nested objects are now stored at both the parent key (raw JSON) and traversed recursively |
+
+### Expression Examples That Now Work
+
+```
+# Conditional step
+score > 8
+$.score > 8
+$.review.score > 8
+
+# ForEach step over Parallel output
+$.                        → iterates root array [{"agentName":"...","output":"..."}]
+
+# ReviewLoop step
+$.score >= 9
+$.review.PassesReview == true
+passesReview == "true"
+```
 
 ---
 

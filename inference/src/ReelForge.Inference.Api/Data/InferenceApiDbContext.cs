@@ -107,6 +107,8 @@ public class InferenceApiDbContext : DbContext
                 .HasColumnType("jsonb");
             entity.Property(e => e.InputMappingJson)
                 .HasColumnType("jsonb");
+            entity.Property(e => e.ParallelAgentIdsJson)
+                .HasColumnType("jsonb");
             entity.Property(e => e.StepType)
                 .HasConversion<string>();
             entity.ToTable("workflow_steps", t => t.ExcludeFromMigrations());
@@ -144,7 +146,8 @@ public class InferenceApiDbContext : DbContext
             entity.HasOne(e => e.WorkflowStep)
                 .WithMany(s => s.Results)
                 .HasForeignKey(e => e.WorkflowStepId)
-                .OnDelete(DeleteBehavior.Restrict);
+                // allow steps to be removed even if historic results exist; we clean them up automatically
+                .OnDelete(DeleteBehavior.Cascade);
             entity.Property(e => e.InputJson)
                 .HasColumnType("jsonb");
             entity.Property(e => e.OutputJson)

@@ -75,7 +75,8 @@ public class ReactRemotionSandboxTools
     // ──────────────────────────────────────────────
 
     [Description(
-        "Install one or more npm packages into the sandbox workspace. " +
+        "Install one or more npm packages into the sandbox workspace. This runs only inside " +
+        "the isolated sandbox container and cannot affect the host or other services. " +
         "Use this when the project you are recreating depends on specific libraries " +
         "(e.g. '@mantine/core', 'framer-motion', 'three'). " +
         "Packages are validated server-side; only standard npm package names are accepted. " +

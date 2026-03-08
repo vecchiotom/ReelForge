@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/vecchiotom/reelforge/database"
 	"github.com/vecchiotom/reelforge/middleware"
@@ -181,4 +182,44 @@ func handleExecutionEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+// handleStopExecution allows a user or admin to request that a workflow execution be aborted. After verifying permissions it publishes a stop request message that the WorkflowEngine will consume.
+func handleStopExecution(w http.ResponseWriter, r *http.Request) {
+    vars := mux.Vars(r)
+    projectID := vars["projectId"]
+    executionID := vars["executionId"]
+
+    uc, ok := r.Context().Value(middleware.UserContextKey).(middleware.UserContext)
+    if !ok {
+        http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+        return
+    }
+
+    // fetch execution record to know associated project
+    exec, err := services.GetWorkflowExecution(uuid.MustParse(executionID))
+    if err != nil {
+        http.Error(w, `{"error":"execution not found"}`, http.StatusNotFound)
+        return
+    }
+
+    // check ownership unless admin
+    if !uc.IsAdmin {
+        var project models.Project
+        if err := database.DB.Where("id = ?", projectID).First(&project).Error; err != nil {
+            http.Error(w, `{"error":"project not found"}`, http.StatusNotFound)
+            return
+        }
+        if project.OwnerID.String() != uc.UserID {
+            http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+            return
+        }
+    }
+
+    if err := services.PublishStopRequest(exec.ID.String(), uc.UserID); err != nil {
+        http.Error(w, `{"error":"failed to send stop request"}`, http.StatusInternalServerError)
+        return
+    }
+
+    w.WriteHeader(http.StatusAccepted)
+    w.Write([]byte(`{}`))
 }

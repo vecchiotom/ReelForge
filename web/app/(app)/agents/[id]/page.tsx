@@ -1,14 +1,13 @@
 'use client';
 
 import { use, useState } from 'react';
-import { Card, Text, Stack, Group, Button, Code, Loader, Center, Box, Badge, SimpleGrid } from '@mantine/core';
+import { Card, Text, Stack, Group, Button, Code, Loader, Center, Badge, SimpleGrid } from '@mantine/core';
 import { IconEdit, IconTrash, IconTools, IconFileExport } from '@tabler/icons-react';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useAgent } from '@/lib/hooks/use-agents';
 import { deleteAgent } from '@/lib/api/agents';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { AgentTypeBadge } from '@/components/agents/AgentTypeBadge';
+import { AgentSchemaViewer } from '@/components/agents/AgentSchemaViewer';
 import { AgentForm } from '@/components/agents/AgentForm';
 import { ConfirmModal } from '@/components/shared/ConfirmModal';
 import { notifications } from '@mantine/notifications';
@@ -98,25 +97,7 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
             <Text size="xs" c="dimmed" mb="sm">
               This agent enforces output to conform to the following JSON schema:
             </Text>
-            <Box style={{
-              maxHeight: '500px',
-              overflow: 'auto',
-              borderRadius: '8px',
-              fontSize: '13px'
-            }}>
-              <SyntaxHighlighter
-                language="json"
-                style={oneDark}
-                customStyle={{
-                  margin: 0,
-                  borderRadius: '8px',
-                  padding: '16px'
-                }}
-                showLineNumbers
-              >
-                {JSON.stringify(JSON.parse(agent.outputSchemaJson), null, 2)}
-              </SyntaxHighlighter>
-            </Box>
+            <AgentSchemaViewer schemaJson={agent.outputSchemaJson} />
           </Card>
         )}
       </Stack>

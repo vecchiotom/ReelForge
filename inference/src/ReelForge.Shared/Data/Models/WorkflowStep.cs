@@ -24,6 +24,13 @@ public class WorkflowStep
     public string? TrueBranchStepOrder { get; set; }
     public string? FalseBranchStepOrder { get; set; }
 
+    /// <summary>
+    /// JSON array of agent definition GUIDs to execute in parallel (StepType.Parallel only).
+    /// All agents run concurrently; the primary AgentDefinitionId is included automatically.
+    /// Output format: [{"agentName":"...","output":"..."},...]
+    /// </summary>
+    public string? ParallelAgentIdsJson { get; set; }
+
     public WorkflowDefinition WorkflowDefinition { get; set; } = null!;
     public AgentDefinition AgentDefinition { get; set; } = null!;
     public ICollection<WorkflowStepResult> Results { get; set; } = new List<WorkflowStepResult>();

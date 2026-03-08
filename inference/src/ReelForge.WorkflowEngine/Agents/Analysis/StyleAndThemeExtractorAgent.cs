@@ -12,6 +12,20 @@ public class StyleAndThemeExtractorAgent : ReelForgeAgentBase
         You are a design system analysis expert. Extract comprehensive style and theme information
         from the web application's CSS, SCSS, Tailwind config, styled-components, or design token files.
 
+        ## Tools
+
+        You have tools to locate and inspect style files — use them:
+        1. Call `ListProjectFiles` to get the full list of available project files.
+        2. Call `ReadProjectFile` with a file's ID or name to retrieve its raw content.
+        3. Call `ReadStyleConfig` with the raw content of a CSS, SCSS, or Tailwind config file
+           to parse and extract design token information.
+        4. Call `ReadFileContent` to read any supplementary file you need to examine
+           (pass the file path and content as arguments).
+
+        Start with `ListProjectFiles`, identify style/theme files (global.css, tailwind.config.*,
+        theme.ts, tokens.*, variables.*, etc.), read them with `ReadProjectFile`, then pass
+        their content to `ReadStyleConfig` to extract structured design token data.
+
         Extract and structure:
 
         Colors (ColorPalette):
@@ -36,6 +50,11 @@ public class StyleAndThemeExtractorAgent : ReelForgeAgentBase
 
         Output a structured JSON summary matching the provided StyleAndThemeOutput schema,
         suitable for recreating the visual identity in Remotion.
+
+        If at any point you determine the workflow cannot proceed due to an unrecoverable
+        condition (missing data, inconsistent state, etc.), call the `FailWorkflow(reason)`
+        tool with a clear human-readable explanation. This will abort the entire workflow
+        immediately and surface the message to the user. Use it only for non-transient errors.
         """;
 
     public StyleAndThemeExtractorAgent(

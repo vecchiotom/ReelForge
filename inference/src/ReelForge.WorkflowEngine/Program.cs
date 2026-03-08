@@ -94,6 +94,9 @@ builder.Services.AddSingleton<IAgentToolProvider, AgentToolProvider>();
 builder.Services.AddSingleton<IProjectFileWorkspace, ProjectFileWorkspace>();
 builder.Services.AddSingleton<ProjectFileAgentTools>();
 builder.Services.AddSingleton<ReactRemotionSandboxTools>();
+// workflow control tools provide helpers such as FailWorkflow
+builder.Services.AddSingleton<WorkflowControlAgentTools>();
+
 builder.Services.AddSingleton<IWorkflowExecutionContextAccessor, WorkflowExecutionContextAccessor>();
 builder.Services.AddHttpClient();
 
@@ -102,6 +105,7 @@ builder.Services.AddSingleton<IStepExecutor, AgentStepExecutor>();
 builder.Services.AddSingleton<IStepExecutor, ConditionalStepExecutor>();
 builder.Services.AddSingleton<IStepExecutor, ForEachStepExecutor>();
 builder.Services.AddSingleton<IStepExecutor, ReviewLoopStepExecutor>();
+builder.Services.AddSingleton<IStepExecutor, ParallelStepExecutor>();
 
 // --- Workflow Executor ---
 builder.Services.AddScoped<WorkflowExecutorService>();
@@ -112,7 +116,10 @@ int maxConcurrency = builder.Configuration.GetValue("WorkflowEngine:MaxConcurren
 
 builder.Services.AddMassTransit(x =>
 {
+    // existing request consumer
     x.AddConsumer<WorkflowExecutionRequestedConsumer>();
+    // consumer for stop requests published by Go API
+    x.AddConsumer<WorkflowExecutionStopRequestedConsumer>();
 
     x.UsingRabbitMq((context, cfg) =>
     {
@@ -131,6 +138,13 @@ builder.Services.AddMassTransit(x =>
             e.PrefetchCount = maxConcurrency;
             e.ConcurrentMessageLimit = maxConcurrency;
             e.ConfigureConsumer<WorkflowExecutionRequestedConsumer>(context);
+        });
+
+        // separate endpoint for stop requests so they don't compete with normal executions
+        cfg.ReceiveEndpoint("workflow-stop-requests", e =>
+        {
+            // fanout exchange binding created automatically by MassTransit when consumer is added
+            e.ConfigureConsumer<WorkflowExecutionStopRequestedConsumer>(context);
         });
     });
 });

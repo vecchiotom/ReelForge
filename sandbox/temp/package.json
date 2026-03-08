@@ -1,0 +1,30 @@
+{
+  "name": "reelforge-remotion-template",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "remotion bundle src/index.ts --out-dir build",
+    "render": "remotion render src/index.ts Main out/video.mp4 --chromium-executable=/usr/bin/chromium",
+    "compositions": "remotion compositions src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@react-spring/web": "^9.7.5",
+    "@remotion/cli": "^4.0.318",
+    "@remotion/google-fonts": "^4.0.318",
+    "@remotion/renderer": "^4.0.318",
+    "@react-three/drei": "^9.120.4",
+    "@react-three/fiber": "^8.17.10",
+    "d3": "^7.9.0",
+    "framer-motion": "^11.14.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "remotion": "^4.0.318",
+    "three": "^0.172.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "typescript": "^5.8.2"
+  }
+}

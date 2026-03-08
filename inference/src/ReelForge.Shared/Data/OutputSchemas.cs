@@ -1,22 +1,29 @@
 namespace ReelForge.Shared.Data.OutputSchemas;
 
 /// <summary>
-/// Structured output for RemotionComponentTranslatorAgent
+/// Structured output for RemotionComponentTranslatorAgent.
+/// The agent builds the Remotion project structure directly inside the sandbox
+/// using sandbox tools; this schema summarises what was constructed.
 /// </summary>
-public class RemotionComponentOutput
+public class RemotionProjectBuildOutput
 {
-    public List<RemotionComponent> Components { get; set; } = new();
-    public string RemotionVersion { get; set; } = "4.0";
-    public List<string> RequiredImports { get; set; } = new();
-}
+    /// <summary>Relative sandbox paths of every new TSX/TS file written (e.g. "src/LoginScreen.tsx").</summary>
+    public List<string> CreatedFiles { get; set; } = new();
 
-public class RemotionComponent
-{
-    public string ComponentName { get; set; } = string.Empty;
-    public string RemotionCode { get; set; } = string.Empty;
-    public int DurationInFrames { get; set; }
-    public string Description { get; set; } = string.Empty;
-    public Dictionary<string, object> DefaultProps { get; set; } = new();
+    /// <summary>Relative sandbox paths of existing files that were modified (e.g. "src/index.ts", "src/root.tsx").</summary>
+    public List<string> ModifiedFiles { get; set; } = new();
+
+    /// <summary>npm packages installed in addition to the template defaults (e.g. ["@mantine/core"]).</summary>
+    public List<string> InstalledPackages { get; set; } = new();
+
+    /// <summary>Remotion composition IDs registered in root.tsx (must match registerRoot / Composition id props).</summary>
+    public List<string> RegisteredCompositions { get; set; } = new();
+
+    /// <summary>Whether TypeScript type-checking passed with no errors after writing all files.</summary>
+    public bool TypeCheckPassed { get; set; }
+
+    /// <summary>Short human-readable description of what was built and any caveats.</summary>
+    public string Summary { get; set; } = string.Empty;
 }
 
 /// <summary>

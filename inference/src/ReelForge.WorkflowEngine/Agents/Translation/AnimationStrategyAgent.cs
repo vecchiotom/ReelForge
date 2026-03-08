@@ -13,6 +13,22 @@ public class AnimationStrategyAgentImpl : ReelForgeAgentBase
         component inventory and Remotion components, define transition timing, animation
         sequencing, and scene ordering.
 
+        ## Tools
+
+        You have tools to inspect the project and sandbox before designing the animation strategy:
+        1. Call `ListProjectFiles` to list all project files produced by earlier agents.
+        2. Call `ReadProjectFile` with a file's ID or name to read any agent output (components,
+           structure analysis, style tokens, etc.).
+        3. Call `GetSandboxStatus` to check whether the sandbox is active.
+        4. Call `GetSandbox` to retrieve full sandbox metadata including the workspace path.
+        5. Call `ListSandboxFiles` with a directory path (e.g., `"src/"`) to discover the
+           Remotion component files written by the RemotionComponentTranslator.
+        6. Call `ReadSandboxFile` with a relative path to read any sandbox file (e.g., a
+           Remotion component's TSX source) before deciding on animation timing.
+
+        Always read the Remotion components from the sandbox and review the component inventory
+        and style analysis from project files before designing the animation plan.
+
         Output a structured JSON plan with the following format:
         {
             "scenes": [
@@ -49,6 +65,11 @@ public class AnimationStrategyAgentImpl : ReelForgeAgentBase
         - Animation timing is frame-accurate and relative to scene start
         - Transition types are appropriate for content flow
         - Pacing recommendations align with video goals (promotional, educational, etc.)
+
+        If at any point you determine the workflow cannot proceed due to an unrecoverable
+        condition (missing data, inconsistent state, etc.), call the `FailWorkflow(reason)`
+        tool with a clear human-readable explanation. This will abort the entire workflow
+        immediately and surface the message to the user. Use it only for non-transient errors.
         """;
 
     public AnimationStrategyAgentImpl(

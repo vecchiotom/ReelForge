@@ -30,7 +30,8 @@ public enum ExecutionStatus
     Queued,
     Running,
     Passed,
-    Failed
+    Failed,
+    Cancelled
 }
 
 /// <summary>
@@ -61,7 +62,12 @@ public enum StepType
     Agent,
     Conditional,
     ForEach,
-    ReviewLoop
+    ReviewLoop,
+    /// <summary>
+    /// Runs multiple agents in parallel and merges their outputs into a JSON array
+    /// passed to the next step as: [{"agentName":"...","output":"{..."}}, ...]
+    /// </summary>
+    Parallel
 }
 
 /// <summary>

@@ -34,6 +34,10 @@ namespace ReelForge.WorkflowEngine.Migrations
                         .HasColumnType("text")
                         .HasColumnName("agent_type");
 
+                    b.Property<string>("AvailableToolsJson")
+                        .HasColumnType("text")
+                        .HasColumnName("available_tools_json");
+
                     b.Property<string>("Color")
                         .HasColumnType("text")
                         .HasColumnName("color");
@@ -51,6 +55,10 @@ namespace ReelForge.WorkflowEngine.Migrations
                         .HasColumnType("text")
                         .HasColumnName("description");
 
+                    b.Property<bool>("GeneratesOutput")
+                        .HasColumnType("boolean")
+                        .HasColumnName("generates_output");
+
                     b.Property<bool>("IsBuiltIn")
                         .HasColumnType("boolean")
                         .HasColumnName("is_built_in");
@@ -59,6 +67,14 @@ namespace ReelForge.WorkflowEngine.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("name");
+
+                    b.Property<string>("OutputSchemaJson")
+                        .HasColumnType("text")
+                        .HasColumnName("output_schema_json");
+
+                    b.Property<string>("OutputSchemaName")
+                        .HasColumnType("text")
+                        .HasColumnName("output_schema_name");
 
                     b.Property<Guid?>("OwnerId")
                         .HasColumnType("uuid")
@@ -201,10 +217,23 @@ namespace ReelForge.WorkflowEngine.Migrations
                         .HasColumnType("bigint")
                         .HasColumnName("size_bytes");
 
+                    b.Property<string>("StorageBucket")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("storage_bucket");
+
                     b.Property<string>("StorageKey")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("storage_key");
+
+                    b.Property<string>("StorageMetadataJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("storage_metadata_json");
+
+                    b.Property<string>("StoragePrefix")
+                        .HasColumnType("text")
+                        .HasColumnName("storage_prefix");
 
                     b.Property<string>("SummaryStatus")
                         .IsRequired()
@@ -284,6 +313,10 @@ namespace ReelForge.WorkflowEngine.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("project_id");
 
+                    b.Property<bool>("RequiresUserInput")
+                        .HasColumnType("boolean")
+                        .HasColumnName("requires_user_input");
+
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("updated_at");
@@ -345,6 +378,10 @@ namespace ReelForge.WorkflowEngine.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("status");
+
+                    b.Property<string>("UserRequest")
+                        .HasColumnType("text")
+                        .HasColumnName("user_request");
 
                     b.Property<Guid>("WorkflowDefinitionId")
                         .HasColumnType("uuid")
@@ -411,6 +448,10 @@ namespace ReelForge.WorkflowEngine.Migrations
                     b.Property<int?>("MinScore")
                         .HasColumnType("integer")
                         .HasColumnName("min_score");
+
+                    b.Property<string>("ParallelAgentIdsJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("parallel_agent_ids_json");
 
                     b.Property<int>("StepOrder")
                         .HasColumnType("integer")
@@ -635,7 +676,7 @@ namespace ReelForge.WorkflowEngine.Migrations
                     b.HasOne("ReelForge.Shared.Data.Models.WorkflowStep", "WorkflowStep")
                         .WithMany("Results")
                         .HasForeignKey("WorkflowStepId")
-                        .OnDelete(DeleteBehavior.Restrict)
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_workflow_step_results_workflow_steps_workflow_step_id");
 

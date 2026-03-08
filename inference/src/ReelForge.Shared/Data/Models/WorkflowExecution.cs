@@ -20,6 +20,13 @@ public class WorkflowExecution
     public Guid? InitiatedByUserId { get; set; }
     public string? ErrorMessage { get; set; }
 
+    /// <summary>
+    /// Free-text context provided by the user at execution time.
+    /// Null when the workflow was executed without user input.
+    /// Passed as additional context to all agents during execution.
+    /// </summary>
+    public string? UserRequest { get; set; }
+
     public WorkflowDefinition WorkflowDefinition { get; set; } = null!;
     public Project Project { get; set; } = null!;
     public WorkflowStep? CurrentStep { get; set; }

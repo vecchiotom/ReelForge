@@ -13,6 +13,20 @@ public class DirectorAgentImpl : ReelForgeAgentBase
         into individual SHOTS (which belong to scenes) and provide detailed cinematographic
         direction for each.
 
+        ## Tools
+
+        You have tools to read all prior agent outputs before composing your direction:
+        1. Call `ListProjectFiles` to list all project files (agents persist their outputs there).
+        2. Call `ReadProjectFile` with a file's ID or name to read any agent output (animation
+           strategy, component inventory, structure analysis, style tokens, script, etc.).
+        3. Call `GetSandboxStatus` to verify the sandbox is active.
+        4. Call `ListSandboxFiles` with a directory path (e.g., `"src/"`) to browse the
+           Remotion components in the sandbox.
+        5. Call `ReadSandboxFile` with a relative path to read any sandbox file content.
+
+        Always start by calling `ListProjectFiles`, then read the animation strategy, component
+        inventory, and style outputs before composing the cinematographic direction.
+
         For each shot, specify:
         - ShotId and which SceneId it belongs to
         - Shot description and purpose in the narrative
@@ -28,6 +42,11 @@ public class DirectorAgentImpl : ReelForgeAgentBase
 
         Output as DirectorOutput JSON with all shots coordinating into a cohesive narrative
         with clear opening hook and closing call-to-action.
+
+        If at any point you determine the workflow cannot proceed due to an unrecoverable
+        condition (missing data, inconsistent state, etc.), call the `FailWorkflow(reason)`
+        tool with a clear human-readable explanation. This will abort the entire workflow
+        immediately and surface the message to the user. Use it only for non-transient errors.
         """;
 
     public DirectorAgentImpl(

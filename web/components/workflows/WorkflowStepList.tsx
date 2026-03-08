@@ -21,6 +21,8 @@ export interface StepData {
   inputMappingJson: string | null;
   trueBranchStepOrder: string | null;
   falseBranchStepOrder: string | null;
+  /** Ordered list of AgentDefinition IDs to run in parallel (Parallel step type only). */
+  parallelAgentIds: string[];
 }
 
 interface WorkflowStepListProps {
@@ -61,6 +63,7 @@ export function WorkflowStepList({ steps, onChange }: WorkflowStepListProps) {
         inputMappingJson: null,
         trueBranchStepOrder: null,
         falseBranchStepOrder: null,
+        parallelAgentIds: [],
       },
     ]);
   };

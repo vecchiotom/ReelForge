@@ -35,4 +35,4 @@ WORKDIR /app
 COPY --from=build /app/sandbox-executor ./
 
 EXPOSE 8080
-ENTRYPOINT ["./sandbox-executor"]
+ENTRYPOINT ["/app/sandbox-executor"]

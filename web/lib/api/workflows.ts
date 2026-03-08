@@ -38,9 +38,14 @@ export function deleteWorkflow(projectId: string, workflowId: string): Promise<v
   });
 }
 
-export function executeWorkflow(projectId: string, workflowId: string): Promise<WorkflowExecution> {
+export function executeWorkflow(
+  projectId: string,
+  workflowId: string,
+  userRequest?: string | null,
+): Promise<WorkflowExecution> {
   return apiFetch<WorkflowExecution>(`/api/v1/projects/${projectId}/workflows/${workflowId}/execute`, {
     method: 'POST',
+    body: JSON.stringify({ userRequest: userRequest ?? null }),
   });
 }
 
@@ -48,6 +53,10 @@ export function getWorkflowExecutions(projectId: string, workflowId: string): Pr
   return apiFetch<WorkflowExecution[]>(`/api/v1/projects/${projectId}/workflows/${workflowId}/executions`);
 }
 
+// legacy helper – the client should prefer `getExecution` from
+// lib/api/executions.ts which targets the inference‑API route. Keeping this
+// export for backward compatibility; it still points at the workflow-scoped
+// path and may be removed in the future.
 export function getWorkflowExecution(
   projectId: string,
   workflowId: string,

@@ -11,6 +11,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ReelForge.Inference.Api", "
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ReelForge.WorkflowEngine", "src\ReelForge.WorkflowEngine\ReelForge.WorkflowEngine.csproj", "{444511C6-339D-4902-9642-F4677E7ACD8D}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05-4346-4AA6-1389-037BE0695223}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ReelForge.WorkflowEngine.Tests", "tests\ReelForge.WorkflowEngine.Tests\ReelForge.WorkflowEngine.Tests.csproj", "{4A4A02E2-8059-46EC-902E-1A9F642BCE9D}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -57,6 +61,18 @@ Global
 		{444511C6-339D-4902-9642-F4677E7ACD8D}.Release|x64.Build.0 = Release|Any CPU
 		{444511C6-339D-4902-9642-F4677E7ACD8D}.Release|x86.ActiveCfg = Release|Any CPU
 		{444511C6-339D-4902-9642-F4677E7ACD8D}.Release|x86.Build.0 = Release|Any CPU
+		{4A4A02E2-8059-46EC-902E-1A9F642BCE9D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4A4A02E2-8059-46EC-902E-1A9F642BCE9D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4A4A02E2-8059-46EC-902E-1A9F642BCE9D}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{4A4A02E2-8059-46EC-902E-1A9F642BCE9D}.Debug|x64.Build.0 = Debug|Any CPU
+		{4A4A02E2-8059-46EC-902E-1A9F642BCE9D}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{4A4A02E2-8059-46EC-902E-1A9F642BCE9D}.Debug|x86.Build.0 = Debug|Any CPU
+		{4A4A02E2-8059-46EC-902E-1A9F642BCE9D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4A4A02E2-8059-46EC-902E-1A9F642BCE9D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4A4A02E2-8059-46EC-902E-1A9F642BCE9D}.Release|x64.ActiveCfg = Release|Any CPU
+		{4A4A02E2-8059-46EC-902E-1A9F642BCE9D}.Release|x64.Build.0 = Release|Any CPU
+		{4A4A02E2-8059-46EC-902E-1A9F642BCE9D}.Release|x86.ActiveCfg = Release|Any CPU
+		{4A4A02E2-8059-46EC-902E-1A9F642BCE9D}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -65,5 +81,6 @@ Global
 		{5BB6C5D2-3CD0-46BC-972F-0AD5D1794552} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{EDF44466-8F46-452F-AAD4-323EDC4EDEC6} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{444511C6-339D-4902-9642-F4677E7ACD8D} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{4A4A02E2-8059-46EC-902E-1A9F642BCE9D} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

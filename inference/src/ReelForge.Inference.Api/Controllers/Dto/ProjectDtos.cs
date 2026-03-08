@@ -22,7 +22,8 @@ public record UpdateAgentRequest(string Name, string Description, string SystemP
 
 public record WorkflowDefinitionResponse(
     Guid Id, string Name, DateTime CreatedAt, DateTime UpdatedAt,
-    List<WorkflowStepResponse> Steps);
+    List<WorkflowStepResponse> Steps,
+    bool RequiresUserInput = false);
 
 public record WorkflowStepResponse(
     Guid Id, Guid AgentDefinitionId, int StepOrder,
@@ -35,9 +36,14 @@ public record WorkflowStepResponse(
     int? MinScore = null,
     string? InputMappingJson = null,
     string? TrueBranchStepOrder = null,
-    string? FalseBranchStepOrder = null);
+    string? FalseBranchStepOrder = null,
+    string? ParallelAgentIdsJson = null);
 
-public record CreateWorkflowRequest(string Name, List<CreateWorkflowStepRequest> Steps);
+public record CreateWorkflowRequest(string Name, List<CreateWorkflowStepRequest> Steps, bool RequiresUserInput = false);
+
+/// <summary>Optional body for the execute endpoint. UserRequest is null when the workflow runs without user input.</summary>
+public record ExecuteWorkflowRequest(string? UserRequest = null);
+
 public record CreateWorkflowStepRequest(
     Guid AgentDefinitionId, int StepOrder, string? EdgeConditionJson, string? Label,
     string? StepType = null,
@@ -48,15 +54,17 @@ public record CreateWorkflowStepRequest(
     int? MinScore = null,
     string? InputMappingJson = null,
     string? TrueBranchStepOrder = null,
-    string? FalseBranchStepOrder = null);
-public record UpdateWorkflowRequest(string? Name, List<CreateWorkflowStepRequest> Steps);
+    string? FalseBranchStepOrder = null,
+    string? ParallelAgentIdsJson = null);
+public record UpdateWorkflowRequest(string? Name, List<CreateWorkflowStepRequest> Steps, bool? RequiresUserInput = null);
 
 public record WorkflowExecutionResponse(
     Guid Id, Guid WorkflowDefinitionId, string Status,
     DateTime? StartedAt, DateTime? CompletedAt, int IterationCount,
     string? ResultJson, string? CorrelationId, string? ErrorMessage,
     List<StepResultResponse> StepResults,
-    List<ReviewScoreResponse> ReviewScores);
+    List<ReviewScoreResponse> ReviewScores,
+    string? UserRequest = null);
 
 public record StepResultResponse(
     Guid Id, Guid WorkflowStepId, string Output, int TokensUsed,

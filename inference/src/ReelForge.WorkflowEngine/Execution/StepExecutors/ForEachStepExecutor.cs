@@ -83,8 +83,12 @@ public class ForEachStepExecutor : IStepExecutor
             },
             async (index, token) =>
             {
+                // For each item: prepend the user request context if present
+                string itemInput = string.IsNullOrWhiteSpace(context.UserRequest)
+                    ? items[index]
+                    : $"{items[index]}\n\n---\nUser Request:\n{context.UserRequest}";
                 Stopwatch sw = Stopwatch.StartNew();
-                AgentRunResult result = await agent.RunAsync(items[index], token);
+                AgentRunResult result = await agent.RunAsync(itemInput, token);
                 sw.Stop();
                 Interlocked.Add(ref totalDuration, sw.ElapsedMilliseconds);
                 Interlocked.Add(ref totalTokens, result.TokensUsed);

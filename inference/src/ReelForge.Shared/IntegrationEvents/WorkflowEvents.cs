@@ -11,6 +11,11 @@ public record WorkflowExecutionRequested
     public Guid InitiatedByUserId { get; init; }
     public string CorrelationId { get; init; } = string.Empty;
     public DateTime RequestedAt { get; init; } = DateTime.UtcNow;
+    /// <summary>
+    /// Optional free-text user request passed as context to all agents.
+    /// Null when the workflow was executed without user input.
+    /// </summary>
+    public string? UserRequest { get; init; }
 }
 
 /// <summary>
@@ -24,6 +29,18 @@ public record WorkflowExecutionCompleted
     public string FinalStatus { get; init; } = string.Empty;
     public string? ResultJson { get; init; }
     public DateTime CompletedAt { get; init; } = DateTime.UtcNow;
+}
+
+/// <summary>
+/// Event produced when a user (or admin) requests that a running or queued
+/// workflow execution be aborted. The WorkflowEngine will handle cancellation
+/// and update the execution status accordingly.
+/// </summary>
+public record WorkflowExecutionStopRequested
+{
+    public Guid ExecutionId { get; init; }
+    public Guid RequestedByUserId { get; init; }
+    public DateTime RequestedAt { get; init; } = DateTime.UtcNow;
 }
 
 /// <summary>

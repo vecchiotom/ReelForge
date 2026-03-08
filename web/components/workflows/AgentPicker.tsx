@@ -12,8 +12,10 @@ interface AgentOptionItem extends ComboboxItem {
 }
 
 interface AgentPickerProps {
-  value: string;
+  value: string | null;
   onChange: (value: string) => void;
+  placeholder?: string;
+  excludeIds?: string[];
 }
 
 const renderOption: SelectProps['renderOption'] = ({ option }) => {
@@ -33,13 +35,14 @@ const renderOption: SelectProps['renderOption'] = ({ option }) => {
   );
 };
 
-export function AgentPicker({ value, onChange }: AgentPickerProps) {
+export function AgentPicker({ value, onChange, placeholder = 'Select agent', excludeIds }: AgentPickerProps) {
   const { data: agents } = useAgents();
 
   const options = useMemo(() => {
     if (!agents) return [];
     const groups: Record<string, AgentOptionItem[]> = {};
     for (const agent of agents) {
+      if (excludeIds?.includes(agent.id)) continue;
       const group = getAgentGroup(agent.agentType);
       if (!groups[group]) groups[group] = [];
       groups[group].push({
@@ -50,11 +53,11 @@ export function AgentPicker({ value, onChange }: AgentPickerProps) {
       });
     }
     return Object.entries(groups).map(([group, items]) => ({ group, items }));
-  }, [agents]);
+  }, [agents, excludeIds]);
 
   return (
     <Select
-      placeholder="Select agent"
+      placeholder={placeholder}
       data={options}
       value={value}
       onChange={(v) => v && onChange(v)}

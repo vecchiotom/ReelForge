@@ -6,6 +6,7 @@ using ReelForge.Shared.Data.Models;
 using ReelForge.Shared.IntegrationEvents;
 using ReelForge.WorkflowEngine.Data;
 using ReelForge.WorkflowEngine.Observability;
+using ReelForge.WorkflowEngine.Agents.Tools;
 
 namespace ReelForge.WorkflowEngine.Execution;
 
@@ -21,6 +22,10 @@ public class WorkflowExecutorService
     private readonly ILogger<WorkflowExecutorService> _logger;
     private readonly Dictionary<StepType, IStepExecutor> _executors;
     private readonly IPublishEndpoint _publishEndpoint;
+
+    // track cancellation tokens for running executions so external requests can abort them
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, CancellationTokenSource> _executionCts
+        = new();
 
     public WorkflowExecutorService(
         IServiceScopeFactory scopeFactory,
@@ -44,6 +49,11 @@ public class WorkflowExecutorService
 
         ReelForgeDiagnostics.ActiveWorkflows.Add(1);
 
+        // create a linked cancellation token source so we can cancel from outside via CancelExecutionAsync
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        ct = linkedCts.Token;
+        _executionCts[executionId] = linkedCts;
+
         using IServiceScope scope = _scopeFactory.CreateScope();
         WorkflowEngineDbContext db = scope.ServiceProvider.GetRequiredService<WorkflowEngineDbContext>();
 
@@ -57,6 +67,16 @@ public class WorkflowExecutorService
         {
             _logger.LogError("Workflow execution {ExecutionId} not found", executionId);
             ReelForgeDiagnostics.ActiveWorkflows.Add(-1);
+            _executionCts.TryRemove(executionId, out _);
+            return;
+        }
+
+        // if it was cancelled before we started, just bail out
+        if (execution.Status == ExecutionStatus.Cancelled)
+        {
+            _logger.LogInformation("Execution {ExecutionId} was already cancelled, skipping", executionId);
+            ReelForgeDiagnostics.ActiveWorkflows.Add(-1);
+            _executionCts.TryRemove(executionId, out _);
             return;
         }
 
@@ -101,6 +121,7 @@ public class WorkflowExecutorService
                     CurrentStepIndex = currentStepIndex,
                     IterationCount = iterationCount,
                     CorrelationId = correlationId,
+                    UserRequest = execution.UserRequest,
                     CancellationToken = ct
                 };
 
@@ -180,6 +201,20 @@ public class WorkflowExecutorService
 
             _logger.LogInformation("Workflow execution {ExecutionId} completed successfully", executionId);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            _logger.LogInformation("Workflow execution {ExecutionId} was cancelled", executionId);
+            execution.Status = ExecutionStatus.Cancelled;
+            execution.ErrorMessage = "Cancelled by user request";
+            execution.CompletedAt = DateTime.UtcNow;
+            await db.SaveChangesAsync(ct);
+            // publish as failed so existing consumers treat it similarly
+            await _eventPublisher.PublishExecutionFailedAsync(execution, ct);
+
+            ReelForgeDiagnostics.CompletedWorkflows.Add(1,
+                new KeyValuePair<string, object?>("status", "cancelled"));
+            // do not rethrow; cancellation is expected
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Workflow execution {ExecutionId} failed", executionId);
@@ -197,10 +232,44 @@ public class WorkflowExecutorService
         finally
         {
             ReelForgeDiagnostics.ActiveWorkflows.Add(-1);
+            // remove from cancellation map
+            _executionCts.TryRemove(executionId, out _);
         }
     }
 
-    private async Task<StepExecutionResult> ExecuteStepWithRetryAsync(
+    /// <summary>
+    /// Cancels a running or queued execution. If the execution is currently
+    /// being processed the associated cancellation token will be triggered.
+    /// The database record is also updated to <c>Cancelled</c> when applicable.
+    /// </summary>
+    public async Task CancelExecutionAsync(Guid executionId, Guid requestedByUserId)
+    {
+        // cancel any running token
+        if (_executionCts.TryGetValue(executionId, out var cts))
+        {
+            cts.Cancel();
+        }
+
+        // if we have no scope factory (e.g. running in unit tests) just return
+        if (_scopeFactory == null)
+            return;
+
+        using IServiceScope scope = _scopeFactory.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<WorkflowEngineDbContext>();
+        var execution = await db.WorkflowExecutions.FindAsync(executionId);
+        if (execution == null)
+            return;
+
+        if (execution.Status == ExecutionStatus.Queued || execution.Status == ExecutionStatus.Running)
+        {
+            execution.Status = ExecutionStatus.Cancelled;
+            execution.ErrorMessage = $"Stopped by user {requestedByUserId}";
+            execution.CompletedAt = DateTime.UtcNow;
+            await db.SaveChangesAsync();
+        }
+    }
+
+    internal async Task<StepExecutionResult> ExecuteStepWithRetryAsync(
         IStepExecutor executor,
         StepExecutionContext context,
         WorkflowStep step,
@@ -247,7 +316,16 @@ public class WorkflowExecutorService
                 }
                 return result;
             }
-            catch (Exception ex) when (ex is not InvalidOperationException && attemptNumber < MaxStepRetries)
+            // do not retry on InvalidOperationException or our workflow‑abort exception
+            catch (AgentWorkflowException awf)
+            {
+                // agent explicitly requested workflow abort; log then rethrow immediately
+                _logger.LogInformation(
+                    "Step {StepOrder} invoked FailWorkflow: {Reason}",
+                    step.StepOrder, awf.Reason);
+                throw;
+            }
+            catch (Exception ex) when (ex is not InvalidOperationException && ex is not AgentWorkflowException && attemptNumber < MaxStepRetries)
             {
                 lastException = ex;
                 double delaySeconds = Math.Pow(2, attemptNumber);
