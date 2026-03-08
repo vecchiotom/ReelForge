@@ -170,6 +170,16 @@ public class ReactRemotionSandboxTools
         if (remotionArgs is { Length: > 0 })
             args.AddRange(remotionArgs);
 
+        // Ensure we specify a Chromium executable so Remotion doesn't try to
+        // launch its bundled headless shell (which often isn't present in our
+        // Alpine-based sandbox image and was the cause of ENOENT errors).
+        // We prefer the system binary installed by the Dockerfile at /usr/bin/chromium.
+        bool hasChromiumArg = args.Any(a => a.StartsWith("--chromium-executable"));
+        if (!hasChromiumArg)
+        {
+            args.Add("--chromium-executable=/usr/bin/chromium");
+        }
+
         // Run the render
         using HttpClient client = CreateClient();
         HttpResponseMessage renderResponse = await client.PostAsJsonAsync(
@@ -347,6 +357,17 @@ public class ReactRemotionSandboxTools
         List<string> commandArgs = ["remotion", command];
         if (args is { Length: > 0 })
             commandArgs.AddRange(args);
+
+        // Provide default chromium path when running a render command to avoid
+        // the headless-shell-not-found errors inside the sandbox container.
+        if (command.Equals("render", StringComparison.OrdinalIgnoreCase))
+        {
+            bool hasChromiumArg = commandArgs.Any(a => a.StartsWith("--chromium-executable"));
+            if (!hasChromiumArg)
+            {
+                commandArgs.Add("--chromium-executable=/usr/bin/chromium");
+            }
+        }
 
         return ExecuteSandboxCommand("npx", commandArgs.ToArray(), timeoutSeconds);
     }

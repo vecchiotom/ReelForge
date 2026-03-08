@@ -460,7 +460,14 @@ The service's own `Dockerfile` (see below) also builds this image as part of a m
 
 ## Remotion Template
 
-The `/sandbox/template/` directory contains the bootstrapped Remotion project that is copied into every new sandbox workspace. It is baked into the runtime container image at `/opt/remotion-template/`.
+The `/sandbox/template/` directory contains the bootstrapped Remotion project that is copied into every new sandbox workspace. It is baked into the runtime container image at `/opt/remotion-template`.
+
+> **Compatibility hack:** When a workspace is created the sandbox manager also establishes a
+> symlink at
+> `/workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/chrome-headless-shell`
+> pointing at the system Chromium binary. This makes any headless-shell path that Remotion
+> downloads resolve correctly, ensuring renders succeed even if the CLI still falls back to
+> the downloaded binary.
 
 ### Structure
 
@@ -505,7 +512,7 @@ Defines the default `Root` component and a single `Main` composition (1920×1080
 | Script | Command | Description |
 |---|---|---|
 | `build` | `remotion bundle src/index.ts --out-dir build` | Bundle to static assets |
-| `render` | `remotion render src/index.ts Main out/video.mp4` | Full video render via Chromium |
+| `render` | `remotion render src/index.ts Main out/video.mp4 --chromium-executable=/usr/bin/chromium` | Full video render via Chromium (explicit path ensures container-installed binary is used) |
 | `compositions` | `remotion compositions src/index.ts` | List registered compositions |
 | `typecheck` | `tsc --noEmit` | TypeScript type check only |
 
@@ -527,6 +534,14 @@ The `sandbox/Dockerfile` performs a two-stage build:
 2. Sets `PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium` so Remotion/Puppeteer finds the bundled Chromium.
 3. Copies `template/package.json` and runs `npm install` to pre-install all Remotion dependencies into the image at `/opt/remotion-template/node_modules`.
 4. Copies the rest of the template source files.
+
+    > **Troubleshooting:** When workspaces run `npx remotion render` directly the CLI
+    > defaults to a bundled `chrome-headless-shell` binary under
+    > `/workspace/node_modules/.remotion/...`. That file is **not** included in the Alpine
+    > image and will cause `ENOENT` errors like the one seen in workflow logs. The Go toolkit
+    > and template scripts automatically append `--chromium-executable=/usr/bin/chromium` to
+    > render invocations to avoid this issue. If you execute remotion manually, add the flag
+    > yourself or set `REMOTION_CHROMIUM_EXECUTABLE`.
 5. Copies the Go binary from Stage 1.
 6. Exposes port `8080` and sets the entrypoint to the Go binary.
 

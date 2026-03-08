@@ -7,6 +7,7 @@ using ReelForge.Inference.Api.Data;
 using ReelForge.Shared.Auth;
 using ReelForge.Shared.Data.Models;
 using ReelForge.Shared.IntegrationEvents;
+using System;
 
 namespace ReelForge.Inference.Api.Controllers;
 
@@ -201,6 +202,30 @@ public class WorkflowsController : ControllerBase
             execution.ResultJson, execution.CorrelationId, execution.ErrorMessage,
             new List<StepResultResponse>(), new List<ReviewScoreResponse>(),
             execution.UserRequest));
+    }
+
+    [HttpPost("{id:guid}/executions/{executionId:guid}/stop")]
+    public async Task<IActionResult> StopExecution(
+        Guid projectId, Guid id,
+        Guid executionId,
+        CancellationToken ct)
+    {
+        // verify project ownership
+        Project? project = await _db.Projects.FirstOrDefaultAsync(p => p.Id == projectId, ct);
+        if (project == null) return NotFound();
+        if (project.OwnerId != _currentUser.UserId) return Forbid();
+
+        WorkflowExecution? exec = await _db.WorkflowExecutions
+            .FirstOrDefaultAsync(e => e.Id == executionId && e.ProjectId == projectId && e.WorkflowDefinitionId == id, ct);
+        if (exec == null) return NotFound();
+
+        await _publishEndpoint.Publish(new WorkflowExecutionStopRequested
+        {
+            ExecutionId = executionId,
+            RequestedByUserId = _currentUser.UserId
+        }, ct);
+
+        return Accepted();
     }
 
     [HttpGet("{id:guid}/executions")]

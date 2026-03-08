@@ -152,7 +152,16 @@ func (m *sandboxManager) create(workflowExecutionID string) (*sandbox, bool, err
 	_ = os.Chmod(workspace, 0o777)
 
 	containerName := "rf-sbx-" + id
-	initCommand := "if [ ! -f /workspace/package.json ]; then cp -r /opt/remotion-template/. /workspace/; fi; sleep infinity"
+	initCommand := `if [ ! -f /workspace/package.json ]; then \
+		cp -r /opt/remotion-template/. /workspace/; \
+		# create a symlink so remotion's downloaded headless-shell path exists and
+		# points to the system chromium binary. this prevents ENOENT when the CLI
+		# still tries to spawn the downloaded shell even if --chromium-executable is
+		# provided.
+		mkdir -p /workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/; \
+		ln -sf /usr/bin/chromium \
+			/workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/chrome-headless-shell || true; \
+	fi; sleep infinity`
 	args := []string{"run", "-d", "--name", containerName}
 	if m.cfg.SandboxNetwork != "" {
 		args = append(args, "--network", m.cfg.SandboxNetwork)
@@ -293,6 +302,13 @@ func (m *sandboxManager) runExec(workflowExecutionID string, req execRequest) (s
 		return "", err
 	}
 
+	// make sure the workspace has a valid headless-shell link before any
+	// commands run; this is cheap and idempotent.
+	_ = ensureHeadlessLink(sb.ContainerName)
+
+	// normalize request args (in-place) before executing
+	sanitizeExecRequest(&req)
+
 	timeout := m.cfg.ExecTimeout
 	if req.TimeoutSeconds > 0 {
 		timeout = time.Duration(req.TimeoutSeconds) * time.Second
@@ -315,6 +331,40 @@ func (m *sandboxManager) runExec(workflowExecutionID string, req execRequest) (s
 	}
 	log.Printf("exec succeeded for workflow %s; output length %d", workflowExecutionID, len(output))
 	return string(output), nil
+}
+
+// sanitizeExecRequest ensures that certain dangerous or missing arguments are
+// added or normalized before a container exec is performed. It currently adds a
+// default chromium executable path for `npx remotion render` commands so that
+// the Alpine sandbox image uses the system-installed Chrome rather than relying
+// on a bundled headless shell that isn't present.
+func sanitizeExecRequest(req *execRequest) {
+	if req == nil {
+		return
+	}
+	if req.Command == "npx" && len(req.Args) >= 2 && req.Args[0] == "remotion" &&
+		req.Args[1] == "render" {
+		has := false
+		for _, a := range req.Args[2:] {
+			if strings.HasPrefix(a, "--chromium-executable") {
+				has = true
+				break
+			}
+		}
+		if !has {
+			req.Args = append(req.Args, "--chromium-executable=/usr/bin/chromium")
+		}
+	}
+}
+
+// ensureHeadlessLink creates a symlink inside the sandbox container pointing at
+// the system Chromium binary. Calling it repeatedly is safe.
+func ensureHeadlessLink(container string) error {
+	cmd := `mkdir -p /workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64 && ` +
+		`ln -sf /usr/bin/chromium ` +
+		`/workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/chrome-headless-shell || true`
+	_, err := runDocker(context.Background(), "exec", container, "sh", "-c", cmd)
+	return err
 }
 
 func validateExec(req execRequest) error {
@@ -447,7 +497,16 @@ func (m *sandboxManager) deletePath(workflowExecutionID, relPath string) error {
 }
 
 func (m *sandboxManager) startJanitor(ctx context.Context) {
-	ticker := time.NewTicker(time.Minute)
+	// run more frequently than the TTL so containers are removed within a
+	// minute even when the TTL is small. default tick interval is 30s.
+	interval := 30 * time.Second
+	if m.cfg.SandboxTTL > 0 && m.cfg.SandboxTTL < interval {
+		interval = m.cfg.SandboxTTL / 2
+		if interval < 10*time.Second {
+			interval = 10 * time.Second
+		}
+	}
+	ticker := time.NewTicker(interval)
 	go func() {
 		defer ticker.Stop()
 		for {
@@ -666,6 +725,9 @@ func (h *apiHandler) deleteFilePath(w http.ResponseWriter, r *http.Request) {
 
 func (h *apiHandler) getSandboxStatus(w http.ResponseWriter, r *http.Request) {
 	workflowExecutionID := mux.Vars(r)["workflowExecutionId"]
+	// treating a status check as activity so polls won't trigger the janitor
+	h.manager.touch(workflowExecutionID)
+
 	sb, err := h.manager.getByExecution(workflowExecutionID)
 	if err != nil {
 		if errors.Is(err, errNotFound) {
@@ -770,7 +832,15 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
 }
 
-func runDocker(ctx context.Context, args ...string) ([]byte, error) {
+// dockerRunner is the signature used for executing docker commands. It can be
+// overridden by tests to avoid invoking the real docker binary.
+type dockerRunner func(ctx context.Context, args ...string) ([]byte, error)
+
+// runDocker is the canonical implementation used by production code. Tests may
+// replace this variable with a stub.
+var runDocker dockerRunner = runDockerImpl
+
+func runDockerImpl(ctx context.Context, args ...string) ([]byte, error) {
 	// log the docker command being executed for debugging purposes
 	log.Printf("[docker] running: docker %s", strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, "docker", args...)
@@ -785,11 +855,41 @@ func runDocker(ctx context.Context, args ...string) ([]byte, error) {
 	return output, err
 }
 
+// purgeExistingContainers inspects Docker for any lingering sandbox
+// containers from previous runs (name prefix rf-sbx-) and removes them along
+// with their workspace directories.  This ensures a clean state on service
+// startup; the in‑memory manager has no knowledge of containers created before
+// it started, so without this step they would hang around forever.
+func purgeExistingContainers(cfg appConfig) {
+	out, err := runDocker(context.Background(), "ps", "-a", "--filter", "name=rf-sbx-", "--format", "{{.Names}}")
+	if err != nil {
+		log.Printf("warning: could not list existing sandbox containers: %v", err)
+		return
+	}
+	for _, name := range strings.Fields(string(out)) {
+		if name == "" {
+			continue
+		}
+		log.Printf("purging leftover sandbox container %s", name)
+		_, _ = runDocker(context.Background(), "rm", "-f", name)
+		// container names are rf-sbx-<id>
+		id := strings.TrimPrefix(name, "rf-sbx-")
+		if id != name {
+			dir := filepath.Join(cfg.SandboxRoot, id)
+			if err := os.RemoveAll(dir); err != nil {
+				log.Printf("error removing leftover workspace %s: %v", dir, err)
+			}
+		}
+	}
+}
+
 func main() {
 	cfg := loadConfig()
 	if err := os.MkdirAll(cfg.SandboxRoot, 0o755); err != nil {
 		log.Fatalf("failed to create sandbox root: %v", err)
 	}
+	// ensure any pre-existing containers are gone before we begin
+	purgeExistingContainers(cfg)
 
 	// ensure sandbox network exists so that containers can reach npm registry
 	// while remaining isolated from the primary application network

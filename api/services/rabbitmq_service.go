@@ -65,8 +65,6 @@ const (
     exchangeCompleted        = "ReelForge.Shared.IntegrationEvents:WorkflowExecutionCompleted"
     exchangeFailed           = "ReelForge.Shared.IntegrationEvents:WorkflowExecutionFailed"
     exchangeStepComplete     = "ReelForge.Shared.IntegrationEvents:WorkflowStepCompleted"
-    // new event published by Go API when a user requests cancellation
-    exchangeStopRequested    = "ReelForge.Shared.IntegrationEvents:WorkflowExecutionStopRequested"
 
     queueName = "go-api-workflow-events"
 )
@@ -180,47 +178,4 @@ func dispatchMessage(msg amqp.Delivery) {
 		Timestamp:   time.Now().UTC(),
 		Data:        msg.Body,
 	})
-}
-// PublishStopRequest sends a user-initiated cancel request to RabbitMQ so the
-// WorkflowEngine can abort the execution. It publishes to the same fanout
-// exchange that MassTransit consumers listen on.
-func PublishStopRequest(executionID, requestedBy string) error {
-    url := fmt.Sprintf("amqp://%s:%s@%s:%s/",
-        config.Cfg.RabbitMQUsername,
-        config.Cfg.RabbitMQPassword,
-        config.Cfg.RabbitMQHost,
-        config.Cfg.RabbitMQPort,
-    )
-
-    conn, err := amqp.Dial(url)
-    if err != nil {
-        return fmt.Errorf("dial: %w", err)
-    }
-    defer conn.Close()
-
-    ch, err := conn.Channel()
-    if err != nil {
-        return fmt.Errorf("channel: %w", err)
-    }
-    defer ch.Close()
-
-    // ensure exchange exists as fanout
-    if err := ch.ExchangeDeclare(exchangeStopRequested, "fanout", true, false, false, false, nil); err != nil {
-        return fmt.Errorf("exchange declare: %w", err)
-    }
-
-    payload := map[string]string{
-        "executionId": executionID,
-        "requestedBy": requestedBy,
-        "requestedAt": time.Now().UTC().Format(time.RFC3339),
-    }
-    body, _ := json.Marshal(payload)
-
-    if err := ch.Publish(exchangeStopRequested, "", false, false, amqp.Publishing{
-        ContentType: "application/json",
-        Body:        body,
-    }); err != nil {
-        return fmt.Errorf("publish stop request: %w", err)
-    }
-    return nil
 }

@@ -17,15 +17,9 @@ export function stopExecution(
   workflowId: string,
   executionId: string,
 ): Promise<void> {
-  // the POST route for stopping an execution is implemented in the
-  // **Go API** (permission checks + rabbitmq publish), but the frontend
-  // normally talks to the Inference service via nginx.  nginx is
-  // configured to proxy only URLs beginning with `/api/v1/workflows/`
-  // to the Go API, so we must use the full project-prefixed path here
-  // and nginx will reroute the request with a dedicated location regex
-  // (see `nginx/nginx.conf`) otherwise we'd hit the inference server and
-  // receive a 404.  This mirrors the path registered in
-  // `api/handlers/handlers.go`.
+  // stopping an execution is now handled by the Inference API directly,
+  // so there is no longer any special nginx proxying hack.  we keep the
+  // same URL format as before for compatibility with existing clients.
   return apiFetch<void>(
     `/api/v1/projects/${projectId}/workflows/${workflowId}/executions/${executionId}/stop`,
     { method: 'POST' },

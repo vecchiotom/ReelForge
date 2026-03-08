@@ -32,8 +32,6 @@ func RegisterHandlers() {
 	authenticated.HandleFunc("/api/v1/workflows/stats", handleWorkflowStats).Methods("GET")
 	authenticated.HandleFunc("/api/v1/workflows/events", handleWorkflowEvents).Methods("GET")
 	authenticated.HandleFunc("/api/v1/projects/{projectId}/workflows/{workflowId}/executions/{executionId}/events", handleExecutionEvents).Methods("GET")
-	// allow users to request cancellation of a running/queued execution
-	authenticated.HandleFunc("/api/v1/projects/{projectId}/workflows/{workflowId}/executions/{executionId}/stop", handleStopExecution).Methods("POST")
 
 	// Admin routes (auth + admin required)
 	adminRouter := Router.PathPrefix("/api/v1/admin").Subrouter()

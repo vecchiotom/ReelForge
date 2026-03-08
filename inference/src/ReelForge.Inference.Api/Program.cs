@@ -13,6 +13,7 @@ using ReelForge.Inference.Api.Data;
 using ReelForge.Inference.Api.Services.Auth;
 using ReelForge.Inference.Api.Services.Background;
 using ReelForge.Inference.Api.Services.Storage;
+using ReelForge.Inference.Api.Services.Background;
 using ReelForge.Shared.Auth;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
@@ -80,6 +81,11 @@ builder.Services.AddSingleton<IAgentRegistry, AgentRegistry>();
 // --- Background Task Queue (file summarization) ---
 builder.Services.AddSingleton<IBackgroundTaskQueue<FileSummarizationTask>, ChannelBackgroundTaskQueue<FileSummarizationTask>>();
 builder.Services.AddHostedService<FileSummarizationService>();
+
+// --- Startup cleanup ---
+// ensure any messages left in the RabbitMQ queues are purged and mark any
+// executions that were "Running" when the service stopped as cancelled.
+builder.Services.AddHostedService<StartupCleanupService>();
 
 // --- MassTransit / RabbitMQ ---
 builder.Services.AddMassTransit(x =>
