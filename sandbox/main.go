@@ -41,7 +41,7 @@ func loadConfig() appConfig {
 		SandboxImage:   getEnv("SANDBOX_IMAGE", "reelforge-sandbox-executor:local"),
 		SandboxRoot:    getEnv("SANDBOX_ROOT", "/var/lib/reelforge/sandboxes"),
 		SandboxNetwork: getEnv("SANDBOX_NETWORK", "sandbox-net"),
-		SandboxTTL:     getDurationEnv("SANDBOX_TTL", time.Hour),
+		SandboxTTL:     getDurationEnv("SANDBOX_TTL", time.Minute),
 		ExecTimeout:    getDurationEnv("SANDBOX_EXEC_TIMEOUT", 5*time.Minute),
 		MemoryLimit:    getEnv("SANDBOX_MEMORY_LIMIT", "2g"),
 		CPULimit:       getEnv("SANDBOX_CPU_LIMIT", "2"),
@@ -878,6 +878,14 @@ func purgeExistingContainers(cfg appConfig) {
 			dir := filepath.Join(cfg.SandboxRoot, id)
 			if err := os.RemoveAll(dir); err != nil {
 				log.Printf("error removing leftover workspace %s: %v", dir, err)
+			}
+		}
+	}
+	// wipe any orphaned workspace folders that don't correspond to a container
+	if entries, err := os.ReadDir(cfg.SandboxRoot); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				_ = os.RemoveAll(filepath.Join(cfg.SandboxRoot, e.Name()))
 			}
 		}
 	}

@@ -37,7 +37,7 @@ public class StartupCleanupService : IHostedService
         var db = scope.ServiceProvider.GetRequiredService<InferenceApiDbContext>();
 
         var toCancel = await db.WorkflowExecutions
-            .Where(e => e.Status == ExecutionStatus.Running)
+            .Where(e => e.Status == ExecutionStatus.Running || e.Status == ExecutionStatus.Queued)
             .ToListAsync(ct);
 
         if (toCancel.Count == 0)
@@ -53,26 +53,26 @@ public class StartupCleanupService : IHostedService
         await db.SaveChangesAsync(ct);
     }
 
-    private Task PurgeRabbitMqQueuesAsync(CancellationToken ct)
+    private async Task PurgeRabbitMqQueuesAsync(CancellationToken ct)
     {
         try
         {
-            var factory = new ConnectionFactory
+            var factory = new RabbitMQ.Client.ConnectionFactory
             {
                 HostName = _configuration["RabbitMQ:Host"] ?? "localhost",
                 UserName = _configuration["RabbitMQ:Username"] ?? "guest",
                 Password = _configuration["RabbitMQ:Password"] ?? "guest",
             };
 
-            using var conn = factory.CreateConnection();
-            using var channel = conn.CreateModel();
+            using var conn = await factory.CreateConnectionAsync();
+            using var channel = await conn.CreateChannelAsync();
 
             // known queues used by the WorkflowEngine
             foreach (var queue in new[] { "workflow-execution", "workflow-stop-requests" })
             {
                 try
                 {
-                    channel.QueuePurge(queue);
+                    await channel.QueuePurgeAsync(queue);
                 }
                 catch
                 {
@@ -86,6 +86,6 @@ public class StartupCleanupService : IHostedService
             Console.WriteLine($"[startup-cleanup] failed to purge queues: {ex.Message}");
         }
 
-        return Task.CompletedTask;
+        return;
     }
 }
