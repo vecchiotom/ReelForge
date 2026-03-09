@@ -65,6 +65,9 @@ export function uploadFileWithProgress(
 
     const formData = new FormData();
     formData.append('file', file);
+    if ((file as any).webkitRelativePath) {
+      formData.append('relativePath', (file as any).webkitRelativePath);
+    }
     xhr.send(formData);
   });
 }

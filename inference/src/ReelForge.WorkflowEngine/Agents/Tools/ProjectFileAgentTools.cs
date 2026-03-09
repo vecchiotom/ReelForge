@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.IO;
 using System.Text.Json;
 using ReelForge.WorkflowEngine.Execution;
 using ReelForge.WorkflowEngine.Services.Storage;
@@ -36,17 +37,20 @@ public class ProjectFileAgentTools
 
     [Description("Create or add a new text file to the current workflow project.")]
     public async Task<string> WriteProjectFile(
-        [Description("The new file name (e.g. scene-01.tsx)")] string fileName,
+        [Description("The new file name or relative path (e.g. scene-01.tsx or folder/scene-01.tsx)")] string fileName,
         [Description("File contents to store")] string content,
         [Description("MIME type, defaults to text/plain")] string? contentType = null)
     {
         WorkflowExecutionContext context = RequireContext();
+        // treat the provided name as the original path and basename (agentFiles category)
         ProjectWorkspaceFile file = await _workspace.WriteTextFileAsync(
             context.ProjectId,
-            fileName,
+            Path.GetFileName(fileName),
             content,
             string.IsNullOrWhiteSpace(contentType) ? "text/plain" : contentType,
-            CancellationToken.None);
+            CancellationToken.None,
+            category: "agentFiles",
+            originalPath: fileName);
 
         return JsonSerializer.Serialize(file);
     }

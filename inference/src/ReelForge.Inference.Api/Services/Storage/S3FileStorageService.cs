@@ -26,10 +26,22 @@ public class S3FileStorageService : IFileStorageService
         string fileName,
         string contentType,
         IReadOnlyDictionary<string, string>? metadata,
-        CancellationToken ct)
+        CancellationToken ct,
+        string category = "userFiles",
+        string? originalPath = null)
     {
-        string storagePrefix = $"projects/{projectId}/";
-        string storageKey = $"{storagePrefix}{Guid.NewGuid()}/{fileName}";
+        // Ensure category is one of the known values to prevent escaping the prefix
+        if (category != "userFiles" && category != "agentFiles" && category != "outputFiles")
+            category = "userFiles";
+
+        string storagePrefix = $"projects/{projectId}/{category}/";
+        // use generated GUID directory to avoid collisions, then append either
+        // the provided relative path or the base file name.
+        string nameSegment = string.IsNullOrEmpty(originalPath)
+            ? fileName
+            : originalPath.Replace("\\", "/"); // normalize any backslashes
+
+        string storageKey = $"{storagePrefix}{Guid.NewGuid()}/{nameSegment}";
         PutObjectRequest request = new()
         {
             BucketName = _bucketName,
@@ -37,7 +49,12 @@ public class S3FileStorageService : IFileStorageService
             InputStream = content,
             ContentType = contentType
         };
+        // standard metadata
         request.Metadata["project-id"] = projectId.ToString();
+        request.Metadata["category"] = category;
+        if (!string.IsNullOrEmpty(originalPath))
+            request.Metadata["original-path"] = originalPath;
+
         if (metadata != null)
         {
             foreach (var (key, value) in metadata)
@@ -50,7 +67,7 @@ public class S3FileStorageService : IFileStorageService
         _logger.LogInformation("Uploaded file {FileName} as {StorageKey}", fileName, storageKey);
         string metadataJson = JsonSerializer.Serialize(request.Metadata.Keys
             .ToDictionary(k => k, k => request.Metadata[k]));
-        return new StoredFileObject(storageKey, _bucketName, storagePrefix, metadataJson);
+        return new StoredFileObject(storageKey, _bucketName, storagePrefix, metadataJson, category, originalPath);
     }
 
     public async Task<Stream> DownloadAsync(Guid projectId, string storageKey, CancellationToken ct)

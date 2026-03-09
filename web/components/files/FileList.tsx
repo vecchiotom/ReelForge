@@ -13,11 +13,29 @@ interface FileListProps {
 }
 
 export function FileList({ files, onDelete, onSelect }: FileListProps) {
+  // show path-aware name; if an originalPath exists use it, otherwise fallback to the simple
+  // file name. Indent the row based on the number of path segments to give a visual
+  // directory structure. The list is sorted by that display string so folders cluster.
+  const sorted = [...files].sort((a, b) => {
+    const na = a.originalPath ?? a.originalFileName;
+    const nb = b.originalPath ?? b.originalFileName;
+    return na.localeCompare(nb, undefined, { sensitivity: 'base' });
+  });
+
+  const renderName = (file: ProjectFile) => {
+    const display = file.originalPath ?? file.originalFileName;
+    const indent = (display.split('/').length - 1) * 1.5;
+    return (
+      <span style={{ paddingLeft: `${indent}rem` }}>{display}</span>
+    );
+  };
+
   return (
     <Table striped highlightOnHover>
       <Table.Thead>
         <Table.Tr>
           <Table.Th>Name</Table.Th>
+          <Table.Th>Type</Table.Th>
           <Table.Th>Size</Table.Th>
           <Table.Th>Summary</Table.Th>
           <Table.Th>Uploaded</Table.Th>
@@ -25,9 +43,10 @@ export function FileList({ files, onDelete, onSelect }: FileListProps) {
         </Table.Tr>
       </Table.Thead>
       <Table.Tbody>
-        {files.map((file) => (
+        {sorted.map((file) => (
           <Table.Tr key={file.id} onClick={() => onSelect(file)} style={{ cursor: 'pointer' }}>
-            <Table.Td>{file.originalFileName}</Table.Td>
+            <Table.Td>{renderName(file)}</Table.Td>
+            <Table.Td>{file.category}</Table.Td>
             <Table.Td>{formatFileSize(file.sizeBytes)}</Table.Td>
             <Table.Td><StatusBadge status={file.summaryStatus} /></Table.Td>
             <Table.Td>{formatDate(file.uploadedAt)}</Table.Td>

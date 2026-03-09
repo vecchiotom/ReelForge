@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "remotion bundle src/index.ts --out-dir build",
-    "render": "remotion render src/index.ts Main out/video.mp4 --chromium-executable=/usr/bin/chromium",
+    "render": "remotion render src/index.ts Main out/video.mp4 --chromium-executable=/workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/chrome-headless-shell",
     "compositions": "remotion compositions src/index.ts",
     "typecheck": "tsc --noEmit"
   },

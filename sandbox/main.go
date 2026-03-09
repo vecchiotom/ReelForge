@@ -154,13 +154,15 @@ func (m *sandboxManager) create(workflowExecutionID string) (*sandbox, bool, err
 	containerName := "rf-sbx-" + id
 	initCommand := `if [ ! -f /workspace/package.json ]; then \
 		cp -r /opt/remotion-template/. /workspace/; \
-		# create a symlink so remotion's downloaded headless-shell path exists and
-		# points to the system chromium binary. this prevents ENOENT when the CLI
-		# still tries to spawn the downloaded shell even if --chromium-executable is
-		# provided.
+		# make sure the path for the headless-shell binary exists. if Remotion has
+		# already downloaded the real `chrome-headless-shell` binary during npm
+		# install, leave it alone; otherwise fall back to symlinking the system
+		# Chromium binary so that any stray spawn attempts succeed.
 		mkdir -p /workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/; \
-		ln -sf /usr/bin/chromium \
-			/workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/chrome-headless-shell || true; \
+		if [ ! -x /workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/chrome-headless-shell ]; then \
+			ln -sf /usr/bin/chromium \
+				/workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/chrome-headless-shell || true; \
+		fi; \
 	fi; sleep infinity`
 	args := []string{"run", "-d", "--name", containerName}
 	if m.cfg.SandboxNetwork != "" {
@@ -334,10 +336,14 @@ func (m *sandboxManager) runExec(workflowExecutionID string, req execRequest) (s
 }
 
 // sanitizeExecRequest ensures that certain dangerous or missing arguments are
-// added or normalized before a container exec is performed. It currently adds a
-// default chromium executable path for `npx remotion render` commands so that
-// the Alpine sandbox image uses the system-installed Chrome rather than relying
-// on a bundled headless shell that isn't present.
+// added or normalized before a container exec is performed. Remotion projects
+// require a Chromium-like binary capable of running in headless mode. The
+// upstream Chrome binary no longer includes the traditional `--headless` flag
+// (error seen: "headless mode has been replaced and is no longer included in
+// the chrome binary"), so we explicitly point the CLI at the lightweight
+// headless-shell binary bundled by Remotion. The sandbox image still ships a
+// full `/usr/bin/chromium` for convenience, but the headless-shell is the
+// correct target when rendering videos.
 func sanitizeExecRequest(req *execRequest) {
 	if req == nil {
 		return
@@ -352,7 +358,10 @@ func sanitizeExecRequest(req *execRequest) {
 			}
 		}
 		if !has {
-			req.Args = append(req.Args, "--chromium-executable=/usr/bin/chromium")
+			// point at the path where ensureHeadlessLink creates a symlink; the
+			// container entrypoint also ensures the directory exists so this should
+			// always work.
+			req.Args = append(req.Args, "--chromium-executable=/workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/chrome-headless-shell")
 		}
 	}
 }
@@ -360,9 +369,13 @@ func sanitizeExecRequest(req *execRequest) {
 // ensureHeadlessLink creates a symlink inside the sandbox container pointing at
 // the system Chromium binary. Calling it repeatedly is safe.
 func ensureHeadlessLink(container string) error {
-	cmd := `mkdir -p /workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64 && ` +
-		`ln -sf /usr/bin/chromium ` +
-		`/workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/chrome-headless-shell || true`
+	// Prefer an existing headless-shell binary; only create a fallback symlink to
+	// system Chromium if the file is missing or not executable. This lets us run
+	// the proper headless build when available while still avoiding ENOENT for
+	// older remotion versions or stripped image builds.
+	cmd := `mkdir -p /workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/ && ` +
+		`if [ ! -x /workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/chrome-headless-shell ]; then ` +
+		`ln -sf /usr/bin/chromium /workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/chrome-headless-shell ; fi || true`
 	_, err := runDocker(context.Background(), "exec", container, "sh", "-c", cmd)
 	return err
 }

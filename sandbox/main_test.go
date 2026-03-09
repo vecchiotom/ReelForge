@@ -38,16 +38,16 @@ func TestValidateExec(t *testing.T) {
 }
 
 func TestSanitizeExecRequest(t *testing.T) {
-    // should append flag when absent
+    // should append flag when absent and use headless-shell path
     req := execRequest{Command: "npx", Args: []string{"remotion", "render", "Comp"}}
     sanitizeExecRequest(&req)
-    wantEnds := "--chromium-executable=/usr/bin/chromium"
+    wantEnds := "--chromium-executable=/workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/chrome-headless-shell"
     if req.Args[len(req.Args)-1] != wantEnds {
-        t.Errorf("expected chromium arg appended, got %v", req.Args)
+        t.Errorf("expected headless-shell arg appended, got %v", req.Args)
     }
 
     // should not duplicate if already present
-    req2 := execRequest{Command: "npx", Args: []string{"remotion", "render", "C", "--chromium-executable=/usr/bin/chromium"}}
+    req2 := execRequest{Command: "npx", Args: []string{"remotion", "render", "C", "--chromium-executable=/workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/chrome-headless-shell"}}
     sanitizeExecRequest(&req2)
     count := 0
     for _, a := range req2.Args {
@@ -85,9 +85,12 @@ func TestEnsureHeadlessLink(t *testing.T) {
     if len(lastArgs) < 5 || lastArgs[0] != "exec" || lastArgs[1] != "container123" {
         t.Errorf("unexpected docker args: %v", lastArgs)
     }
-    // ensure the inner shell command contains the symlink path and Chromium path
-    found := strings.Contains(lastArgs[len(lastArgs)-1], "/workspace/node_modules/.remotion/chrome-headless-shell")
-    if !found {
-        t.Errorf("command did not include expected symlink creation: %v", lastArgs)
+    // ensure the inner shell command contains our conditional check and path
+    cmd := lastArgs[len(lastArgs)-1]
+    if !strings.Contains(cmd, "[ ! -x /workspace/node_modules/.remotion/chrome-headless-shell") {
+        t.Errorf("command did not include existence check: %v", cmd)
+    }
+    if !strings.Contains(cmd, "/workspace/node_modules/.remotion/chrome-headless-shell-linux64/chrome-headless-shell") {
+        t.Errorf("command did not reference headless-shell path: %v", cmd)
     }
 }

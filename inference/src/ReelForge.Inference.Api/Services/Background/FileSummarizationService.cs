@@ -76,8 +76,9 @@ public class FileSummarizationService : BackgroundService
                 return;
             }
 
+            string displayName = file.OriginalPath ?? file.OriginalFileName;
             var result = await summarizer.RunAsync(
-                $"Summarize this file ({file.OriginalFileName}):\n\n{content}", ct);
+                $"Summarize this file ({displayName}):\n\n{content}", ct);
 
             file.AgentSummary = result.Output;
             file.SummaryStatus = SummaryStatus.Done;

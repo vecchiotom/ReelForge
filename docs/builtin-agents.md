@@ -524,7 +524,7 @@ The final assembler. Takes all prior outputs and produces a `RenderManifestOutpu
 | `CheckLintAndTypeErrors` | `ReactRemotionSandboxTools` | Validate code before render |
 | `RunSandboxNpmScript` | `ReactRemotionSandboxTools` | Run `build` / `typecheck` scripts |
 | `RunSandboxRemotionCommand` | `ReactRemotionSandboxTools` | Execute Remotion CLI (`render`, `still`, `compositions`) |
-| `RenderVideoAndUploadToStorage` | `ReactRemotionSandboxTools` | Render composition and upload result to S3 |
+| `RenderVideoAndUploadToStorage` | `ReactRemotionSandboxTools` | Render composition and upload result to S3 (stored under `projects/{projectId}/outputFiles/`) |
 | `CompleteSandbox` | `ReactRemotionSandboxTools` | Finalise and tear down the sandbox |
 
 **Output** (`RenderManifestOutput`)

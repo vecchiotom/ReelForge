@@ -43,7 +43,7 @@ export function UploadProgressList({ uploads, setUploads }: UploadProgressListPr
         <Card key={u.id} withBorder padding="sm" mb="sm">
           <Group justify="space-between" align="center">
             <Text size="sm" truncate style={{ maxWidth: 300 }}>
-              {u.file.name}
+              {(u.file as any).webkitRelativePath || u.file.name}
             </Text>
             <Group gap="xs">
               {u.status === 'done' && (

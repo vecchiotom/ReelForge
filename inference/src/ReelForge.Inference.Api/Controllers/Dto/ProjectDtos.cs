@@ -8,8 +8,16 @@ public record ProjectResponse(
     DateTime CreatedAt, DateTime UpdatedAt);
 
 public record ProjectFileResponse(
-    Guid Id, string OriginalFileName, string StorageKey, string MimeType,
-    long SizeBytes, string? AgentSummary, string SummaryStatus, DateTime UploadedAt);
+    Guid Id,
+    string OriginalFileName,
+    string? OriginalPath,
+    string Category,
+    string StorageKey,
+    string MimeType,
+    long SizeBytes,
+    string? AgentSummary,
+    string SummaryStatus,
+    DateTime UploadedAt);
 
 public record AgentDefinitionResponse(
     Guid Id, string Name, string Description, string SystemPrompt,

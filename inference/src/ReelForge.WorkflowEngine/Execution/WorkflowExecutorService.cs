@@ -7,6 +7,7 @@ using ReelForge.Shared.IntegrationEvents;
 using ReelForge.WorkflowEngine.Data;
 using ReelForge.WorkflowEngine.Observability;
 using ReelForge.WorkflowEngine.Agents.Tools;
+using ReelForge.WorkflowEngine.Services.Messaging;
 
 namespace ReelForge.WorkflowEngine.Execution;
 
@@ -22,6 +23,7 @@ public class WorkflowExecutorService
     private readonly ILogger<WorkflowExecutorService> _logger;
     private readonly Dictionary<StepType, IStepExecutor> _executors;
     private readonly IPublishEndpoint _publishEndpoint;
+    private readonly RabbitMqHelper _rabbitHelper;
 
     // track cancellation tokens for running executions so external requests can abort them
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, CancellationTokenSource> _executionCts
@@ -32,13 +34,15 @@ public class WorkflowExecutorService
         IWorkflowEventPublisher eventPublisher,
         ILogger<WorkflowExecutorService> logger,
         IEnumerable<IStepExecutor> executors,
-        IPublishEndpoint publishEndpoint)
+        IPublishEndpoint publishEndpoint,
+        RabbitMqHelper rabbitHelper)
     {
         _scopeFactory = scopeFactory;
         _eventPublisher = eventPublisher;
         _logger = logger;
         _executors = executors.ToDictionary(e => e.StepType);
         _publishEndpoint = publishEndpoint;
+        _rabbitHelper = rabbitHelper;
     }
 
     public async Task ExecuteAsync(Guid executionId, string correlationId, CancellationToken ct)
@@ -259,6 +263,39 @@ public class WorkflowExecutorService
         var execution = await db.WorkflowExecutions.FindAsync(executionId);
         if (execution == null)
             return;
+
+        if (execution.Status == ExecutionStatus.Queued)
+        {
+            // attempt to remove the pending message from RabbitMQ so it won't be
+            // delivered later. this is a best-effort operation; if the message has
+            // already been delivered to the engine it won't be found.
+            bool removed = await _rabbitHelper.RemoveExecutionMessageAsync(executionId);
+            if (removed)
+            {
+                _logger.LogInformation("Removed queued message for cancelled execution {ExecutionId}", executionId);
+            }
+            else
+            {
+                _logger.LogDebug("No queued message found for execution {ExecutionId} during cancellation", executionId);
+            }
+        }
+
+        if (execution.Status == ExecutionStatus.Queued)
+        {
+            // if we haven't yet processed the message, try to remove it from the
+            // RabbitMQ queue so it doesn't get dispatched later. it's okay if the
+            // call fails or the message has already been consumed; the status
+            // update below will ensure the execution stays cancelled.
+            bool removed = await _rabbitHelper.RemoveExecutionMessageAsync(executionId);
+            if (removed)
+            {
+                _logger.LogInformation("Removed queued message for cancelled execution {ExecutionId}", executionId);
+            }
+            else
+            {
+                _logger.LogDebug("No queued message was found for execution {ExecutionId} during cancellation", executionId);
+            }
+        }
 
         if (execution.Status == ExecutionStatus.Queued || execution.Status == ExecutionStatus.Running)
         {

@@ -63,6 +63,13 @@ public class InferenceApiDbContext : DbContext
                 .HasConversion<string>();
             entity.Property(e => e.StorageMetadataJson)
                 .HasColumnType("jsonb");
+
+            // New fields for folder structure and categorization
+            entity.Property(e => e.OriginalPath)
+                .HasMaxLength(1000);
+            entity.Property(e => e.Category)
+                .HasMaxLength(50)
+                .HasDefaultValue("userFiles");
         });
 
         modelBuilder.Entity<AgentDefinition>(entity =>

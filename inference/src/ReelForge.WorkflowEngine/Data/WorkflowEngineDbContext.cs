@@ -64,6 +64,14 @@ public class WorkflowEngineDbContext : DbContext
                 .HasConversion<string>();
             entity.Property(e => e.StorageMetadataJson)
                 .HasColumnType("jsonb");
+
+            // mirror the fields added to the main API context so agents can see them
+            entity.Property(e => e.OriginalPath)
+                .HasMaxLength(1000);
+            entity.Property(e => e.Category)
+                .HasMaxLength(50)
+                .HasDefaultValue("userFiles");
+
             entity.ToTable("project_files", t => t.ExcludeFromMigrations());
         });
 

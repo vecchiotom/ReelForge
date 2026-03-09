@@ -32,6 +32,8 @@ public class ProjectFileWorkspace : IProjectFileWorkspace
                 f.Id,
                 f.ProjectId,
                 f.OriginalFileName,
+                f.OriginalPath,
+                f.Category,
                 f.StorageKey,
                 f.MimeType,
                 f.SizeBytes,
@@ -61,11 +63,18 @@ public class ProjectFileWorkspace : IProjectFileWorkspace
         string fileName,
         string content,
         string contentType,
-        CancellationToken ct)
+        CancellationToken ct,
+        string category = "agentFiles",
+        string? originalPath = null)
     {
         Guid fileId = Guid.NewGuid();
-        string storagePrefix = $"projects/{projectId}/";
-        string storageKey = $"{storagePrefix}{Guid.NewGuid()}/{fileName}";
+
+        if (category != "userFiles" && category != "agentFiles" && category != "outputFiles")
+            category = "agentFiles";
+
+        string storagePrefix = $"projects/{projectId}/{category}/";
+        string nameSegment = string.IsNullOrEmpty(originalPath) ? fileName : originalPath.Replace("\\", "/");
+        string storageKey = $"{storagePrefix}{Guid.NewGuid()}/{nameSegment}";
 
         byte[] bytes = Encoding.UTF8.GetBytes(content);
         await using MemoryStream stream = new(bytes);
@@ -79,6 +88,9 @@ public class ProjectFileWorkspace : IProjectFileWorkspace
         request.Metadata["project-id"] = projectId.ToString();
         request.Metadata["project-file-id"] = fileId.ToString();
         request.Metadata["generated-by"] = "workflow-engine";
+        request.Metadata["category"] = category;
+        if (!string.IsNullOrEmpty(originalPath))
+            request.Metadata["original-path"] = originalPath;
 
         await _s3Client.PutObjectAsync(request, ct);
 
@@ -90,6 +102,8 @@ public class ProjectFileWorkspace : IProjectFileWorkspace
             Id = fileId,
             ProjectId = projectId,
             OriginalFileName = fileName,
+            OriginalPath = originalPath,
+            Category = category,
             StorageKey = storageKey,
             StorageBucket = _bucketName,
             StoragePrefix = storagePrefix,
@@ -109,6 +123,8 @@ public class ProjectFileWorkspace : IProjectFileWorkspace
             projectFile.Id,
             projectFile.ProjectId,
             projectFile.OriginalFileName,
+            projectFile.OriginalPath,
+            projectFile.Category,
             projectFile.StorageKey,
             projectFile.MimeType,
             projectFile.SizeBytes,
@@ -133,7 +149,7 @@ public class ProjectFileWorkspace : IProjectFileWorkspace
         if (byKey != null) return byKey;
 
         ProjectFile? byName = await query
-            .Where(f => f.OriginalFileName == fileReference)
+            .Where(f => f.OriginalFileName == fileReference || f.OriginalPath == fileReference)
             .OrderByDescending(f => f.UploadedAt)
             .FirstOrDefaultAsync(ct);
 

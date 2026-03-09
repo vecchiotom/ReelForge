@@ -143,7 +143,7 @@ public class ReactRemotionSandboxTools
 
     [Description(
         "Render a Remotion composition to a video or image file inside the sandbox, then upload the result " +
-        "to S3 storage under the 'outputs/{executionId}/' prefix. " +
+        "to S3 storage under the 'projects/{projectId}/outputFiles/' prefix. " +
         "On success, the storage key is automatically attached to the current workflow step result " +
         "so it can be retrieved and played back from the UI. " +
         "Returns the S3 storage key and file size on success. " +
@@ -170,14 +170,16 @@ public class ReactRemotionSandboxTools
         if (remotionArgs is { Length: > 0 })
             args.AddRange(remotionArgs);
 
-        // Ensure we specify a Chromium executable so Remotion doesn't try to
-        // launch its bundled headless shell (which often isn't present in our
-        // Alpine-based sandbox image and was the cause of ENOENT errors).
-        // We prefer the system binary installed by the Dockerfile at /usr/bin/chromium.
+        // Ensure we specify a Chromium-like executable so Remotion doesn't
+        // try to launch whatever it bundled. Historically we pointed at the
+        // full /usr/bin/chromium but that binary no longer supports the
+        // original --headless flag (errors about headless mode being replaced).
+        // Instead we target the lightweight headless-shell runtime that we
+        // symlink into every sandbox workspace by default.
         bool hasChromiumArg = args.Any(a => a.StartsWith("--chromium-executable"));
         if (!hasChromiumArg)
         {
-            args.Add("--chromium-executable=/usr/bin/chromium");
+            args.Add("--chromium-executable=/workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/chrome-headless-shell");
         }
 
         // Run the render
@@ -207,8 +209,8 @@ public class ReactRemotionSandboxTools
         SandboxFileContent payload = await ReadJsonAsync<SandboxFileContent>(fileResponse);
         byte[] fileBytes = Convert.FromBase64String(payload.ContentBase64);
 
-        // Upload to S3
-        string storageKey = $"outputs/{executionId}/{outputFileName}";
+        // Upload to S3 under the new project-centric layout
+        string storageKey = $"projects/{ctx.ProjectId}/outputFiles/{executionId}/{outputFileName}";
         string contentType = InferContentType(outputFileName);
 
         await using MemoryStream ms = new(fileBytes);
@@ -221,6 +223,7 @@ public class ReactRemotionSandboxTools
         };
         putRequest.Metadata["workflow-execution-id"] = executionId;
         putRequest.Metadata["composition-id"] = compositionId;
+        putRequest.Metadata["category"] = "outputFiles";
         await _s3Client.PutObjectAsync(putRequest, CancellationToken.None);
 
         // Signal to the executor that this step produced a media artifact
@@ -358,14 +361,16 @@ public class ReactRemotionSandboxTools
         if (args is { Length: > 0 })
             commandArgs.AddRange(args);
 
-        // Provide default chromium path when running a render command to avoid
-        // the headless-shell-not-found errors inside the sandbox container.
+        // Provide default chromium-like path when running a render command so
+        // the CLI can start in headless mode. We point at the headless-shell
+        // binary that is always linked in the workspace; the full chromium
+        // build may no longer accept the legacy `--headless` option.
         if (command.Equals("render", StringComparison.OrdinalIgnoreCase))
         {
             bool hasChromiumArg = commandArgs.Any(a => a.StartsWith("--chromium-executable"));
             if (!hasChromiumArg)
             {
-                commandArgs.Add("--chromium-executable=/usr/bin/chromium");
+                commandArgs.Add("--chromium-executable=/workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/chrome-headless-shell");
             }
         }
 

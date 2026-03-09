@@ -13,8 +13,9 @@ interface FileSummaryDrawerProps {
 export function FileSummaryDrawer({ file, opened, onClose }: FileSummaryDrawerProps) {
   if (!file) return null;
 
+  const title = file.originalPath ? file.originalPath : file.originalFileName;
   return (
-    <Drawer opened={opened} onClose={onClose} title={file.originalFileName} position="right" size="lg">
+    <Drawer opened={opened} onClose={onClose} title={title} position="right" size="lg">
       <Stack gap="md">
         <div>
           <Text size="sm" fw={500}>Content Type</Text>

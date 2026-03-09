@@ -24,7 +24,7 @@ public class WorkflowStepResult
     /// <summary>
     /// S3/MinIO storage key for a video or image artifact produced by this step.
     /// Null when the step produces no media output.
-    /// Key format: outputs/{executionId}/{fileName}
+    /// Key format: projects/{projectId}/outputFiles/{executionId}/{fileName}
     /// </summary>
     public string? OutputStorageKey { get; set; }
 

@@ -24,7 +24,7 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.Version=${VERSION}" -o /app/s
 FROM node:22-alpine
 RUN apk add --no-cache docker-cli chromium ffmpeg nss freetype harfbuzz ttf-freefont
 
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV PUPPETEER_EXECUTABLE_PATH=/workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/chrome-headless-shell
 
 WORKDIR /opt/remotion-template
 COPY template/package.json ./package.json

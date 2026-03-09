@@ -13,7 +13,6 @@ using ReelForge.Inference.Api.Data;
 using ReelForge.Inference.Api.Services.Auth;
 using ReelForge.Inference.Api.Services.Background;
 using ReelForge.Inference.Api.Services.Storage;
-using ReelForge.Inference.Api.Services.Background;
 using ReelForge.Shared.Auth;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);

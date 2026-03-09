@@ -41,7 +41,17 @@ public class ProjectFilesController : ControllerBase
         List<ProjectFileResponse> files = await _db.ProjectFiles
             .Where(f => f.ProjectId == projectId)
             .OrderByDescending(f => f.UploadedAt)
-            .Select(f => new ProjectFileResponse(f.Id, f.OriginalFileName, f.StorageKey, f.MimeType, f.SizeBytes, f.AgentSummary, f.SummaryStatus.ToString(), f.UploadedAt))
+            .Select(f => new ProjectFileResponse(
+                f.Id,
+                f.OriginalFileName,
+                f.OriginalPath,
+                f.Category,
+                f.StorageKey,
+                f.MimeType,
+                f.SizeBytes,
+                f.AgentSummary,
+                f.SummaryStatus.ToString(),
+                f.UploadedAt))
             .ToListAsync(ct);
         return Ok(files);
     }
@@ -52,6 +62,13 @@ public class ProjectFilesController : ControllerBase
         Project? project = await _db.Projects.FirstOrDefaultAsync(p => p.Id == projectId, ct);
         if (project == null) return NotFound();
         if (project.OwnerId != _currentUser.UserId) return Forbid();
+
+        // catch optional relative path that the client may send when uploading a folder
+        string? relativePath = null;
+        if (Request.Form.TryGetValue("relativePath", out var values))
+        {
+            relativePath = values.FirstOrDefault();
+        }
 
         Guid fileId = Guid.NewGuid();
         Dictionary<string, string> storageMetadata = new()
@@ -66,16 +83,20 @@ public class ProjectFilesController : ControllerBase
         StoredFileObject storedObject = await _fileStorage.UploadAsync(
             projectId,
             stream,
-            file.FileName,
+            Path.GetFileName(file.FileName),
             file.ContentType,
             storageMetadata,
-            ct);
+            ct,
+            category: "userFiles",
+            originalPath: relativePath ?? file.FileName);
 
         ProjectFile projectFile = new()
         {
             Id = fileId,
             ProjectId = projectId,
-            OriginalFileName = file.FileName,
+            OriginalFileName = Path.GetFileName(file.FileName),
+            OriginalPath = relativePath ?? file.FileName,
+            Category = "userFiles",
             StorageKey = storedObject.StorageKey,
             StorageBucket = storedObject.BucketName,
             StoragePrefix = storedObject.StoragePrefix,
@@ -91,7 +112,17 @@ public class ProjectFilesController : ControllerBase
 
         await _summarizationQueue.QueueAsync(new FileSummarizationTask(projectFile.Id), ct);
 
-        return StatusCode(201, new ProjectFileResponse(projectFile.Id, projectFile.OriginalFileName, projectFile.StorageKey, projectFile.MimeType, projectFile.SizeBytes, projectFile.AgentSummary, projectFile.SummaryStatus.ToString(), projectFile.UploadedAt));
+        return StatusCode(201, new ProjectFileResponse(
+            projectFile.Id,
+            projectFile.OriginalFileName,
+            projectFile.OriginalPath,
+            projectFile.Category,
+            projectFile.StorageKey,
+            projectFile.MimeType,
+            projectFile.SizeBytes,
+            projectFile.AgentSummary,
+            projectFile.SummaryStatus.ToString(),
+            projectFile.UploadedAt));
     }
 
     [HttpDelete("{fileId:guid}")]

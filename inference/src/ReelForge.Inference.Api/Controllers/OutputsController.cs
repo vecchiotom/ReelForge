@@ -45,10 +45,12 @@ public class OutputsController : ControllerBase
         if (project == null) return NotFound();
         if (project.OwnerId != _currentUser.UserId) return Forbid();
 
+        string expectedPrefix = $"projects/{projectId}/outputFiles";
         List<OutputVideoResponse> outputs = await _db.WorkflowStepResults
             .Where(r =>
                 r.OutputStorageKey != null &&
-                r.WorkflowExecution.ProjectId == projectId)
+                r.WorkflowExecution.ProjectId == projectId &&
+                r.OutputStorageKey.StartsWith(expectedPrefix, StringComparison.Ordinal))
             .OrderByDescending(r => r.CompletedAt ?? r.ExecutedAt)
             .Select(r => new OutputVideoResponse(
                 r.Id,
@@ -80,8 +82,9 @@ public class OutputsController : ControllerBase
         if (stepResult == null) return NotFound();
         if (stepResult.OutputStorageKey == null) return NotFound("This step result has no media output.");
 
-        // Validate storage key scope: must be in outputs/ prefix for security
-        if (!stepResult.OutputStorageKey.StartsWith("outputs/", StringComparison.Ordinal))
+        // Validate storage key scope: must live under the project outputFiles prefix
+        string expectedKeyPrefix = $"projects/{projectId}/outputFiles";
+        if (!stepResult.OutputStorageKey.StartsWith(expectedKeyPrefix, StringComparison.Ordinal))
             return Forbid();
 
         GetObjectResponse s3Response = await _s3Client.GetObjectAsync(new GetObjectRequest

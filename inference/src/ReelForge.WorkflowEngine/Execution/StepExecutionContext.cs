@@ -65,7 +65,9 @@ public class StepExecutionResult
 
     /// <summary>
     /// S3/MinIO storage key for a video or image artifact produced during this step.
-    /// Set by the RenderVideoAndUploadToStorage sandbox tool.
+    /// Set by the RenderVideoAndUploadToStorage sandbox tool; keys now follow
+    /// "projects/{projectId}/outputFiles/{executionId}/..." rather than the old
+    /// "outputs/" prefix.
     /// </summary>
     public string? OutputStorageKey { get; init; }
 }

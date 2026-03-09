@@ -4,6 +4,8 @@ public sealed record ProjectWorkspaceFile(
     Guid Id,
     Guid ProjectId,
     string OriginalFileName,
+    string? OriginalPath,
+    string Category,
     string StorageKey,
     string MimeType,
     long SizeBytes,
@@ -14,5 +16,12 @@ public interface IProjectFileWorkspace
 {
     Task<IReadOnlyList<ProjectWorkspaceFile>> ListFilesAsync(Guid projectId, CancellationToken ct);
     Task<string> ReadFileAsync(Guid projectId, string fileReference, CancellationToken ct);
-    Task<ProjectWorkspaceFile> WriteTextFileAsync(Guid projectId, string fileName, string content, string contentType, CancellationToken ct);
+    Task<ProjectWorkspaceFile> WriteTextFileAsync(
+        Guid projectId,
+        string fileName,
+        string content,
+        string contentType,
+        CancellationToken ct,
+        string category = "agentFiles",
+        string? originalPath = null);
 }

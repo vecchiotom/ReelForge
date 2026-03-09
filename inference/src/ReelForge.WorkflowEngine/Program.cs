@@ -22,6 +22,7 @@ using ReelForge.WorkflowEngine.Execution;
 using ReelForge.WorkflowEngine.Execution.StepExecutors;
 using ReelForge.WorkflowEngine.Observability;
 using ReelForge.WorkflowEngine.Services.Storage;
+using ReelForge.WorkflowEngine.Services.Messaging;
 using ReelForge.WorkflowEngine.Workers;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
@@ -151,6 +152,9 @@ builder.Services.AddMassTransit(x =>
 
 // --- Background Workers ---
 builder.Services.AddHostedService<WorkflowWorkerPool>();
+
+// helper for low-level RabbitMQ operations (message removal)
+builder.Services.AddSingleton<RabbitMqHelper>();
 
 // --- OpenTelemetry ---
 builder.Services.AddOpenTelemetry()
