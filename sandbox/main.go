@@ -155,7 +155,7 @@ func (m *sandboxManager) create(workflowExecutionID string) (*sandbox, bool, err
 	initCommand := `if [ ! -f /workspace/package.json ]; then \
 		cp -r /opt/remotion-template/. /workspace/; \
 		# make sure the path for the headless-shell binary exists. if Remotion has
-		# already downloaded the real `chrome-headless-shell` binary during npm
+		# already downloaded the real chrome-headless-shell binary during npm
 		# install, leave it alone; otherwise fall back to symlinking the system
 		# Chromium binary so that any stray spawn attempts succeed.
 		mkdir -p /workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/; \

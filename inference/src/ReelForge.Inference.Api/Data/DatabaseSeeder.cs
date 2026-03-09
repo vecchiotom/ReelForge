@@ -192,8 +192,19 @@ public static class DatabaseSeeder
              7. Call `CheckLintAndTypeErrors` once all files are written; fix errors and repeat
                 until clean.
 
+             ## CRITICAL: Import Extensions
+             - **Always use explicit `.tsx` extensions** when importing local TSX files.
+             - Example: `import { MyComponent } from './MyComponent.tsx';` (NOT `./MyComponent`)
+             - This applies to ALL local imports including in root.tsx.
+             - **NEVER modify `src/index.ts`** — the template entry point is already configured.
+
              Always call `EnsureSandbox` before any file or exec operation. Write component files
              to `src/<ComponentName>.tsx`. Do not render video — that is the AuthorAgent's job.
+
+             ## Remotion Knowledge Base
+             Use `SearchRemotionSkills`, `ReadRemotionSkill`, and `ListAllRemotionSkills` to
+             consult official Remotion documentation before writing components. Always check the
+             relevant skill docs for correct API usage (e.g. compositions, animations, timing).
 
              If at any time you determine that the workflow cannot continue due to an
              unrecoverable problem (e.g. missing data, inconsistent state, or other critical
@@ -224,6 +235,10 @@ public static class DatabaseSeeder
              6. Call `ReadSandboxFile` with a relative path to read any sandbox file.
 
              Always read the Remotion components and component inventory before designing the plan.
+
+             ## Remotion Knowledge Base
+             Use `SearchRemotionSkills` and `ReadRemotionSkill` to consult official documentation
+             on timing, transitions, sequencing, and animation patterns before designing your plan.
              Output a structured JSON plan with scene ordering, transitions, animation timing,
              pacing, and frame-accurate sequencing matching the AnimationStrategyOutput schema.
 
@@ -317,14 +332,23 @@ public static class DatabaseSeeder
              3. Call `ListProjectFiles` and `ReadProjectFile` to read all prior agent outputs.
              4. Call `ListSandboxFiles` and `ReadSandboxFile` to inspect existing Remotion components.
              5. Call `WriteSandboxFile` to make any final adjustments to component files.
+                **NEVER modify `src/index.ts`** — the template entry point is already configured.
              6. Call `CheckLintAndTypeErrors` to validate TypeScript; fix errors and re-check.
              7. Call `RunSandboxNpmScript` with `"build"` to build the production bundle.
              8. Call `RenderVideoAndUploadToStorage` to render and upload the final video.
              9. Call `WriteProjectFile` to persist the final RenderManifest as a project file.
              10. Call `CompleteSandbox` to clean up the sandbox when done.
 
+             ## CRITICAL: Import Extensions
+             - **Always use explicit `.tsx` extensions** when importing local TSX files.
+             - Example: `import { MyComponent } from './MyComponent.tsx';` (NOT `./MyComponent`)
+
              Always call `EnsureSandbox` before any sandbox operation.
              Output a valid RenderManifestOutput JSON.
+
+             ## Remotion Knowledge Base
+             Use `SearchRemotionSkills` and `ReadRemotionSkill` to consult official Remotion
+             documentation when encountering build errors, rendering issues, or unfamiliar APIs.
 
              If at any time you determine that the workflow cannot continue due to an
              unrecoverable problem (e.g. missing data, inconsistent state, or other critical
@@ -458,6 +482,11 @@ public static class DatabaseSeeder
         "RunSandboxRemotionCommand", "CompleteSandbox"
     ];
 
+    private static readonly string[] RemotionSkillsTools =
+    [
+        "SearchRemotionSkills", "ReadRemotionSkill", "ListAllRemotionSkills"
+    ];
+
     private static string GetAvailableToolsJson(AgentType agentType)
     {
         string[] extra = agentType switch
@@ -467,6 +496,10 @@ public static class DatabaseSeeder
             AgentType.ComponentInventoryAnalyzer => ["ReadFileContent", "ListFilesByExtension"],
             AgentType.RouteAndApiAnalyzer => ["ReadFileContent", "SearchPatterns"],
             AgentType.StyleAndThemeExtractor => ["ReadStyleConfig", "ReadFileContent"],
+            AgentType.RemotionComponentTranslator => [.. RemotionSkillsTools],
+            AgentType.AnimationStrategyAgent => [.. RemotionSkillsTools],
+            AgentType.AuthorAgent => [.. RemotionSkillsTools],
+            AgentType.ReviewAgent => [.. RemotionSkillsTools],
             _ => []
         };
         string[] all = [.. BaseTools, .. extra];

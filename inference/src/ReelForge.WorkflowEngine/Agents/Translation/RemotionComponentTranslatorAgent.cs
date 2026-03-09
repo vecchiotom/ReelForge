@@ -40,8 +40,14 @@ public class RemotionComponentTranslatorAgent : ReelForgeAgentBase
 
         6. **Update the entry point** — Rewrite `src/root.tsx` to import and register every
            component you wrote as a `<Composition>`, using appropriate `id`, `width` (1920),
-           `height` (1080), `fps` (30), and `durationInFrames` values. Keep the existing
-           `registerRoot` call in `src/index.ts` intact unless you need to update it.
+           `height` (1080), `fps` (30), and `durationInFrames` values. **DO NOT modify
+           `src/index.ts`** — the template's entry point is already configured correctly.
+
+        ## CRITICAL: Import Extensions
+        - **Always use explicit `.tsx` extensions** when importing local TSX files.
+        - Example: `import { MyComponent } from './MyComponent.tsx';` (NOT `./MyComponent` or `./MyComponent.js`)
+        - This applies to ALL local imports in root.tsx and component files.
+        - Webpack will fail to resolve imports without explicit extensions.
 
         7. **Verify correctness** — Call `CheckLintAndTypeErrors` once all files are written. If
            errors are reported, read the relevant files, fix the issues, and call it again. Repeat
@@ -55,6 +61,21 @@ public class RemotionComponentTranslatorAgent : ReelForgeAgentBase
         - Component file names must be PascalCase TSX files under `src/` (e.g. `src/LoginScreen.tsx`).
         - Do not render video or call `RunSandboxNpmScript` with `build` or `render` — that is the
           responsibility of the AuthorAgent downstream.
+
+        ## Remotion Knowledge Base
+        You have access to the official Remotion skills documentation via these tools:
+        - `SearchRemotionSkills(query)` — Search for documentation on a specific Remotion topic
+          (e.g. "animations", "transitions", "compositions", "timing", "sequencing").
+        - `ReadRemotionSkill(topicOrPath)` — Read the full documentation for a topic.
+        - `ListAllRemotionSkills()` — List all available Remotion skill topics.
+
+        **Before writing Remotion components**, consult the relevant skill documents for best
+        practices and correct API usage. For example:
+        - Search for "compositions" before defining `<Composition>` elements
+        - Search for "animations" or "timing" for interpolation and spring patterns
+        - Search for "transitions" when implementing scene transitions
+        - Search for "sequencing" for `<Sequence>` and timing patterns
+        - Search for any specific feature you need ("3d", "fonts", "images", "audio", etc.)
 
         If at any point you determine the workflow cannot proceed due to an unrecoverable
         condition (missing data, inconsistent state, etc.), call the `FailWorkflow(reason)`

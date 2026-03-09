@@ -131,7 +131,11 @@ public class WorkflowEngineDbContext : DbContext
             entity.HasOne(e => e.Project)
                 .WithMany(p => p.WorkflowExecutions)
                 .HasForeignKey(e => e.ProjectId)
-                .OnDelete(DeleteBehavior.Restrict);
+                // allow project deletion to cascade into executions so that the inferencing
+                // API (which doesn't track executions) can remove a project without hitting
+                // a foreign key violation. StepResults/ReviewScores already cascade off
+                // the execution.
+                .OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(e => e.CurrentStep)
                 .WithMany()
                 .HasForeignKey(e => e.CurrentStepId)

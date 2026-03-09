@@ -23,6 +23,7 @@ using ReelForge.WorkflowEngine.Execution.StepExecutors;
 using ReelForge.WorkflowEngine.Observability;
 using ReelForge.WorkflowEngine.Services.Storage;
 using ReelForge.WorkflowEngine.Services.Messaging;
+using ReelForge.WorkflowEngine.Services.RemotionSkills;
 using ReelForge.WorkflowEngine.Workers;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
@@ -95,6 +96,8 @@ builder.Services.AddSingleton<IAgentToolProvider, AgentToolProvider>();
 builder.Services.AddSingleton<IProjectFileWorkspace, ProjectFileWorkspace>();
 builder.Services.AddSingleton<ProjectFileAgentTools>();
 builder.Services.AddSingleton<ReactRemotionSandboxTools>();
+builder.Services.AddSingleton<RemotionSkillsService>();
+builder.Services.AddSingleton<RemotionSkillsAgentTools>();
 // workflow control tools provide helpers such as FailWorkflow
 builder.Services.AddSingleton<WorkflowControlAgentTools>();
 

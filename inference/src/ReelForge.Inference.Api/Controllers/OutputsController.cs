@@ -46,11 +46,14 @@ public class OutputsController : ControllerBase
         if (project.OwnerId != _currentUser.UserId) return Forbid();
 
         string expectedPrefix = $"projects/{projectId}/outputFiles";
+        // EF Core can't translate the overload of StartsWith that takes a StringComparison,
+        // so switch to the simpler form which maps to SQL LIKE. Alternatively we could use
+        // EF.Functions.Like(r.OutputStorageKey, expectedPrefix + "%").
         List<OutputVideoResponse> outputs = await _db.WorkflowStepResults
             .Where(r =>
                 r.OutputStorageKey != null &&
                 r.WorkflowExecution.ProjectId == projectId &&
-                r.OutputStorageKey.StartsWith(expectedPrefix, StringComparison.Ordinal))
+                r.OutputStorageKey.StartsWith(expectedPrefix))
             .OrderByDescending(r => r.CompletedAt ?? r.ExecutedAt)
             .Select(r => new OutputVideoResponse(
                 r.Id,

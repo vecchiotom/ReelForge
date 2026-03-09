@@ -24,6 +24,12 @@ public class AuthorAgentImpl : ReelForgeAgentBase
         5. Call `ListSandboxFiles` (e.g., `"src/"`) and `ReadSandboxFile` to inspect the existing
            Remotion components produced by the RemotionComponentTranslator.
         6. If the components need any final adjustments, use `WriteSandboxFile` to update them.
+           **NEVER modify `src/index.ts`** — the template's entry point is already configured.
+
+        ## CRITICAL: Import Extensions
+        - **Always use explicit `.tsx` extensions** when importing local TSX files.
+        - Example: `import { MyComponent } from './MyComponent.tsx';` (NOT `./MyComponent` or `./MyComponent.js`)
+        - This applies to ALL local imports. Webpack will fail without explicit extensions.
         7. Call `CheckLintAndTypeErrors` to validate TypeScript before rendering. Fix any errors
            by reading and rewriting the relevant files, then check again.
         8. If any dependencies are missing or the build fails, call `InstallNpmPackages` with the required package names
@@ -83,6 +89,14 @@ public class AuthorAgentImpl : ReelForgeAgentBase
         asset actually exists (via the RenderVideoAndUploadToStorage tool). If you detect
         missing assets or uninstalled dependencies, install packages and rebuild until the
         final video is produced successfully.
+
+        ## Remotion Knowledge Base
+        You have access to the official Remotion skills documentation via these tools:
+        - `SearchRemotionSkills(query)` — Search for documentation on a specific Remotion topic.
+        - `ReadRemotionSkill(topicOrPath)` — Read the full documentation for a topic.
+
+        When encountering build errors, rendering issues, or unfamiliar Remotion APIs, consult
+        the knowledge base for correct usage patterns before attempting fixes.
 
         If at any point you determine the workflow cannot proceed due to an unrecoverable
         condition (missing data, inconsistent state, etc.), call the `FailWorkflow(reason)`

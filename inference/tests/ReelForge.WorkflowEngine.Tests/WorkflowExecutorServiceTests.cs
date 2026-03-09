@@ -7,6 +7,7 @@ using ReelForge.WorkflowEngine.Agents.Tools;
 using ReelForge.WorkflowEngine.Services.Messaging;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.InMemory;
+using Microsoft.Data.Sqlite;
 using ReelForge.WorkflowEngine.Data;
 using ReelForge.WorkflowEngine.Execution;
 using Xunit;
@@ -116,6 +117,37 @@ namespace ReelForge.WorkflowEngine.Tests
 
             await service.CancelExecutionAsync(id, Guid.NewGuid());
             cts.IsCancellationRequested.Should().BeTrue();
+        }
+
+        [Fact]
+        public async Task DeletingProject_cascades_WorkflowExecutions()
+        {
+            // build a fresh SQLite database using the real migration set
+            var connection = new Microsoft.Data.Sqlite.SqliteConnection("DataSource=:memory:");
+            connection.Open();
+            var options = new DbContextOptionsBuilder<WorkflowEngineDbContext>()
+                .UseSqlite(connection)
+                .Options;
+
+            using var db = new WorkflowEngineDbContext(options);
+            // applying migrations creates both projects and workflow_executions tables
+            // with the proper ON DELETE CASCADE foreign key defined by our new migration.
+            db.Database.Migrate();
+
+            var projectId = Guid.NewGuid();
+            db.Database.ExecuteSqlRaw(
+                "INSERT INTO projects (id,name,owner_id,status,created_at,updated_at) VALUES ({0},{1},{2},{3},{4},{5})",
+                projectId.ToString(), "foo", Guid.Empty.ToString(), "Draft", DateTime.UtcNow, DateTime.UtcNow);
+
+            var execId = Guid.NewGuid();
+            db.Database.ExecuteSqlRaw(
+                "INSERT INTO workflow_executions (id,project_id,workflow_definition_id,status,iteration_count,correlation_id) VALUES ({0},{1},{2},{3},{4},{5})",
+                execId.ToString(), projectId.ToString(), Guid.Empty.ToString(), "Queued", 0, Guid.NewGuid().ToString());
+
+            db.Database.ExecuteSqlRaw("DELETE FROM projects WHERE id = {0}", projectId.ToString());
+
+            var remaining = await db.WorkflowExecutions.CountAsync();
+            remaining.Should().Be(0);
         }
     }
 

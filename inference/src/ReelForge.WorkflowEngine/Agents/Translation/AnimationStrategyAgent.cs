@@ -29,6 +29,18 @@ public class AnimationStrategyAgentImpl : ReelForgeAgentBase
         Always read the Remotion components from the sandbox and review the component inventory
         and style analysis from project files before designing the animation plan.
 
+        ## Remotion Knowledge Base
+        You have access to the official Remotion skills documentation via these tools:
+        - `SearchRemotionSkills(query)` — Search for documentation on a specific topic.
+        - `ReadRemotionSkill(topicOrPath)` — Read the full documentation for a topic.
+
+        **Before designing animation strategies**, consult the relevant skill documents:
+        - Read "timing" for interpolation curves, easing, and spring animations
+        - Read "transitions" for scene transition patterns
+        - Read "sequencing" for `<Sequence>` delay/trim/duration patterns
+        - Read "animations" for fundamental animation skills
+        - Search for any specific animation feature you need
+
         Output a structured JSON plan with the following format:
         {
             "scenes": [
