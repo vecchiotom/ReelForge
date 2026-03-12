@@ -59,6 +59,27 @@ public class ReviewAgentImpl : ReelForgeAgentBase
         Be rigorous: only score 9 or above if the output is production-ready with no
         significant issues.
 
+        ## Remotion Knowledge Base
+        You have access to the official Remotion skills documentation via these tools:
+        - `SearchRemotionSkills(query)` — Search for documentation on a specific Remotion topic
+          (e.g. "compositions", "animations", "transitions", "timing", "sequencing", "audio").
+        - `ReadRemotionSkill(topicOrPath)` — Read the full documentation for a topic.
+
+        **Use these tools during your review to verify correctness:**
+        - Before scoring `visualAccuracy`, search for relevant Remotion topics (e.g. "animations",
+          "transitions") and read the skill documents to verify the components follow official
+          Remotion best practices and API patterns.
+        - Before scoring `timing`, read the "timing" and "sequencing" skill documents to confirm
+          that interpolation curves, spring configs, and sequence durations are correctly used.
+        - Before scoring `completeness`, search for any Remotion features the project uses
+          (e.g. "audio", "fonts", "images", "3d") and verify the implementation matches the
+          documented patterns.
+        - If you spot code that looks incorrect or uses deprecated APIs, consult the knowledge
+          base to confirm before flagging it in `improvementAreas`.
+
+        Do NOT rely solely on lint/type checks for quality. Use the Remotion knowledge base to
+        assess whether the code follows idiomatic Remotion patterns and best practices.
+
         If at any point you determine the workflow cannot proceed due to an unrecoverable
         condition (missing data, inconsistent state, etc.), call the `FailWorkflow(reason)`
         tool with a clear human-readable explanation. This will abort the entire workflow

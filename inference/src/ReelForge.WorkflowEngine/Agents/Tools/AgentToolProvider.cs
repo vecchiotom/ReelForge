@@ -26,7 +26,7 @@ public class AgentToolProvider : IAgentToolProvider
         agentType switch
         {
             // ──────────────────────────────────────────────────────────────────
-            // Analysis agents: project read-only + data formatter helpers.
+            // Analysis agents: project read-only access only.
             // No sandbox access — these agents only inspect source files.
             // ──────────────────────────────────────────────────────────────────
 
@@ -34,8 +34,6 @@ public class AgentToolProvider : IAgentToolProvider
             [
                 AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
                 AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
-                AIFunctionFactory.Create(ProjectDataFormatterTools.ReadFileTree),
-                AIFunctionFactory.Create(ProjectDataFormatterTools.ReadFileContent),
                 AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
             ],
 
@@ -43,8 +41,6 @@ public class AgentToolProvider : IAgentToolProvider
             [
                 AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
                 AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
-                AIFunctionFactory.Create(ProjectDataFormatterTools.ReadPackageManifest),
-                AIFunctionFactory.Create(ProjectDataFormatterTools.ReadFileContent),
                 AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
             ],
 
@@ -52,8 +48,6 @@ public class AgentToolProvider : IAgentToolProvider
             [
                 AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
                 AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
-                AIFunctionFactory.Create(ProjectDataFormatterTools.ReadFileContent),
-                AIFunctionFactory.Create(ProjectDataFormatterTools.ListFilesByExtension),
                 AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
             ],
 
@@ -61,8 +55,6 @@ public class AgentToolProvider : IAgentToolProvider
             [
                 AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
                 AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
-                AIFunctionFactory.Create(ProjectDataFormatterTools.ReadFileContent),
-                AIFunctionFactory.Create(ProjectDataFormatterTools.SearchPatterns),
                 AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
             ],
 
@@ -70,8 +62,6 @@ public class AgentToolProvider : IAgentToolProvider
             [
                 AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
                 AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
-                AIFunctionFactory.Create(ProjectDataFormatterTools.ReadStyleConfig),
-                AIFunctionFactory.Create(ProjectDataFormatterTools.ReadFileContent),
                 AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
             ],
 

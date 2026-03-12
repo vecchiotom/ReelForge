@@ -43,6 +43,8 @@ public record WorkflowStepResponse(
     int MaxIterations = 3,
     int? MinScore = null,
     string? InputMappingJson = null,
+    string? AgentInputContextMode = null,
+    string? SelectedPriorStepOrdersJson = null,
     string? TrueBranchStepOrder = null,
     string? FalseBranchStepOrder = null,
     string? ParallelAgentIdsJson = null);
@@ -61,6 +63,8 @@ public record CreateWorkflowStepRequest(
     int? MaxIterations = null,
     int? MinScore = null,
     string? InputMappingJson = null,
+    string? AgentInputContextMode = null,
+    string? SelectedPriorStepOrdersJson = null,
     string? TrueBranchStepOrder = null,
     string? FalseBranchStepOrder = null,
     string? ParallelAgentIdsJson = null);

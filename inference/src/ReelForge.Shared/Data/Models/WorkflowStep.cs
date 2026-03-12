@@ -21,6 +21,8 @@ public class WorkflowStep
     public int MaxIterations { get; set; } = 3;
     public int? MinScore { get; set; }
     public string? InputMappingJson { get; set; }
+    public AgentInputContextMode? AgentInputContextMode { get; set; }
+    public string? SelectedPriorStepOrdersJson { get; set; }
     public string? TrueBranchStepOrder { get; set; }
     public string? FalseBranchStepOrder { get; set; }
 

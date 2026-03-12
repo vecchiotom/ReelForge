@@ -2,28 +2,45 @@
 
 import { memo, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
-import { Card, Group, Text, ActionIcon, Badge, Stack, TextInput, Collapse, Button, Tooltip } from '@mantine/core';
+import { Card, Group, Text, ActionIcon, Badge, Stack, TextInput, Collapse, Button, Tooltip, Select, MultiSelect } from '@mantine/core';
 import { IconTrash, IconRobot, IconChevronDown, IconChevronUp, IconSettings, IconTools, IconFileExport } from '@tabler/icons-react';
 import { motion } from 'framer-motion';
 import { AgentPicker } from '../AgentPicker';
 import { useAgents } from '@/lib/hooks/use-agents';
 import type { StepData } from '../WorkflowStepList';
+import { getDefaultAgentInputContextMode, type AgentInputContextMode } from '@/lib/types/workflow';
 
 interface AgentNodeData {
   step: StepData;
   stepNumber: number;
+  allSteps: StepData[];
+  currentStepIndex: number;
   onChange: (updates: Partial<StepData>) => void;
   onRemove: () => void;
 }
 
 export const AgentNode = memo(({ data }: { data: AgentNodeData }) => {
-  const { step, stepNumber, onChange, onRemove } = data;
+  const { step, stepNumber, allSteps, currentStepIndex, onChange, onRemove } = data;
   const [expanded, setExpanded] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const { data: agents } = useAgents();
 
   const selectedAgent = agents?.find((a) => a.id === step.agentDefinitionId);
   const toolCount = selectedAgent?.availableTools?.length ?? 0;
+  const inferredMode = getDefaultAgentInputContextMode(selectedAgent?.agentType);
+  const effectiveMode: AgentInputContextMode = step.agentInputContextMode ?? inferredMode;
+  const isInferredMode = step.agentInputContextMode == null;
+
+  const priorStepOptions = allSteps
+    .slice(0, currentStepIndex)
+    .map((previousStep, index) => {
+      const stepOrder = index + 1;
+      const label = previousStep.label?.trim() || `Step ${stepOrder}`;
+      return {
+        value: String(stepOrder),
+        label: `${stepOrder}. ${label}`,
+      };
+    });
 
   return (
     <>
@@ -121,6 +138,46 @@ export const AgentNode = memo(({ data }: { data: AgentNodeData }) => {
                   onChange={(agentDefinitionId) => onChange({ agentDefinitionId })}
                 />
 
+                <Select
+                  label="Agent Context"
+                  size="xs"
+                  value={effectiveMode}
+                  data={[
+                    { value: 'FullWorkflow', label: 'Full workflow context' },
+                    { value: 'PreviousStepOnly', label: 'Previous step only' },
+                    { value: 'SelectedPriorSteps', label: 'Selected prior steps' },
+                    { value: 'CustomMappedSubset', label: 'Custom mapped subset' },
+                  ]}
+                  onChange={(value) => {
+                    if (!value) return;
+                    const nextMode = value as AgentInputContextMode;
+                    onChange({
+                      agentInputContextMode: nextMode,
+                      selectedPriorStepOrders: nextMode === 'SelectedPriorSteps' ? step.selectedPriorStepOrders : [],
+                    });
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                />
+
+                {isInferredMode && (
+                  <Text size="xs" c="dimmed">
+                    Inferred default from agent type: {effectiveMode}
+                  </Text>
+                )}
+
+                {effectiveMode === 'SelectedPriorSteps' && (
+                  <MultiSelect
+                    label="Selected prior steps"
+                    size="xs"
+                    data={priorStepOptions}
+                    value={step.selectedPriorStepOrders.map((n) => String(n))}
+                    onChange={(values) => onChange({ selectedPriorStepOrders: values.map((value) => Number(value)).filter((n) => Number.isFinite(n)) })}
+                    placeholder={priorStepOptions.length > 0 ? 'Select earlier steps' : 'No earlier steps available'}
+                    disabled={priorStepOptions.length === 0}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                )}
+
                 {selectedAgent && (
                   <Group gap={6}>
                     {toolCount > 0 && (
@@ -153,14 +210,20 @@ export const AgentNode = memo(({ data }: { data: AgentNodeData }) => {
                 </Button>
 
                 <Collapse in={advancedOpen}>
-                  <TextInput
-                    label="Input Mapping JSON"
-                    placeholder='{"input": "{{steps.1.output}}"}'
-                    value={step.inputMappingJson || ''}
-                    onChange={(e) => onChange({ inputMappingJson: e.target.value || null })}
-                    size="xs"
-                    onClick={(e) => e.stopPropagation()}
-                  />
+                  {effectiveMode === 'CustomMappedSubset' ? (
+                    <TextInput
+                      label="Input Mapping JSON"
+                      placeholder='{"input": "$.some.path"}'
+                      value={step.inputMappingJson || ''}
+                      onChange={(e) => onChange({ inputMappingJson: e.target.value || null })}
+                      size="xs"
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  ) : (
+                    <Text size="xs" c="dimmed">
+                      Input mapping is used only in Custom mapped subset mode.
+                    </Text>
+                  )}
                 </Collapse>
               </Stack>
             </motion.div>

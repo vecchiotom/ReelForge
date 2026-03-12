@@ -81,6 +81,9 @@ public class InferenceApiDbContext : DbContext
                 .OnDelete(DeleteBehavior.SetNull);
             entity.Property(e => e.AgentType)
                 .HasConversion<string>();
+            entity.Property(e => e.ContextMode)
+                .HasConversion<string>()
+                .HasDefaultValue(ContextMode.LastStep);
             entity.Property(e => e.ConfigJson)
                 .HasColumnType("jsonb");
             entity.Property(e => e.OutputSchemaJson)
@@ -114,9 +117,13 @@ public class InferenceApiDbContext : DbContext
                 .HasColumnType("jsonb");
             entity.Property(e => e.InputMappingJson)
                 .HasColumnType("jsonb");
+            entity.Property(e => e.SelectedPriorStepOrdersJson)
+                .HasColumnType("jsonb");
             entity.Property(e => e.ParallelAgentIdsJson)
                 .HasColumnType("jsonb");
             entity.Property(e => e.StepType)
+                .HasConversion<string>();
+            entity.Property(e => e.AgentInputContextMode)
                 .HasConversion<string>();
             entity.ToTable("workflow_steps", t => t.ExcludeFromMigrations());
         });

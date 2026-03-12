@@ -81,3 +81,34 @@ public enum StepStatus
     Failed,
     Skipped
 }
+
+/// <summary>
+/// Controls which workflow context an Agent step receives as input.
+/// </summary>
+public enum AgentInputContextMode
+{
+    /// <summary>Uses the current accumulated workflow output.</summary>
+    FullWorkflow,
+
+    /// <summary>Uses only the most recent completed step output.</summary>
+    PreviousStepOnly,
+
+    /// <summary>Uses only a selected subset of prior step outputs.</summary>
+    SelectedPriorSteps,
+
+    /// <summary>Uses InputMappingJson to build a custom mapped subset.</summary>
+    CustomMappedSubset
+}
+
+/// <summary>
+/// Controls how much prior workflow context an agent receives as input.
+/// </summary>
+public enum ContextMode
+{
+    /// <summary>Only the immediately preceding step's output is passed (default).</summary>
+    LastStep,
+    /// <summary>All previous steps' outputs are concatenated and passed.</summary>
+    AllSteps,
+    /// <summary>The last N steps' outputs are concatenated (N = ContextWindowSize).</summary>
+    LastN
+}

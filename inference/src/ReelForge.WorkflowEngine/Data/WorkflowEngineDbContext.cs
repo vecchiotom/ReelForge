@@ -115,9 +115,13 @@ public class WorkflowEngineDbContext : DbContext
                 .HasColumnType("jsonb");
             entity.Property(e => e.InputMappingJson)
                 .HasColumnType("jsonb");
+            entity.Property(e => e.SelectedPriorStepOrdersJson)
+                .HasColumnType("jsonb");
             entity.Property(e => e.ParallelAgentIdsJson)
                 .HasColumnType("jsonb");
             entity.Property(e => e.StepType)
+                .HasConversion<string>();
+            entity.Property(e => e.AgentInputContextMode)
                 .HasConversion<string>();
         });
 

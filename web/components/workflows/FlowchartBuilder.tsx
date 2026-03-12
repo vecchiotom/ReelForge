@@ -120,6 +120,8 @@ export function FlowchartBuilder({ steps, onChange }: FlowchartBuilderProps) {
       maxIterations: 3,
       minScore: null,
       inputMappingJson: null,
+      agentInputContextMode: null,
+      selectedPriorStepOrders: [],
       trueBranchStepOrder: null,
       falseBranchStepOrder: null,
       parallelAgentIds: [],

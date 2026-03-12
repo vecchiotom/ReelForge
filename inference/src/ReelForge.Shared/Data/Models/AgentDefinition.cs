@@ -20,6 +20,12 @@ public class AgentDefinition
     public bool GeneratesOutput { get; set; }
     public string? OutputSchemaName { get; set; }
 
+    /// <summary>How much prior workflow context this agent receives.</summary>
+    public ContextMode ContextMode { get; set; } = ContextMode.LastStep;
+
+    /// <summary>When ContextMode is LastN, specifies how many prior steps to include.</summary>
+    public int? ContextWindowSize { get; set; }
+
     public ApplicationUser? Owner { get; set; }
     public ICollection<WorkflowStep> WorkflowSteps { get; set; } = new List<WorkflowStep>();
 }

@@ -6,7 +6,7 @@ import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, us
 import type { DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
 import { StepCard } from './StepCard';
-import type { StepType } from '@/lib/types/workflow';
+import type { AgentInputContextMode, StepType } from '@/lib/types/workflow';
 
 export interface StepData {
   id: string;
@@ -19,6 +19,8 @@ export interface StepData {
   maxIterations: number;
   minScore: number | null;
   inputMappingJson: string | null;
+  agentInputContextMode: AgentInputContextMode | null;
+  selectedPriorStepOrders: number[];
   trueBranchStepOrder: string | null;
   falseBranchStepOrder: string | null;
   /** Ordered list of AgentDefinition IDs to run in parallel (Parallel step type only). */
@@ -61,6 +63,8 @@ export function WorkflowStepList({ steps, onChange }: WorkflowStepListProps) {
         maxIterations: 3,
         minScore: null,
         inputMappingJson: null,
+        agentInputContextMode: null,
+        selectedPriorStepOrders: [],
         trueBranchStepOrder: null,
         falseBranchStepOrder: null,
         parallelAgentIds: [],

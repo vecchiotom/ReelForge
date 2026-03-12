@@ -9,6 +9,11 @@ export interface WorkflowDefinition {
 
 export type StepType = 'Agent' | 'Conditional' | 'ForEach' | 'ReviewLoop' | 'Parallel';
 export type StepStatus = 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Skipped';
+export type AgentInputContextMode =
+  | 'FullWorkflow'
+  | 'PreviousStepOnly'
+  | 'SelectedPriorSteps'
+  | 'CustomMappedSubset';
 
 export interface WorkflowStep {
   id: string;
@@ -23,6 +28,8 @@ export interface WorkflowStep {
   maxIterations?: number;
   minScore?: number | null;
   inputMappingJson?: string | null;
+  agentInputContextMode?: AgentInputContextMode | null;
+  selectedPriorStepOrdersJson?: string | null;
   trueBranchStepOrder?: string | null;
   falseBranchStepOrder?: string | null;
   /** JSON array of AgentDefinition GUIDs to run in parallel (Parallel step type only). */
@@ -46,6 +53,8 @@ export interface CreateWorkflowStepRequest {
   maxIterations?: number;
   minScore?: number | null;
   inputMappingJson?: string | null;
+  agentInputContextMode?: AgentInputContextMode | null;
+  selectedPriorStepOrdersJson?: string | null;
   trueBranchStepOrder?: string | null;
   falseBranchStepOrder?: string | null;
   /** JSON array of AgentDefinition GUIDs to run in parallel (Parallel step type only). */
@@ -95,4 +104,24 @@ export interface ReviewScore {
   score: number;
   comments: string;
   createdAt: string;
+}
+
+export function getDefaultAgentInputContextMode(agentType: string | null | undefined): AgentInputContextMode {
+  switch (agentType) {
+    case 'CodeStructureAnalyzer':
+    case 'RemotionComponentTranslator':
+    case 'DirectorAgent':
+      return 'FullWorkflow';
+    case 'DependencyAnalyzer':
+    case 'ComponentInventoryAnalyzer':
+    case 'RouteAndApiAnalyzer':
+    case 'StyleAndThemeExtractor':
+    case 'AnimationStrategyAgent':
+    case 'ScriptwriterAgent':
+    case 'AuthorAgent':
+    case 'ReviewAgent':
+      return 'PreviousStepOnly';
+    default:
+      return 'FullWorkflow';
+  }
 }

@@ -59,6 +59,8 @@ export default function NewWorkflowPage({ params }: { params: Promise<{ id: stri
           maxIterations: s.maxIterations,
           minScore: s.minScore,
           inputMappingJson: s.inputMappingJson,
+          agentInputContextMode: s.agentInputContextMode,
+          selectedPriorStepOrdersJson: s.selectedPriorStepOrders.length > 0 ? JSON.stringify(s.selectedPriorStepOrders) : null,
           trueBranchStepOrder: s.trueBranchStepOrder,
           falseBranchStepOrder: s.falseBranchStepOrder,
           parallelAgentIdsJson: s.parallelAgentIds.length > 0 ? JSON.stringify(s.parallelAgentIds) : null,

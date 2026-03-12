@@ -47,6 +47,8 @@ public class WorkflowsController : ControllerBase
                     new WorkflowStepResponse(s.Id, s.AgentDefinitionId, s.StepOrder, s.EdgeConditionJson, s.Label,
                         s.StepType.ToString(), s.ConditionExpression, s.LoopSourceExpression,
                         s.LoopTargetStepOrder, s.MaxIterations, s.MinScore, s.InputMappingJson,
+                        s.AgentInputContextMode.HasValue ? s.AgentInputContextMode.Value.ToString() : null,
+                        s.SelectedPriorStepOrdersJson,
                         s.TrueBranchStepOrder, s.FalseBranchStepOrder, s.ParallelAgentIdsJson)
                 ).ToList(),
                 w.RequiresUserInput))
@@ -279,6 +281,7 @@ public class WorkflowsController : ControllerBase
             LoopTargetStepOrder = req.LoopTargetStepOrder,
             MinScore = req.MinScore,
             InputMappingJson = req.InputMappingJson,
+            SelectedPriorStepOrdersJson = req.SelectedPriorStepOrdersJson,
             TrueBranchStepOrder = req.TrueBranchStepOrder,
             FalseBranchStepOrder = req.FalseBranchStepOrder,
             ParallelAgentIdsJson = req.ParallelAgentIdsJson
@@ -286,6 +289,10 @@ public class WorkflowsController : ControllerBase
 
         if (req.StepType != null && Enum.TryParse<StepType>(req.StepType, out var stepType))
             step.StepType = stepType;
+
+        if (req.AgentInputContextMode != null
+            && Enum.TryParse<AgentInputContextMode>(req.AgentInputContextMode, out var mode))
+            step.AgentInputContextMode = mode;
 
         if (req.MaxIterations.HasValue)
             step.MaxIterations = req.MaxIterations.Value;
@@ -299,6 +306,7 @@ public class WorkflowsController : ControllerBase
                 new WorkflowStepResponse(s.Id, s.AgentDefinitionId, s.StepOrder, s.EdgeConditionJson, s.Label,
                     s.StepType.ToString(), s.ConditionExpression, s.LoopSourceExpression,
                     s.LoopTargetStepOrder, s.MaxIterations, s.MinScore, s.InputMappingJson,
+                    s.AgentInputContextMode?.ToString(), s.SelectedPriorStepOrdersJson,
                     s.TrueBranchStepOrder, s.FalseBranchStepOrder, s.ParallelAgentIdsJson)
             ).ToList(),
             workflow.RequiresUserInput);

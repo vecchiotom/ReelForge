@@ -97,6 +97,7 @@ public class WorkflowExecutorService
             string accumulatedOutput = string.Empty;
             int iterationCount = 0;
             int currentStepIndex = 0;
+            var stepOutputHistory = new List<StepOutputHistoryEntry>();
 
             while (currentStepIndex < steps.Count && !ct.IsCancellationRequested)
             {
@@ -122,6 +123,7 @@ public class WorkflowExecutorService
                     Step = step,
                     AllSteps = steps,
                     AccumulatedOutput = accumulatedOutput,
+                    StepOutputHistory = stepOutputHistory,
                     CurrentStepIndex = currentStepIndex,
                     IterationCount = iterationCount,
                     CorrelationId = correlationId,
@@ -141,7 +143,7 @@ public class WorkflowExecutorService
                     TokensUsed = result.TokensUsed,
                     DurationMs = result.DurationMs,
                     ExecutedAt = DateTime.UtcNow,
-                    InputJson = accumulatedOutput.Length > 0 ? accumulatedOutput : null,
+                    InputJson = ResolveInputJsonForPersistence(context.LastResolvedAgentInput, accumulatedOutput),
                     OutputJson = result.Output,
                     Status = result.Status,
                     ErrorDetails = result.ErrorDetails,
@@ -187,6 +189,13 @@ public class WorkflowExecutorService
                     new KeyValuePair<string, object?>("agent.type", step.AgentDefinition.AgentType.ToString()));
 
                 accumulatedOutput = result.Output;
+                if (!string.IsNullOrEmpty(result.Output))
+                {
+                    string stepLabel = string.IsNullOrWhiteSpace(step.Label)
+                        ? step.AgentDefinition.Name
+                        : step.Label;
+                    stepOutputHistory.Add(new StepOutputHistoryEntry(step.StepOrder, stepLabel, result.Output));
+                }
                 iterationCount = result.NewIterationCount;
                 currentStepIndex = result.NextStepIndex;
 
@@ -378,6 +387,14 @@ public class WorkflowExecutorService
         throw new InvalidOperationException(
             $"Step {step.StepOrder} ({step.StepType}) failed after {MaxStepRetries} attempts",
             lastException);
+    }
+
+    internal static string? ResolveInputJsonForPersistence(string? resolvedAgentInput, string accumulatedOutput)
+    {
+        if (!string.IsNullOrWhiteSpace(resolvedAgentInput))
+            return resolvedAgentInput;
+
+        return string.IsNullOrWhiteSpace(accumulatedOutput) ? null : accumulatedOutput;
     }
 
     private static int ParseReviewScore(string reviewOutput)
