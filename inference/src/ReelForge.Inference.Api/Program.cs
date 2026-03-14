@@ -5,17 +5,22 @@ using MassTransit;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using ReelForge.Inference.Api.Agents;
 using ReelForge.Inference.Api.Agents.FileProcessing;
+using ReelForge.Inference.Api.Consumers;
 using ReelForge.Inference.Api.Data;
 using ReelForge.Inference.Api.Services.Auth;
 using ReelForge.Inference.Api.Services.Background;
 using ReelForge.Inference.Api.Services.Storage;
+using ReelForge.Inference.Api.Services.VectorSearch;
 using ReelForge.Shared.Auth;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
+
+builder.Logging.AddFilter("Microsoft.EntityFrameworkCore.Database.Command", LogLevel.None);
 
 // --- Database ---
 builder.Services.AddDbContext<InferenceApiDbContext>(options =>
@@ -59,6 +64,9 @@ builder.Services.AddSingleton<IAmazonS3>(sp =>
 });
 builder.Services.AddSingleton<IFileStorageService, S3FileStorageService>();
 
+// --- Vector Search options ---
+builder.Services.Configure<VectorSearchOptions>(builder.Configuration.GetSection(VectorSearchOptions.SectionName));
+
 // --- AI Chat Client (for file summarization) ---
 builder.Services.AddSingleton<IChatClient>(sp =>
 {
@@ -72,6 +80,24 @@ builder.Services.AddSingleton<IChatClient>(sp =>
 
     return client.GetChatClient(deploymentName).AsIChatClient();
 });
+
+builder.Services.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(sp =>
+{
+    string endpoint = builder.Configuration["AzureOpenAI:Endpoint"] ?? string.Empty;
+    string apiKey = builder.Configuration["AzureOpenAI:ApiKey"] ?? string.Empty;
+    string embeddingDeployment = builder.Configuration["VectorSearch:EmbeddingDeployment"]
+        ?? sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<VectorSearchOptions>>().Value.EmbeddingDeployment;
+
+    AzureOpenAIClient client = new(
+        new Uri(endpoint),
+        new System.ClientModel.ApiKeyCredential(apiKey));
+
+    return client.GetEmbeddingClient(embeddingDeployment).AsIEmbeddingGenerator();
+});
+
+builder.Services.AddSingleton<IFileChunker, SimpleTokenChunker>();
+builder.Services.AddSingleton<IVectorIndexService, QdrantVectorIndexService>();
+builder.Services.AddScoped<VectorSearchQueryService>();
 
 // --- File Summarizer Agent ---
 builder.Services.AddSingleton<IReelForgeAgent, FileSummarizerAgentImpl>();
@@ -89,6 +115,8 @@ builder.Services.AddHostedService<StartupCleanupService>();
 // --- MassTransit / RabbitMQ ---
 builder.Services.AddMassTransit(x =>
 {
+    x.AddConsumer<ProjectFileIndexingConsumer>();
+
     x.UsingRabbitMq((context, cfg) =>
     {
         cfg.Host(builder.Configuration["RabbitMQ:Host"] ?? "localhost", "/", h =>
@@ -146,3 +174,4 @@ app.MapControllers();
 await DatabaseSeeder.SeedAsync(app.Services);
 
 app.Run();
+

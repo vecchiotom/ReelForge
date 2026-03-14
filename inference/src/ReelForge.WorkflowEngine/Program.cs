@@ -5,6 +5,7 @@ using MassTransit;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using OpenTelemetry.Metrics;
@@ -27,6 +28,8 @@ using ReelForge.WorkflowEngine.Services.RemotionSkills;
 using ReelForge.WorkflowEngine.Workers;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
+
+builder.Logging.AddFilter("Microsoft.EntityFrameworkCore.Database.Command", LogLevel.None);
 
 // --- Database ---
 builder.Services.AddDbContext<WorkflowEngineDbContext>(options =>
@@ -197,6 +200,9 @@ builder.Services.AddSwaggerGen(options =>
 });
 
 WebApplication app = builder.Build();
+ILogger startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("WorkflowEngine.Startup");
+
+startupLogger.LogInformation("Starting WorkflowEngine (Environment={Environment})", app.Environment.EnvironmentName);
 
 if (app.Environment.IsDevelopment())
 {
@@ -212,8 +218,12 @@ app.MapControllers();
 // --- Apply migrations ---
 using (IServiceScope scope = app.Services.CreateScope())
 {
+    startupLogger.LogInformation("Applying WorkflowEngine database migrations");
     WorkflowEngineDbContext db = scope.ServiceProvider.GetRequiredService<WorkflowEngineDbContext>();
     await db.Database.MigrateAsync();
+    startupLogger.LogInformation("WorkflowEngine database migrations completed");
 }
+
+startupLogger.LogInformation("WorkflowEngine is ready and accepting requests");
 
 app.Run();

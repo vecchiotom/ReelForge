@@ -9,4 +9,6 @@ public class AgentRunResult
     public int TokensUsed { get; init; }
     public int? InputTokens { get; init; }
     public int? OutputTokens { get; init; }
+    public bool Success { get; init; } = true;
+    public string? FailureReason { get; init; }
 }

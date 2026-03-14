@@ -32,7 +32,9 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
         _tools = tools?.ToList() ?? new List<AIFunction>();
 
         string configKey = $"Agents:{name}:SystemPrompt";
-        SystemPrompt = configuration[configKey] ?? defaultSystemPrompt;
+        SystemPrompt = BuildSystemPrompt(
+            configuration[configKey] ?? defaultSystemPrompt,
+            _outputSchemaType);
 
         // Generate JSON schema documentation if output type is specified
         if (_outputSchemaType != null)
@@ -132,6 +134,26 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
             instructions: SystemPrompt,
             name: Name,
             tools: _tools.Cast<AITool>().ToList());
+    }
+
+    private static string BuildSystemPrompt(string basePrompt, Type? outputSchemaType)
+    {
+        if (outputSchemaType == null)
+            return basePrompt;
+
+        const string instruction = """
+
+        ## Output Contract (Mandatory)
+        - Return ONLY a single valid JSON object matching the configured schema.
+        - Do not include markdown, code fences, commentary, explanations, or extra text.
+        - Do not wrap JSON in backticks.
+        - Every field must conform to the schema's expected shape and types.
+        """;
+
+        if (basePrompt.Contains("## Output Contract (Mandatory)", StringComparison.Ordinal))
+            return basePrompt;
+
+        return $"{basePrompt}\n{instruction}";
     }
 
     /// <summary>

@@ -1,5 +1,6 @@
 using Amazon.S3;
 using Amazon.S3.Model;
+using ReelForge.Shared;
 using System.Text.Json;
 
 namespace ReelForge.Inference.Api.Services.Storage;
@@ -22,6 +23,7 @@ public class S3FileStorageService : IFileStorageService
 
     public async Task<StoredFileObject> UploadAsync(
         Guid projectId,
+        Guid fileId,
         Stream content,
         string fileName,
         string contentType,
@@ -34,14 +36,16 @@ public class S3FileStorageService : IFileStorageService
         if (category != "userFiles" && category != "agentFiles" && category != "outputFiles")
             category = "userFiles";
 
-        string storagePrefix = $"projects/{projectId}/{category}/";
-        // use generated GUID directory to avoid collisions, then append either
-        // the provided relative path or the base file name.
-        string nameSegment = string.IsNullOrEmpty(originalPath)
-            ? fileName
-            : originalPath.Replace("\\", "/"); // normalize any backslashes
+        string normalizedOriginalPath = ProjectFilePath.NormalizeRelativePath(
+            string.IsNullOrWhiteSpace(originalPath) ? fileName : originalPath);
+        string normalizedFileName = ProjectFilePath.GetFileName(normalizedOriginalPath);
+        string? directoryPath = ProjectFilePath.GetDirectoryPath(normalizedOriginalPath);
+        string storageFileName = ProjectFilePath.BuildStorageFileName(fileId, normalizedFileName);
 
-        string storageKey = $"{storagePrefix}{Guid.NewGuid()}/{nameSegment}";
+        string storagePrefix = $"projects/{projectId}/{category}/";
+        string storageKey = string.IsNullOrWhiteSpace(directoryPath)
+            ? $"{storagePrefix}{storageFileName}"
+            : $"{storagePrefix}{directoryPath}/{storageFileName}";
         PutObjectRequest request = new()
         {
             BucketName = _bucketName,
@@ -52,8 +56,9 @@ public class S3FileStorageService : IFileStorageService
         // standard metadata
         request.Metadata["project-id"] = projectId.ToString();
         request.Metadata["category"] = category;
-        if (!string.IsNullOrEmpty(originalPath))
-            request.Metadata["original-path"] = originalPath;
+        request.Metadata["original-path"] = normalizedOriginalPath;
+        request.Metadata["original-file-name"] = normalizedFileName;
+        request.Metadata["storage-file-name"] = storageFileName;
 
         if (metadata != null)
         {
@@ -67,7 +72,16 @@ public class S3FileStorageService : IFileStorageService
         _logger.LogInformation("Uploaded file {FileName} as {StorageKey}", fileName, storageKey);
         string metadataJson = JsonSerializer.Serialize(request.Metadata.Keys
             .ToDictionary(k => k, k => request.Metadata[k]));
-        return new StoredFileObject(storageKey, _bucketName, storagePrefix, metadataJson, category, originalPath);
+        return new StoredFileObject(
+            storageKey,
+            _bucketName,
+            storagePrefix,
+            metadataJson,
+            category,
+            normalizedFileName,
+            normalizedOriginalPath,
+            directoryPath,
+            storageFileName);
     }
 
     public async Task<Stream> DownloadAsync(Guid projectId, string storageKey, CancellationToken ct)
@@ -88,5 +102,36 @@ public class S3FileStorageService : IFileStorageService
         DeleteObjectRequest request = new() { BucketName = _bucketName, Key = storageKey };
         await _s3Client.DeleteObjectAsync(request, ct);
         _logger.LogInformation("Deleted file {StorageKey}", storageKey);
+    }
+
+    public async Task MoveAsync(Guid projectId, string sourceStorageKey, string destinationStorageKey, CancellationToken ct)
+    {
+        if (!sourceStorageKey.StartsWith($"projects/{projectId}/", StringComparison.Ordinal))
+            throw new UnauthorizedAccessException("Requested source file is not in the project's storage scope.");
+        if (!destinationStorageKey.StartsWith($"projects/{projectId}/", StringComparison.Ordinal))
+            throw new UnauthorizedAccessException("Requested destination file is not in the project's storage scope.");
+
+        if (string.Equals(sourceStorageKey, destinationStorageKey, StringComparison.Ordinal))
+            return;
+
+        CopyObjectRequest copyRequest = new()
+        {
+            SourceBucket = _bucketName,
+            SourceKey = sourceStorageKey,
+            DestinationBucket = _bucketName,
+            DestinationKey = destinationStorageKey
+        };
+
+        await _s3Client.CopyObjectAsync(copyRequest, ct);
+        await _s3Client.DeleteObjectAsync(new DeleteObjectRequest
+        {
+            BucketName = _bucketName,
+            Key = sourceStorageKey
+        }, ct);
+
+        _logger.LogInformation(
+            "Moved file object from {SourceStorageKey} to {DestinationStorageKey}",
+            sourceStorageKey,
+            destinationStorageKey);
     }
 }

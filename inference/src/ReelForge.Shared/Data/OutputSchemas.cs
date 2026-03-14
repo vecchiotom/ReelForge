@@ -291,7 +291,6 @@ public class Composition
 {
     public string Id { get; set; } = string.Empty;
     public string ComponentName { get; set; } = string.Empty;
-    public int StartFrame { get; set; }
     public int DurationInFrames { get; set; }
     public Dictionary<string, object> Props { get; set; } = new();
     public CompositionScript Script { get; set; } = new();
@@ -333,4 +332,20 @@ public class ReviewCriterion
     public string Name { get; set; } = string.Empty;
     public int Score { get; set; }
     public string Feedback { get; set; } = string.Empty;
+}
+
+// ============================================================================
+// FILE PROCESSING AGENT OUTPUT SCHEMAS
+// ============================================================================
+
+/// <summary>
+/// Structured output for FileSummarizerAgent.
+/// </summary>
+public class FileSummaryOutput
+{
+    public string FileType { get; set; } = string.Empty;
+    public string Summary { get; set; } = string.Empty;
+    public List<string> KeyPoints { get; set; } = new();
+    public string VideoRelevance { get; set; } = string.Empty;
+    public List<string> NotablePatterns { get; set; } = new();
 }

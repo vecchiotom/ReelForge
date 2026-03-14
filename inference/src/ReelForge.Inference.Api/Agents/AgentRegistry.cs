@@ -16,6 +16,12 @@ public class AgentRegistry : IAgentRegistry
         _agents = new Dictionary<AgentType, IReelForgeAgent>();
         foreach (IReelForgeAgent agent in _allAgents)
         {
+            if (agent.AgentType != AgentType.Custom && agent.OutputSchemaType == null)
+            {
+                throw new InvalidOperationException(
+                    $"Built-in agent '{agent.Name}' ({agent.AgentType}) must declare an output schema type.");
+            }
+
             _agents.TryAdd(agent.AgentType, agent);
         }
     }

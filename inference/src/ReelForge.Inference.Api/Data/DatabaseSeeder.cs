@@ -383,7 +383,6 @@ public static class DatabaseSeeder
                                  {
                                      "id": "string",        // Unique composition identifier
                                      "componentName": "string",  // Name of the Remotion component
-                                     "startFrame": 0,       // When this composition starts
                                      "durationInFrames": 0, // How long this composition runs
                                      "props": {},           // Props to pass to the Remotion component
                                      "script": {
@@ -490,7 +489,7 @@ public static class DatabaseSeeder
              - How it could be useful for generating a promotional video
              - Any notable patterns, components, or features described
 
-             Output plain text summary, not JSON.
+               Output ONLY valid JSON matching the FileSummaryOutput schema.
              """,
              "#14B8A6")
         },
@@ -580,6 +579,12 @@ public static class DatabaseSeeder
         if (string.IsNullOrWhiteSpace(prompt))
             return true;
 
+        if (prompt.Contains("\"startFrame\"", StringComparison.Ordinal) ||
+            prompt.Contains("startFrame", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
         return prompt.Contains("You have full access to the project workspace and sandbox:", StringComparison.Ordinal) &&
                prompt.Contains("Call `RenderVideoAndUploadToStorage` to render and upload the final video.", StringComparison.Ordinal) &&
                prompt.Contains("Output a valid RenderManifestOutput JSON.", StringComparison.Ordinal) &&
@@ -632,6 +637,7 @@ public static class DatabaseSeeder
         AgentType.ScriptwriterAgent => "ScriptwriterOutput",
         AgentType.AuthorAgent => "RenderManifestOutput",
         AgentType.ReviewAgent => "ReviewOutput",
+        AgentType.FileSummarizerAgent => "FileSummaryOutput",
         _ => null
     };
 
@@ -650,6 +656,7 @@ public static class DatabaseSeeder
             AgentType.ScriptwriterAgent => GenerateScriptwriterSchema(),
             AgentType.AuthorAgent => GenerateRenderManifestSchema(),
             AgentType.ReviewAgent => GenerateReviewSchema(),
+            AgentType.FileSummarizerAgent => GenerateFileSummarySchema(),
             _ => null
         };
 
@@ -1050,7 +1057,6 @@ public static class DatabaseSeeder
                     {
                         id = new { type = "string" },
                         componentName = new { type = "string" },
-                        startFrame = new { type = "integer" },
                         durationInFrames = new { type = "integer" },
                         props = new { type = "object", additionalProperties = true },
                         script = new
@@ -1111,5 +1117,19 @@ public static class DatabaseSeeder
             summary = new { type = "string", description = "Overall review summary" }
         },
         required = new[] { "overallScore", "passesReview", "summary" }
+    };
+
+    private static object GenerateFileSummarySchema() => new
+    {
+        type = "object",
+        properties = new
+        {
+            fileType = new { type = "string", description = "Detected file category (source code, config, documentation, asset, etc.)" },
+            summary = new { type = "string", description = "Concise summary of file contents" },
+            keyPoints = new { type = "array", items = new { type = "string" } },
+            videoRelevance = new { type = "string", description = "How this file helps generate a promotional video" },
+            notablePatterns = new { type = "array", items = new { type = "string" } }
+        },
+        required = new[] { "fileType", "summary", "videoRelevance" }
     };
 }

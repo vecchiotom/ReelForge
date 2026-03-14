@@ -13,6 +13,7 @@ public class ProjectFile
     // reconstruct the original directory structure. The simple file name is kept in
     // OriginalFileName (basename).
     public string? OriginalPath { get; set; }
+    public string? DirectoryPath { get; set; }
     public string OriginalFileName { get; set; } = string.Empty;
 
     // Category determines where in S3 the object lives (userFiles/outputFiles/agentFiles).
@@ -21,6 +22,7 @@ public class ProjectFile
     public string Category { get; set; } = "userFiles";
 
     public string StorageKey { get; set; } = string.Empty;
+    public string? StorageFileName { get; set; }
     public string StorageBucket { get; set; } = string.Empty;
     public string? StoragePrefix { get; set; }
     public string? StorageMetadataJson { get; set; }

@@ -209,6 +209,11 @@ namespace ReelForge.Inference.Api.Migrations
                         .HasDefaultValue("userFiles")
                         .HasColumnName("category");
 
+                    b.Property<string>("DirectoryPath")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("directory_path");
+
                     b.Property<string>("MimeType")
                         .IsRequired()
                         .HasColumnType("text")
@@ -237,6 +242,11 @@ namespace ReelForge.Inference.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("storage_bucket");
 
+                    b.Property<string>("StorageFileName")
+                        .HasMaxLength(260)
+                        .HasColumnType("character varying(260)")
+                        .HasColumnName("storage_file_name");
+
                     b.Property<string>("StorageKey")
                         .IsRequired()
                         .HasColumnType("text")
@@ -262,8 +272,9 @@ namespace ReelForge.Inference.Api.Migrations
                     b.HasKey("Id")
                         .HasName("pk_project_files");
 
-                    b.HasIndex("ProjectId")
-                        .HasDatabaseName("ix_project_files_project_id");
+                    b.HasIndex("ProjectId", "Category", "DirectoryPath");
+
+                    b.HasIndex("ProjectId", "Category", "UploadedAt");
 
                     b.ToTable("project_files");
                 });

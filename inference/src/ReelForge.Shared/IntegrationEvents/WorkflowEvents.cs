@@ -68,3 +68,14 @@ public record WorkflowExecutionFailed
     public string ErrorMessage { get; init; } = string.Empty;
     public DateTime FailedAt { get; init; } = DateTime.UtcNow;
 }
+
+/// <summary>
+/// Published by Inference API when a project file requires vector index update.
+/// </summary>
+public record ProjectFileIndexingRequested
+{
+    public Guid ProjectId { get; init; }
+    public Guid FileId { get; init; }
+    public string Operation { get; init; } = string.Empty; // Upsert | Delete
+    public DateTime RequestedAt { get; init; } = DateTime.UtcNow;
+}

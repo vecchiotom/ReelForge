@@ -92,6 +92,13 @@ public class WorkflowExecutorService
             .OrderBy(s => s.StepOrder)
             .ToList();
 
+        _logger.LogInformation(
+            "Starting workflow execution {ExecutionId} for project {ProjectId} with {StepCount} steps (CorrelationId={CorrelationId})",
+            execution.Id,
+            execution.ProjectId,
+            steps.Count,
+            correlationId);
+
         try
         {
             string accumulatedOutput = string.Empty;
@@ -133,6 +140,29 @@ public class WorkflowExecutorService
 
                 StepExecutionResult result = await ExecuteStepWithRetryAsync(executor, context, step, ct);
 
+                _logger.LogInformation(
+                    "Step {StepOrder} ({StepType}) completed for execution {ExecutionId} with status {Status}; duration {DurationMs}ms; tokens {TokensUsed}; nextStepIndex {NextStepIndex}",
+                    step.StepOrder,
+                    step.StepType,
+                    executionId,
+                    result.Status,
+                    result.DurationMs,
+                    result.TokensUsed,
+                    result.NextStepIndex);
+
+                string? inputJsonForPersistence = ResolveInputJsonForPersistence(context.LastResolvedAgentInput, accumulatedOutput);
+                string outputJsonForPersistence = result.Output;
+
+                _logger.LogDebug(
+                    "Persisting step result for execution {ExecutionId}, step {StepOrder} ({StepType}). InputJsonValid={InputJsonValid}, OutputJsonValid={OutputJsonValid}, InputPreview={InputPreview}, OutputPreview={OutputPreview}",
+                    executionId,
+                    step.StepOrder,
+                    step.StepType,
+                    IsValidJson(inputJsonForPersistence),
+                    IsValidJson(outputJsonForPersistence),
+                    CreateLogPreview(inputJsonForPersistence, 250),
+                    CreateLogPreview(outputJsonForPersistence, 250));
+
                 // Persist step result
                 WorkflowStepResult stepResult = new()
                 {
@@ -143,8 +173,8 @@ public class WorkflowExecutorService
                     TokensUsed = result.TokensUsed,
                     DurationMs = result.DurationMs,
                     ExecutedAt = DateTime.UtcNow,
-                    InputJson = ResolveInputJsonForPersistence(context.LastResolvedAgentInput, accumulatedOutput),
-                    OutputJson = result.Output,
+                    InputJson = inputJsonForPersistence,
+                    OutputJson = outputJsonForPersistence,
                     Status = result.Status,
                     ErrorDetails = result.ErrorDetails,
                     IterationNumber = result.IterationNumber,
@@ -168,7 +198,24 @@ public class WorkflowExecutorService
                     });
                 }
 
-                await db.SaveChangesAsync(ct);
+                try
+                {
+                    await db.SaveChangesAsync(ct);
+                }
+                catch (DbUpdateException ex)
+                {
+                    _logger.LogError(
+                        ex,
+                        "Failed persisting step result for execution {ExecutionId}, step {StepOrder} ({StepType}). InputJsonValid={InputJsonValid}, OutputJsonValid={OutputJsonValid}, InputPreview={InputPreview}, OutputPreview={OutputPreview}",
+                        executionId,
+                        step.StepOrder,
+                        step.StepType,
+                        IsValidJson(inputJsonForPersistence),
+                        IsValidJson(outputJsonForPersistence),
+                        CreateLogPreview(inputJsonForPersistence, 250),
+                        CreateLogPreview(outputJsonForPersistence, 250));
+                    throw;
+                }
                 await _eventPublisher.PublishStepCompletedAsync(execution, step, stepResult, ct);
 
                 // Publish step-level event for real-time monitoring.
@@ -202,11 +249,32 @@ public class WorkflowExecutorService
                 execution.IterationCount = iterationCount;
             }
 
+            await EnsureAuthorArtifactProducedAsync(execution.Id, steps, db, ct);
+
             execution.Status = ExecutionStatus.Passed;
             execution.ResultJson = accumulatedOutput;
             execution.CompletedAt = DateTime.UtcNow;
             execution.CurrentStepId = null;
-            await db.SaveChangesAsync(ct);
+            _logger.LogDebug(
+                "Persisting execution completion for execution {ExecutionId}. ResultJsonValid={ResultJsonValid}, ResultPreview={ResultPreview}",
+                executionId,
+                IsValidJson(execution.ResultJson),
+                CreateLogPreview(execution.ResultJson, 250));
+
+            try
+            {
+                await db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateException ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "Failed persisting execution completion for execution {ExecutionId}. ResultJsonValid={ResultJsonValid}, ResultPreview={ResultPreview}",
+                    executionId,
+                    IsValidJson(execution.ResultJson),
+                    CreateLogPreview(execution.ResultJson, 250));
+                throw;
+            }
             await _eventPublisher.PublishExecutionCompletedAsync(execution, ct);
 
             ReelForgeDiagnostics.CompletedWorkflows.Add(1,
@@ -257,9 +325,12 @@ public class WorkflowExecutorService
     /// </summary>
     public async Task CancelExecutionAsync(Guid executionId, Guid requestedByUserId)
     {
+        _logger.LogInformation("Cancellation requested for execution {ExecutionId} by user {UserId}", executionId, requestedByUserId);
+
         // cancel any running token
         if (_executionCts.TryGetValue(executionId, out var cts))
         {
+            _logger.LogInformation("Triggering cancellation token for running execution {ExecutionId}", executionId);
             cts.Cancel();
         }
 
@@ -271,7 +342,10 @@ public class WorkflowExecutorService
         var db = scope.ServiceProvider.GetRequiredService<WorkflowEngineDbContext>();
         var execution = await db.WorkflowExecutions.FindAsync(executionId);
         if (execution == null)
+        {
+            _logger.LogWarning("Cancellation requested for unknown execution {ExecutionId}", executionId);
             return;
+        }
 
         if (execution.Status == ExecutionStatus.Queued)
         {
@@ -308,10 +382,23 @@ public class WorkflowExecutorService
 
         if (execution.Status == ExecutionStatus.Queued || execution.Status == ExecutionStatus.Running)
         {
+            ExecutionStatus previousStatus = execution.Status;
             execution.Status = ExecutionStatus.Cancelled;
             execution.ErrorMessage = $"Stopped by user {requestedByUserId}";
             execution.CompletedAt = DateTime.UtcNow;
             await db.SaveChangesAsync();
+
+            _logger.LogInformation(
+                "Execution {ExecutionId} marked as cancelled (previous status: {PreviousStatus})",
+                executionId,
+                previousStatus);
+        }
+        else
+        {
+            _logger.LogInformation(
+                "Cancellation request ignored for execution {ExecutionId} because current status is {Status}",
+                executionId,
+                execution.Status);
         }
     }
 
@@ -327,6 +414,13 @@ public class WorkflowExecutorService
         while (attemptNumber < MaxStepRetries)
         {
             attemptNumber++;
+            _logger.LogInformation(
+                "Executing step {StepOrder} ({StepType}) for execution {ExecutionId}, attempt {Attempt}/{MaxAttempts}",
+                step.StepOrder,
+                step.StepType,
+                context.Execution.Id,
+                attemptNumber,
+                MaxStepRetries);
             try
             {
                 StepExecutionResult result = await executor.ExecuteAsync(context);
@@ -336,6 +430,8 @@ public class WorkflowExecutorService
                 {
                     if (attemptNumber < MaxStepRetries)
                     {
+                        context.RecordRetryFeedback(attemptNumber, result.ErrorDetails ?? "Step returned failed status without details.");
+
                         double delaySeconds = Math.Pow(2, attemptNumber);
                         _logger.LogWarning(
                             "Step {StepOrder} ({StepType}) failed on attempt {Attempt}/{Max}. Error: {Error}. Retrying in {Delay}s...",
@@ -374,6 +470,8 @@ public class WorkflowExecutorService
             catch (Exception ex) when (ex is not InvalidOperationException && ex is not AgentWorkflowException && attemptNumber < MaxStepRetries)
             {
                 lastException = ex;
+                context.RecordRetryFeedback(attemptNumber, ex.Message);
+
                 double delaySeconds = Math.Pow(2, attemptNumber);
                 _logger.LogWarning(ex,
                     "Step {StepOrder} ({StepType}) threw exception on attempt {Attempt}/{Max}. Retrying in {Delay}s...",
@@ -397,6 +495,35 @@ public class WorkflowExecutorService
         return string.IsNullOrWhiteSpace(accumulatedOutput) ? null : accumulatedOutput;
     }
 
+    private static async Task EnsureAuthorArtifactProducedAsync(
+        Guid executionId,
+        IReadOnlyCollection<WorkflowStep> workflowSteps,
+        WorkflowEngineDbContext db,
+        CancellationToken ct)
+    {
+        if (!workflowSteps.Any(step => step.AgentDefinition.AgentType == AgentType.AuthorAgent))
+            return;
+
+        HashSet<Guid> authorStepIds = workflowSteps
+            .Where(step => step.AgentDefinition.AgentType == AgentType.AuthorAgent)
+            .Select(step => step.Id)
+            .ToHashSet();
+
+        List<string?> outputStorageKeys = await db.WorkflowStepResults
+            .AsNoTracking()
+            .Where(result => result.WorkflowExecutionId == executionId
+                && result.Status == StepStatus.Completed
+                && authorStepIds.Contains(result.WorkflowStepId))
+            .Select(result => result.OutputStorageKey)
+            .ToListAsync(ct);
+
+        if (outputStorageKeys.Any(key => !string.IsNullOrWhiteSpace(key)))
+            return;
+
+        throw new InvalidOperationException(
+            "Workflow contains an Author step but no rendered media artifact was produced. Ensure the Author step completes rendering and sets outputStorageKey.");
+    }
+
     private static int ParseReviewScore(string reviewOutput)
     {
         try
@@ -407,5 +534,33 @@ public class WorkflowExecutorService
         }
         catch (JsonException) { }
         return 0;
+    }
+
+    private static bool IsValidJson(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return true;
+
+        try
+        {
+            using JsonDocument _ = JsonDocument.Parse(value);
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    private static string CreateLogPreview(string? value, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        string normalized = value.Replace("\r", " ").Replace("\n", " ").Trim();
+        if (normalized.Length <= maxLength)
+            return normalized;
+
+        return normalized[..maxLength];
     }
 }

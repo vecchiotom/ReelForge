@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using ReelForge.Inference.Api.Data;
 using ReelForge.Shared.Auth;
 using ReelForge.Shared.Data.Models;
+using System.Net;
 
 namespace ReelForge.Inference.Api.Controllers;
 
@@ -90,11 +91,19 @@ public class OutputsController : ControllerBase
         if (!stepResult.OutputStorageKey.StartsWith(expectedKeyPrefix, StringComparison.Ordinal))
             return Forbid();
 
-        GetObjectResponse s3Response = await _s3Client.GetObjectAsync(new GetObjectRequest
+        GetObjectResponse s3Response;
+        try
         {
-            BucketName = _bucketName,
-            Key = stepResult.OutputStorageKey
-        }, ct);
+            s3Response = await _s3Client.GetObjectAsync(new GetObjectRequest
+            {
+                BucketName = _bucketName,
+                Key = stepResult.OutputStorageKey
+            }, ct);
+        }
+        catch (AmazonS3Exception ex) when (IsMissingObjectError(ex))
+        {
+            return NotFound("Output artifact not found in storage.");
+        }
 
         string fileName = Path.GetFileName(stepResult.OutputStorageKey);
         string contentType = s3Response.Headers.ContentType ?? InferContentType(fileName);
@@ -102,6 +111,13 @@ public class OutputsController : ControllerBase
         Response.Headers.Append("Content-Disposition", $"inline; filename=\"{fileName}\"");
 
         return File(s3Response.ResponseStream, contentType, enableRangeProcessing: true);
+    }
+
+    private static bool IsMissingObjectError(AmazonS3Exception ex)
+    {
+        return ex.StatusCode == HttpStatusCode.NotFound ||
+               string.Equals(ex.ErrorCode, "NoSuchKey", StringComparison.Ordinal) ||
+               string.Equals(ex.ErrorCode, "NotFound", StringComparison.Ordinal);
     }
 
     private static string InferContentType(string fileName)

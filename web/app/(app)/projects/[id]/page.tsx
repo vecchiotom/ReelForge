@@ -1,13 +1,20 @@
 'use client';
 
 import { use, useState } from 'react';
-import { Tabs, Loader, Center, Text, Stack, Group, Button, ActionIcon, Card } from '@mantine/core';
+import { Tabs, Loader, Center, Text, Stack, Group, Button, ActionIcon, Card, TextInput, Checkbox } from '@mantine/core';
 import { IconFiles, IconTopologyRing, IconInfoCircle, IconEdit, IconTrash, IconArrowRight, IconVideo } from '@tabler/icons-react';
 import { useProject } from '@/lib/hooks/use-projects';
 import { useProjectFiles } from '@/lib/hooks/use-files';
 import { useWorkflows } from '@/lib/hooks/use-workflows';
 import { deleteProject } from '@/lib/api/projects';
-import { deleteFile } from '@/lib/api/files';
+import {
+  deleteFile,
+  downloadFile,
+  moveProjectFiles,
+  createFolder,
+  renameFolder,
+  deleteFolder,
+} from '@/lib/api/files';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { ProjectForm } from '@/components/projects/ProjectForm';
 import { FileUploadZone } from '@/components/files/FileUploadZone';
@@ -37,6 +44,12 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   const [deleteOpened, setDeleteOpened] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [selectedFile, setSelectedFile] = useState<ProjectFile | null>(null);
+  const [uploadPath, setUploadPath] = useState('');
+  const [newFolderPath, setNewFolderPath] = useState('');
+  const [renameSourcePath, setRenameSourcePath] = useState('');
+  const [renameTargetPath, setRenameTargetPath] = useState('');
+  const [deleteFolderPath, setDeleteFolderPath] = useState('');
+  const [deleteFolderRecursive, setDeleteFolderRecursive] = useState(false);
 
   if (isLoading) return <Center h={300}><Loader /></Center>;
   if (!project) return <Text>Project not found</Text>;
@@ -61,6 +74,84 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
       notifications.show({ title: 'Deleted', message: 'File deleted', color: 'green' });
     } catch {
       notifications.show({ title: 'Error', message: 'Failed to delete file', color: 'red' });
+    }
+  };
+
+  const handleDownloadFile = async (file: ProjectFile) => {
+    try {
+      const blob = await downloadFile(id, file.id);
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = file.originalFileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(objectUrl);
+      notifications.show({ title: 'Downloaded', message: 'File download started', color: 'green' });
+    } catch {
+      notifications.show({ title: 'Error', message: 'Failed to download file', color: 'red' });
+    }
+  };
+
+  const handleMoveSingleFile = async (file: ProjectFile) => {
+    const promptValue = window.prompt('Target directory path', file.directoryPath || '');
+    if (promptValue === null) return;
+
+    try {
+      await moveProjectFiles(id, {
+        fileIds: [file.id],
+        targetDirectoryPath: promptValue || undefined,
+      });
+      await mutateFiles();
+      notifications.show({ title: 'Moved', message: 'File moved', color: 'green' });
+    } catch {
+      notifications.show({ title: 'Error', message: 'Failed to move file', color: 'red' });
+    }
+  };
+
+  const handleCreateFolder = async () => {
+    if (!newFolderPath.trim()) {
+      notifications.show({ title: 'Error', message: 'Folder path is required', color: 'red' });
+      return;
+    }
+
+    try {
+      await createFolder(id, newFolderPath.trim());
+      await mutateFiles();
+      notifications.show({ title: 'Created', message: 'Folder created', color: 'green' });
+    } catch {
+      notifications.show({ title: 'Error', message: 'Failed to create folder', color: 'red' });
+    }
+  };
+
+  const handleRenameFolder = async () => {
+    if (!renameSourcePath.trim() || !renameTargetPath.trim()) {
+      notifications.show({ title: 'Error', message: 'Source and target paths are required', color: 'red' });
+      return;
+    }
+
+    try {
+      await renameFolder(id, { sourcePath: renameSourcePath.trim(), targetPath: renameTargetPath.trim() });
+      await mutateFiles();
+      notifications.show({ title: 'Renamed', message: 'Folder renamed', color: 'green' });
+    } catch {
+      notifications.show({ title: 'Error', message: 'Failed to rename folder', color: 'red' });
+    }
+  };
+
+  const handleDeleteFolder = async () => {
+    if (!deleteFolderPath.trim()) {
+      notifications.show({ title: 'Error', message: 'Folder path is required', color: 'red' });
+      return;
+    }
+
+    try {
+      await deleteFolder(id, deleteFolderPath.trim(), deleteFolderRecursive);
+      await mutateFiles();
+      notifications.show({ title: 'Deleted', message: 'Folder deleted', color: 'green' });
+    } catch {
+      notifications.show({ title: 'Error', message: 'Failed to delete folder', color: 'red' });
     }
   };
 
@@ -95,9 +186,64 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
 
         <Tabs.Panel value="files">
           <Stack gap="md">
-            <FileUploadZone projectId={id} onSuccess={() => mutateFiles()} />
+            <TextInput
+              label="Upload path"
+              placeholder="Optional base directory, e.g. docs/source"
+              value={uploadPath}
+              onChange={(event) => setUploadPath(event.currentTarget.value)}
+            />
+            <Group align="end">
+              <TextInput
+                label="Create folder"
+                placeholder="Folder path"
+                value={newFolderPath}
+                onChange={(event) => setNewFolderPath(event.currentTarget.value)}
+                style={{ flex: 1 }}
+              />
+              <Button onClick={handleCreateFolder}>Create</Button>
+            </Group>
+            <Group align="end">
+              <TextInput
+                label="Rename folder (source)"
+                placeholder="Old path"
+                value={renameSourcePath}
+                onChange={(event) => setRenameSourcePath(event.currentTarget.value)}
+                style={{ flex: 1 }}
+              />
+              <TextInput
+                label="Rename folder (target)"
+                placeholder="New path"
+                value={renameTargetPath}
+                onChange={(event) => setRenameTargetPath(event.currentTarget.value)}
+                style={{ flex: 1 }}
+              />
+              <Button onClick={handleRenameFolder}>Rename</Button>
+            </Group>
+            <Group align="end">
+              <TextInput
+                label="Delete folder"
+                placeholder="Folder path"
+                value={deleteFolderPath}
+                onChange={(event) => setDeleteFolderPath(event.currentTarget.value)}
+                style={{ flex: 1 }}
+              />
+              <Checkbox
+                label="Recursive"
+                checked={deleteFolderRecursive}
+                onChange={(event) => setDeleteFolderRecursive(event.currentTarget.checked)}
+                mb={8}
+              />
+              <Button color="red" variant="light" onClick={handleDeleteFolder}>Delete</Button>
+            </Group>
+            <FileUploadZone projectId={id} targetDirectoryPath={uploadPath} onSuccess={() => mutateFiles()} />
             {files && files.length > 0 ? (
-              <FileList files={files} onDelete={handleDeleteFile} onSelect={setSelectedFile} />
+              <FileList
+                files={files}
+                onDelete={handleDeleteFile}
+                onSelect={setSelectedFile}
+                onDownload={handleDownloadFile}
+                onMove={handleMoveSingleFile}
+              />
             ) : (
               <EmptyState title="No files" description="Upload files to analyze in your workflows." />
             )}
@@ -180,7 +326,14 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         message="This will permanently delete this project and all its files and workflows."
         loading={deleteLoading}
       />
-      <FileSummaryDrawer file={selectedFile} opened={!!selectedFile} onClose={() => setSelectedFile(null)} />
+      <FileSummaryDrawer
+        projectId={id}
+        file={selectedFile}
+        opened={!!selectedFile}
+        onClose={() => setSelectedFile(null)}
+        onSaved={() => mutateFiles()}
+        onDownload={handleDownloadFile}
+      />
     </>
   );
 }

@@ -55,6 +55,8 @@ public class InferenceApiDbContext : DbContext
         modelBuilder.Entity<ProjectFile>(entity =>
         {
             entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.ProjectId, e.Category, e.DirectoryPath });
+            entity.HasIndex(e => new { e.ProjectId, e.Category, e.UploadedAt });
             entity.HasOne(e => e.Project)
                 .WithMany(p => p.Files)
                 .HasForeignKey(e => e.ProjectId)
@@ -67,9 +69,13 @@ public class InferenceApiDbContext : DbContext
             // New fields for folder structure and categorization
             entity.Property(e => e.OriginalPath)
                 .HasMaxLength(1000);
+            entity.Property(e => e.DirectoryPath)
+                .HasMaxLength(1000);
             entity.Property(e => e.Category)
                 .HasMaxLength(50)
                 .HasDefaultValue("userFiles");
+            entity.Property(e => e.StorageFileName)
+                .HasMaxLength(260);
         });
 
         modelBuilder.Entity<AgentDefinition>(entity =>

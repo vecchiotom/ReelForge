@@ -23,6 +23,7 @@ public interface IFileStorageService
     /// </param>
     Task<StoredFileObject> UploadAsync(
         Guid projectId,
+        Guid fileId,
         Stream content,
         string fileName,
         string contentType,
@@ -30,8 +31,10 @@ public interface IFileStorageService
         CancellationToken ct,
         string category = "userFiles",
         string? originalPath = null);
+
     Task<Stream> DownloadAsync(Guid projectId, string storageKey, CancellationToken ct);
     Task DeleteAsync(Guid projectId, string storageKey, CancellationToken ct);
+    Task MoveAsync(Guid projectId, string sourceStorageKey, string destinationStorageKey, CancellationToken ct);
 }
 
 public sealed record StoredFileObject(
@@ -40,4 +43,7 @@ public sealed record StoredFileObject(
     string StoragePrefix,
     string? StorageMetadataJson,
     string Category,
-    string? OriginalPath);
+    string OriginalFileName,
+    string OriginalPath,
+    string? DirectoryPath,
+    string StorageFileName);

@@ -1,7 +1,7 @@
 'use client';
 
 import { Table, ActionIcon, Group } from '@mantine/core';
-import { IconTrash } from '@tabler/icons-react';
+import { IconTrash, IconDownload, IconArrowsMove } from '@tabler/icons-react';
 import { StatusBadge } from '@/components/projects/StatusBadge';
 import { formatDate, formatFileSize } from '@/lib/utils/format';
 import type { ProjectFile } from '@/lib/types/project';
@@ -10,9 +10,11 @@ interface FileListProps {
   files: ProjectFile[];
   onDelete: (fileId: string) => void;
   onSelect: (file: ProjectFile) => void;
+  onDownload?: (file: ProjectFile) => void;
+  onMove?: (file: ProjectFile) => void;
 }
 
-export function FileList({ files, onDelete, onSelect }: FileListProps) {
+export function FileList({ files, onDelete, onSelect, onDownload, onMove }: FileListProps) {
   // show path-aware name; if an originalPath exists use it, otherwise fallback to the simple
   // file name. Indent the row based on the number of path segments to give a visual
   // directory structure. The list is sorted by that display string so folders cluster.
@@ -52,6 +54,30 @@ export function FileList({ files, onDelete, onSelect }: FileListProps) {
             <Table.Td>{formatDate(file.uploadedAt)}</Table.Td>
             <Table.Td>
               <Group justify="flex-end">
+                {onDownload ? (
+                  <ActionIcon
+                    color="blue"
+                    variant="subtle"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDownload(file);
+                    }}
+                  >
+                    <IconDownload size={16} />
+                  </ActionIcon>
+                ) : null}
+                {onMove ? (
+                  <ActionIcon
+                    color="grape"
+                    variant="subtle"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onMove(file);
+                    }}
+                  >
+                    <IconArrowsMove size={16} />
+                  </ActionIcon>
+                ) : null}
                 <ActionIcon
                   color="red"
                   variant="subtle"

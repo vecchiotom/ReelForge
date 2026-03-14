@@ -1,5 +1,6 @@
 using Microsoft.Extensions.AI;
 using ReelForge.Shared.Data.Models;
+using ReelForge.Shared.Data.OutputSchemas;
 
 namespace ReelForge.Inference.Api.Agents.FileProcessing;
 
@@ -19,7 +20,7 @@ public class FileSummarizerAgentImpl : ReelForgeAgentBase
         - How it could be useful for generating a promotional video
         - Any notable patterns, components, or features described
 
-        Output plain text summary, not JSON.
+        Output ONLY JSON matching FileSummaryOutput.
         """;
 
     public FileSummarizerAgentImpl(IChatClient chatClient, IConfiguration configuration)
@@ -29,7 +30,8 @@ public class FileSummarizerAgentImpl : ReelForgeAgentBase
             "FileSummarizer",
             "Produces concise summaries of uploaded files.",
             AgentType.FileSummarizerAgent,
-            DefaultPrompt)
+            DefaultPrompt,
+            outputSchemaType: typeof(FileSummaryOutput))
     {
     }
 }

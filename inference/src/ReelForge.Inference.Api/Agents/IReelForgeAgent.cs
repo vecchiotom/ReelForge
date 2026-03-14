@@ -15,5 +15,7 @@ public interface IReelForgeAgent
     AgentType AgentType { get; }
     IReadOnlyList<AIFunction> Tools { get; }
     AIAgent AIAgent { get; }
+    string? OutputSchemaJson { get; }
+    Type? OutputSchemaType { get; }
     Task<AgentRunResult> RunAsync(string prompt, CancellationToken ct = default);
 }

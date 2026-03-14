@@ -11,13 +11,50 @@ public record ProjectFileResponse(
     Guid Id,
     string OriginalFileName,
     string? OriginalPath,
+    string? DirectoryPath,
     string Category,
     string StorageKey,
+    string? StorageFileName,
     string MimeType,
     long SizeBytes,
     string? AgentSummary,
     string SummaryStatus,
     DateTime UploadedAt);
+
+public record ProjectFileContentResponse(
+    Guid Id,
+    string OriginalFileName,
+    string? OriginalPath,
+    string MimeType,
+    string Content,
+    DateTime UploadedAt);
+
+public record UpdateProjectFileContentRequest(string Content, string? ContentType = null);
+
+public record MoveProjectFilesRequest(
+    List<Guid> FileIds,
+    string? TargetDirectoryPath,
+    string? TargetCategory = null);
+
+public record FolderPathRequest(string Path);
+
+public record RenameFolderRequest(string SourcePath, string TargetPath);
+
+public record FolderDeleteRequest(string Path, bool Recursive = false);
+
+public record SearchProjectFilesRequest(string Query, int Limit = 5);
+
+public record SearchProjectFileChunkResult(
+    Guid FileId,
+    string FilePath,
+    string FileName,
+    int ChunkIndex,
+    int TotalChunks,
+    string Language,
+    string Content,
+    float Score);
+
+public record SearchProjectFilesResponse(List<SearchProjectFileChunkResult> Results, bool IndexNotReady);
 
 public record AgentDefinitionResponse(
     Guid Id, string Name, string Description, string SystemPrompt,

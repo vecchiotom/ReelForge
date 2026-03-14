@@ -30,6 +30,10 @@ public class WorkflowExecutionRequestedConsumer : IConsumer<WorkflowExecutionReq
         try
         {
             await _executor.ExecuteAsync(message.ExecutionId, message.CorrelationId, context.CancellationToken);
+            _logger.LogInformation(
+                "Workflow execution request processed: ExecutionId={ExecutionId}, CorrelationId={CorrelationId}",
+                message.ExecutionId,
+                message.CorrelationId);
         }
         catch (Exception ex)
         {

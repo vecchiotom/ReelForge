@@ -56,6 +56,8 @@ public class WorkflowEngineDbContext : DbContext
         modelBuilder.Entity<ProjectFile>(entity =>
         {
             entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.ProjectId, e.Category, e.DirectoryPath });
+            entity.HasIndex(e => new { e.ProjectId, e.Category, e.UploadedAt });
             entity.HasOne(e => e.Project)
                 .WithMany(p => p.Files)
                 .HasForeignKey(e => e.ProjectId)
@@ -68,9 +70,13 @@ public class WorkflowEngineDbContext : DbContext
             // mirror the fields added to the main API context so agents can see them
             entity.Property(e => e.OriginalPath)
                 .HasMaxLength(1000);
+            entity.Property(e => e.DirectoryPath)
+                .HasMaxLength(1000);
             entity.Property(e => e.Category)
                 .HasMaxLength(50)
                 .HasDefaultValue("userFiles");
+            entity.Property(e => e.StorageFileName)
+                .HasMaxLength(260);
 
             entity.ToTable("project_files", t => t.ExcludeFromMigrations());
         });
@@ -84,6 +90,9 @@ public class WorkflowEngineDbContext : DbContext
                 .OnDelete(DeleteBehavior.SetNull);
             entity.Property(e => e.AgentType)
                 .HasConversion<string>();
+            entity.Property(e => e.ContextMode)
+                .HasConversion<string>()
+                .HasDefaultValue(ContextMode.LastStep);
             entity.Property(e => e.ConfigJson)
                 .HasColumnType("jsonb");
             entity.ToTable("agent_definitions", t => t.ExcludeFromMigrations());
@@ -163,7 +172,7 @@ public class WorkflowEngineDbContext : DbContext
                 // historically results no longer needed when a step definition is removed
                 .OnDelete(DeleteBehavior.Cascade);
             entity.Property(e => e.InputJson)
-                .HasColumnType("jsonb");
+                .HasColumnType("text");
             entity.Property(e => e.OutputJson)
                 .HasColumnType("jsonb");
             entity.Property(e => e.Status)

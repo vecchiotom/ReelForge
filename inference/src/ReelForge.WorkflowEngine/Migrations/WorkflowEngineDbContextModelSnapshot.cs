@@ -17,7 +17,7 @@ namespace ReelForge.WorkflowEngine.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "9.0.13")
+                .HasAnnotation("ProductVersion", "9.0.14")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -45,6 +45,17 @@ namespace ReelForge.WorkflowEngine.Migrations
                     b.Property<string>("ConfigJson")
                         .HasColumnType("jsonb")
                         .HasColumnName("config_json");
+
+                    b.Property<string>("ContextMode")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("LastStep")
+                        .HasColumnName("context_mode");
+
+                    b.Property<int?>("ContextWindowSize")
+                        .HasColumnType("integer")
+                        .HasColumnName("context_window_size");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone")
@@ -527,7 +538,7 @@ namespace ReelForge.WorkflowEngine.Migrations
                         .HasColumnName("executed_at");
 
                     b.Property<string>("InputJson")
-                        .HasColumnType("jsonb")
+                        .HasColumnType("text")
                         .HasColumnName("input_json");
 
                     b.Property<int?>("IterationNumber")

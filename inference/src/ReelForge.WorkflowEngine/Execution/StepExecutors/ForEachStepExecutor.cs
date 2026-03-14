@@ -87,6 +87,10 @@ public class ForEachStepExecutor : IStepExecutor
                 string itemInput = string.IsNullOrWhiteSpace(context.UserRequest)
                     ? items[index]
                     : $"{items[index]}\n\n---\nUser Request:\n{context.UserRequest}";
+
+                if (!string.IsNullOrWhiteSpace(context.RetryGuidance))
+                    itemInput = $"{itemInput}\n\n---\nRetry Guidance:\n{context.RetryGuidance}";
+
                 Stopwatch sw = Stopwatch.StartNew();
                 AgentRunResult result = await agent.RunAsync(itemInput, token);
                 sw.Stop();

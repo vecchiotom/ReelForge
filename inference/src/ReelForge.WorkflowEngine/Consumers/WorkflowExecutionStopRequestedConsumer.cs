@@ -30,5 +30,7 @@ public class WorkflowExecutionStopRequestedConsumer : IConsumer<WorkflowExecutio
 
         // fire and forget cancellation; result is logged/handled inside executor
         await _executor.CancelExecutionAsync(msg.ExecutionId, msg.RequestedByUserId);
+
+        _logger.LogInformation("Stop request handled for execution {ExecutionId}", msg.ExecutionId);
     }
 }

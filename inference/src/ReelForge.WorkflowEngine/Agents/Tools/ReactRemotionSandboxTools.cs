@@ -1,10 +1,12 @@
 using System.ComponentModel;
 using System.Net.Http.Json;
+using System.Text.RegularExpressions;
 using System.Text;
 using System.Text.Json;
 using Amazon.S3;
 using Amazon.S3.Model;
 using ReelForge.WorkflowEngine.Execution;
+using ReelForge.WorkflowEngine.Services.Storage;
 
 namespace ReelForge.WorkflowEngine.Agents.Tools;
 
@@ -33,21 +35,27 @@ public class ReactRemotionSandboxTools
 
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IWorkflowExecutionContextAccessor _executionContextAccessor;
+    private readonly IProjectFileWorkspace _projectFileWorkspace;
     private readonly IAmazonS3 _s3Client;
     private readonly string _sandboxBaseUrl;
     private readonly string _bucketName;
+    private readonly ILogger<ReactRemotionSandboxTools> _logger;
 
     public ReactRemotionSandboxTools(
         IHttpClientFactory httpClientFactory,
         IWorkflowExecutionContextAccessor executionContextAccessor,
+        IProjectFileWorkspace projectFileWorkspace,
         IAmazonS3 s3Client,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        ILogger<ReactRemotionSandboxTools> logger)
     {
         _httpClientFactory = httpClientFactory;
         _executionContextAccessor = executionContextAccessor;
+        _projectFileWorkspace = projectFileWorkspace;
         _s3Client = s3Client;
         _sandboxBaseUrl = configuration["Sandbox:BaseUrl"] ?? "http://sandbox-executor:8080";
         _bucketName = configuration["MinIO:BucketName"] ?? "reelforge";
+        _logger = logger;
     }
 
     // ──────────────────────────────────────────────
@@ -61,6 +69,8 @@ public class ReactRemotionSandboxTools
     public async Task<string> GetSandboxStatus()
     {
         string executionId = RequireContext().ExecutionId.ToString();
+        _logger.LogInformation("Checking sandbox status for execution {ExecutionId}", executionId);
+
         using HttpClient client = CreateClient();
         HttpResponseMessage response = await client.GetAsync(
             $"/api/v1/sandboxes/{executionId}/status",
@@ -89,6 +99,11 @@ public class ReactRemotionSandboxTools
             throw new InvalidOperationException("At least one package name is required.");
 
         string executionId = RequireContext().ExecutionId.ToString();
+        _logger.LogInformation(
+            "Installing {PackageCount} npm package(s) in sandbox for execution {ExecutionId}",
+            packages.Length,
+            executionId);
+
         using HttpClient client = CreateClient();
         HttpResponseMessage response = await client.PostAsJsonAsync(
             $"/api/v1/sandboxes/{executionId}/packages",
@@ -109,7 +124,11 @@ public class ReactRemotionSandboxTools
         "Use this after writing or modifying source files to verify correctness before rendering.")]
     public async Task<string> CheckLintAndTypeErrors()
     {
-        string executionId = RequireContext().ExecutionId.ToString();
+        WorkflowExecutionContext ctx = RequireContext();
+        string executionId = ctx.ExecutionId.ToString();
+        _logger.LogInformation("Running typecheck/lint in sandbox for execution {ExecutionId}", executionId);
+
+        await EnsureRequiredSandboxSourcesAsync(ctx, executionId);
 
         // Run typecheck first, then lint – collect both outputs.
         string typecheckOutput = await RunNpmScriptInternal(executionId, "typecheck");
@@ -135,6 +154,69 @@ public class ReactRemotionSandboxTools
                         || (lintOutput?.Contains(" error ", StringComparison.OrdinalIgnoreCase) ?? false)
         };
         return JsonSerializer.Serialize(result);
+    }
+
+    private async Task EnsureRequiredSandboxSourcesAsync(WorkflowExecutionContext ctx, string executionId)
+    {
+        string rootTsx = await TryReadSandboxFileRaw(executionId, "src/root.tsx");
+        if (string.IsNullOrWhiteSpace(rootTsx))
+            return;
+
+        HashSet<string> requiredFiles = ParseLocalImportFileNames(rootTsx);
+        if (requiredFiles.Count == 0)
+            return;
+
+        HashSet<string> existingFiles = await ListSandboxEntriesAsync(executionId, "src");
+        List<string> missingFiles = requiredFiles
+            .Where(file => !existingFiles.Contains(file))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (missingFiles.Count == 0)
+            return;
+
+        IReadOnlyList<ProjectWorkspaceFile> projectFiles = await _projectFileWorkspace
+            .ListFilesAsync(ctx.ProjectId, CancellationToken.None);
+
+        var candidatesByName = projectFiles
+            .Where(IsFrontendSourceCandidate)
+            .GroupBy(file => file.OriginalFileName, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
+
+        int provisionedCount = 0;
+        foreach (string missingFile in missingFiles)
+        {
+            if (!candidatesByName.TryGetValue(missingFile, out List<ProjectWorkspaceFile>? candidates) || candidates.Count == 0)
+            {
+                _logger.LogDebug(
+                    "Sandbox source provisioning: no project file match found for {FileName} (execution {ExecutionId})",
+                    missingFile,
+                    executionId);
+                continue;
+            }
+
+            ProjectWorkspaceFile selected = candidates
+                .OrderBy(file => file.Category.Equals("agentFiles", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                .ThenByDescending(file => file.UploadedAt)
+                .First();
+
+            string content = await _projectFileWorkspace.ReadFileAsync(
+                ctx.ProjectId,
+                selected.Id.ToString(),
+                CancellationToken.None);
+
+            await WriteSandboxFileInternal(executionId, $"src/{missingFile}", content);
+            existingFiles.Add(missingFile);
+            provisionedCount++;
+        }
+
+        if (provisionedCount > 0)
+        {
+            _logger.LogInformation(
+                "Provisioned {ProvisionedCount} required source file(s) into sandbox src/ for execution {ExecutionId}",
+                provisionedCount,
+                executionId);
+        }
     }
 
     // ──────────────────────────────────────────────
@@ -163,6 +245,11 @@ public class ReactRemotionSandboxTools
 
         WorkflowExecutionContext ctx = RequireContext();
         string executionId = ctx.ExecutionId.ToString();
+        _logger.LogInformation(
+            "Rendering composition {CompositionId} to {OutputFileName} for execution {ExecutionId}",
+            compositionId,
+            outputFileName,
+            executionId);
 
         // Build Remotion render args: remotion render <compositionId> out/<outputFileName> [extra args]
         string outputPath = $"out/{outputFileName}";
@@ -184,21 +271,13 @@ public class ReactRemotionSandboxTools
 
         // Run the render
         using HttpClient client = CreateClient();
-        HttpResponseMessage renderResponse = await client.PostAsJsonAsync(
-            $"/api/v1/sandboxes/{executionId}/exec",
+        SandboxCommandInvocation renderResult = await ExecuteSandboxCommandInternal(
+            client,
+            executionId,
             new SandboxExecRequest("npx", ["remotion", "render", .. args], TimeoutSeconds: 600),
-            CancellationToken.None);
-
-        SandboxExecResponse renderResult = await ReadJsonAsync<SandboxExecResponse>(renderResponse);
-        if (!string.IsNullOrEmpty(renderResult.Error))
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = renderResult.Error,
-                output = renderResult.Output
-            });
-        }
+            operation: "render");
+        if (!renderResult.Success)
+            return JsonSerializer.Serialize(renderResult.ErrorResponse);
 
         // Read the rendered file from the sandbox
         string encodedPath = Uri.EscapeDataString(outputPath);
@@ -229,6 +308,12 @@ public class ReactRemotionSandboxTools
         // Signal to the executor that this step produced a media artifact
         ctx.PendingOutputStorageKey = storageKey;
 
+        _logger.LogInformation(
+            "Uploaded rendered artifact for execution {ExecutionId} to storage key {StorageKey} ({SizeBytes} bytes)",
+            executionId,
+            storageKey,
+            fileBytes.Length);
+
         return JsonSerializer.Serialize(new
         {
             success = true,
@@ -247,6 +332,8 @@ public class ReactRemotionSandboxTools
     public async Task<string> EnsureSandbox()
     {
         string executionId = RequireContext().ExecutionId.ToString();
+        _logger.LogInformation("Ensuring sandbox exists for execution {ExecutionId}", executionId);
+
         using HttpClient client = CreateClient();
         HttpResponseMessage response = await client.PostAsJsonAsync(
             "/api/v1/sandboxes",
@@ -381,6 +468,8 @@ public class ReactRemotionSandboxTools
     public async Task<string> CompleteSandbox()
     {
         string executionId = RequireContext().ExecutionId.ToString();
+        _logger.LogInformation("Completing sandbox for execution {ExecutionId}", executionId);
+
         using HttpClient client = CreateClient();
         HttpResponseMessage response = await client.PostAsync(
             $"/api/v1/sandboxes/{executionId}/complete",
@@ -410,6 +499,69 @@ public class ReactRemotionSandboxTools
         return string.IsNullOrEmpty(error) ? output : $"{output}\n{error}".Trim();
     }
 
+    private async Task<HashSet<string>> ListSandboxEntriesAsync(string executionId, string path)
+    {
+        string encodedPath = Uri.EscapeDataString(path);
+        using HttpClient client = CreateClient();
+        HttpResponseMessage response = await client.GetAsync(
+            $"/api/v1/sandboxes/{executionId}/files?path={encodedPath}",
+            CancellationToken.None);
+
+        List<SandboxFileEntry> entries = await ReadJsonAsync<List<SandboxFileEntry>>(response);
+        return entries
+            .Where(entry => !entry.IsDir)
+            .Select(entry => entry.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task WriteSandboxFileInternal(string executionId, string path, string content)
+    {
+        string encodedPath = Uri.EscapeDataString(path);
+        using HttpClient client = CreateClient();
+        string base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(content));
+        HttpResponseMessage response = await client.PutAsJsonAsync(
+            $"/api/v1/sandboxes/{executionId}/files/content?path={encodedPath}",
+            new { contentBase64 = base64 },
+            CancellationToken.None);
+
+        await ReadJsonAsync<SandboxActionResult>(response);
+    }
+
+    private static HashSet<string> ParseLocalImportFileNames(string source)
+    {
+        const string importPattern = "(?:import\\s+(?:[^;]*?\\s+from\\s+)?|import\\s*)[\"'](?<path>\\./[^\"']+)[\"']";
+        MatchCollection matches = Regex.Matches(source, importPattern, RegexOptions.Multiline);
+
+        HashSet<string> fileNames = new(StringComparer.OrdinalIgnoreCase);
+        foreach (Match match in matches)
+        {
+            string localPath = match.Groups["path"].Value;
+            if (string.IsNullOrWhiteSpace(localPath))
+                continue;
+
+            string fileName = Path.GetFileName(localPath);
+            if (!string.IsNullOrWhiteSpace(fileName))
+                fileNames.Add(fileName);
+        }
+
+        return fileNames;
+    }
+
+    private static bool IsFrontendSourceCandidate(ProjectWorkspaceFile file)
+    {
+        if (!file.Category.Equals("userFiles", StringComparison.OrdinalIgnoreCase)
+            && !file.Category.Equals("agentFiles", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        string extension = Path.GetExtension(file.OriginalFileName);
+        return extension.Equals(".tsx", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".ts", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".jsx", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".js", StringComparison.OrdinalIgnoreCase);
+    }
+
     private async Task<string> TryReadSandboxFileRaw(string executionId, string path)
     {
         try
@@ -432,14 +584,96 @@ public class ReactRemotionSandboxTools
     private async Task<string> ExecuteSandboxCommand(string command, string[] args, int timeoutSeconds)
     {
         string executionId = RequireContext().ExecutionId.ToString();
-        using HttpClient client = CreateClient();
-        HttpResponseMessage response = await client.PostAsJsonAsync(
-            $"/api/v1/sandboxes/{executionId}/exec",
-            new SandboxExecRequest(command, args, timeoutSeconds),
-            CancellationToken.None);
+        _logger.LogInformation(
+            "Executing sandbox command for execution {ExecutionId}: {Command} (args={ArgsCount}, timeout={TimeoutSeconds}s)",
+            executionId,
+            command,
+            args.Length,
+            timeoutSeconds);
 
-        SandboxExecResponse payload = await ReadJsonAsync<SandboxExecResponse>(response);
-        return JsonSerializer.Serialize(payload);
+        using HttpClient client = CreateClient();
+        SandboxCommandInvocation response = await ExecuteSandboxCommandInternal(
+            client,
+            executionId,
+            new SandboxExecRequest(command, args, timeoutSeconds),
+            operation: "exec");
+
+        if (!response.Success)
+            return JsonSerializer.Serialize(response.ErrorResponse);
+
+        return JsonSerializer.Serialize(response.Payload);
+    }
+
+    private async Task<SandboxCommandInvocation> ExecuteSandboxCommandInternal(
+        HttpClient client,
+        string executionId,
+        SandboxExecRequest request,
+        string operation)
+    {
+        HttpResponseMessage response;
+        try
+        {
+            response = await client.PostAsJsonAsync(
+                $"/api/v1/sandboxes/{executionId}/exec",
+                request,
+                CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Sandbox command network error for execution {ExecutionId}: {Command}",
+                executionId,
+                request.Command);
+
+            string[] networkGuidance =
+            [
+                "Verify the sandbox service is reachable and healthy.",
+                "Call EnsureSandbox, then GetSandboxStatus before retrying execution.",
+                "Retry the command once after sandbox readiness is confirmed."
+            ];
+
+            return new SandboxCommandInvocation(
+                false,
+                null,
+                BuildLlmFriendlyError(
+                    operation,
+                    request.Command,
+                    request.Args,
+                    statusCode: null,
+                    rawError: ex.Message,
+                    output: string.Empty,
+                    networkGuidance));
+        }
+
+        string body = await response.Content.ReadAsStringAsync(CancellationToken.None);
+        SandboxExecResponse payload = TryDeserialize<SandboxExecResponse>(body) ?? new SandboxExecResponse(null, null);
+
+        bool failed = !response.IsSuccessStatusCode || !string.IsNullOrWhiteSpace(payload.Error);
+        if (!failed)
+            return new SandboxCommandInvocation(true, payload, null);
+
+        _logger.LogWarning(
+            "Sandbox command failed for execution {ExecutionId}: operation={Operation}, command={Command}, statusCode={StatusCode}",
+            executionId,
+            operation,
+            request.Command,
+            (int)response.StatusCode);
+
+        string rawError = ExtractError(body, payload.Error);
+        string[] guidance = BuildGuidance(rawError, payload.Output, request.Command, request.Args, operation);
+
+        return new SandboxCommandInvocation(
+            false,
+            payload,
+            BuildLlmFriendlyError(
+                operation,
+                request.Command,
+                request.Args,
+                (int)response.StatusCode,
+                rawError,
+                payload.Output,
+                guidance));
     }
 
     private HttpClient CreateClient()
@@ -466,6 +700,143 @@ public class ReactRemotionSandboxTools
         return result;
     }
 
+    private static T? TryDeserialize<T>(string body)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<T>(body, JsonOptions);
+        }
+        catch
+        {
+            return default;
+        }
+    }
+
+    private static string ExtractError(string body, string? payloadError)
+    {
+        if (!string.IsNullOrWhiteSpace(payloadError))
+            return payloadError;
+
+        SandboxError? error = TryDeserialize<SandboxError>(body);
+        if (!string.IsNullOrWhiteSpace(error?.Error))
+            return error.Error;
+
+        return string.IsNullOrWhiteSpace(body)
+            ? "Sandbox execution failed without an error message."
+            : body;
+    }
+
+    private static string[] BuildGuidance(
+        string rawError,
+        string? output,
+        string command,
+        string[] args,
+        string operation)
+    {
+        string combined = $"{rawError}\n{output}";
+
+        if (combined.Contains("sandbox not found", StringComparison.OrdinalIgnoreCase))
+        {
+            return
+            [
+                "Call EnsureSandbox before running exec or render commands.",
+                "Call GetSandboxStatus and confirm exists=true and ready=true.",
+                "Retry the same command after sandbox readiness is confirmed."
+            ];
+        }
+
+        if (combined.Contains("command not allowed", StringComparison.OrdinalIgnoreCase) ||
+            combined.Contains("invalid json body", StringComparison.OrdinalIgnoreCase))
+        {
+            return
+            [
+                "Use only allowed commands through RunSandboxNpmScript or RunSandboxRemotionCommand.",
+                "For npm use scripts: build, render, typecheck, compositions, lint.",
+                "For remotion use commands: render, still, compositions."
+            ];
+        }
+
+        if (combined.Contains("context deadline exceeded", StringComparison.OrdinalIgnoreCase) ||
+            combined.Contains("timed out", StringComparison.OrdinalIgnoreCase) ||
+            combined.Contains("timeout", StringComparison.OrdinalIgnoreCase))
+        {
+            return
+            [
+                "Increase timeoutSeconds for long builds/renders, then retry.",
+                "Run CheckLintAndTypeErrors before render to reduce repeated failures.",
+                "If output is very large, simplify composition props or reduce workload."
+            ];
+        }
+
+        if (combined.Contains("Cannot find module", StringComparison.OrdinalIgnoreCase) ||
+            combined.Contains("TS2307", StringComparison.OrdinalIgnoreCase) ||
+            combined.Contains("npm ERR!", StringComparison.OrdinalIgnoreCase))
+        {
+            return
+            [
+                "Install missing packages with InstallNpmPackages and rerun typecheck.",
+                "Use CheckLintAndTypeErrors to validate dependency and TypeScript issues first.",
+                "Retry the original command only after checks pass."
+            ];
+        }
+
+        if (operation.Equals("render", StringComparison.OrdinalIgnoreCase) ||
+            combined.Contains("remotion", StringComparison.OrdinalIgnoreCase) ||
+            combined.Contains("composition", StringComparison.OrdinalIgnoreCase) ||
+            combined.Contains("chromium", StringComparison.OrdinalIgnoreCase) ||
+            combined.Contains("headless", StringComparison.OrdinalIgnoreCase))
+        {
+            return
+            [
+                "Run npx remotion compositions to verify the composition ID exists.",
+                "Ensure all required assets and props are present before rendering.",
+                "Run CheckLintAndTypeErrors, fix errors, then retry render."
+            ];
+        }
+
+        return
+        [
+            "Review outputTail for the concrete tool error and apply the minimal fix.",
+            "Run CheckLintAndTypeErrors to collect actionable diagnostics.",
+            $"Retry the same {command} command after applying fixes (args count: {args.Length})."
+        ];
+    }
+
+    private static object BuildLlmFriendlyError(
+        string operation,
+        string command,
+        string[] args,
+        int? statusCode,
+        string rawError,
+        string? output,
+        string[] guidance)
+    {
+        return new
+        {
+            success = false,
+            operation,
+            command,
+            args,
+            statusCode,
+            error = rawError,
+            outputTail = Tail(output, 30),
+            guidance
+        };
+    }
+
+    private static string Tail(string? text, int maxLines)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return string.Empty;
+
+        string[] lines = text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        if (lines.Length <= maxLines)
+            return text;
+
+        string[] tail = lines.Skip(lines.Length - maxLines).ToArray();
+        return string.Join(Environment.NewLine, tail);
+    }
+
     private WorkflowExecutionContext RequireContext() =>
         _executionContextAccessor.Current
         ?? throw new InvalidOperationException("No workflow execution context is available for sandbox tools.");
@@ -487,6 +858,7 @@ public class ReactRemotionSandboxTools
 
     private sealed record SandboxExecRequest(string Command, string[] Args, int TimeoutSeconds);
     private sealed record SandboxExecResponse(string? Output, string? Error);
+    private sealed record SandboxCommandInvocation(bool Success, SandboxExecResponse? Payload, object? ErrorResponse);
     private sealed record SandboxError(string? Error);
     private sealed record SandboxStatusResponse(
         bool Exists, bool Ready, bool HasPackageJson, bool HasNodeModules,

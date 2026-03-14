@@ -101,15 +101,15 @@ public class WorkflowsController : ControllerBase
         if (project == null) return NotFound();
         if (project.OwnerId != _currentUser.UserId) return Forbid();
 
-        // load steps and any associated results so we can delete them in the correct order
+        // load the workflow and its steps only.
+        // step results are removed by DB cascade when steps are deleted.
         WorkflowDefinition? workflow = await _db.WorkflowDefinitions
             .Include(w => w.Steps)
-                .ThenInclude(s => s.Results)
             .FirstOrDefaultAsync(w => w.Id == id && w.ProjectId == projectId, ct);
         if (workflow == null) return NotFound();
 
-        // With cascading foreign keys in place we no longer need to manually purge
-        // step results. Deleting the steps will cascade through the database.
+        // With cascading foreign keys in place we don't manually purge step results.
+        // Deleting the steps cascades through the database.
         var oldSteps = workflow.Steps.ToList();
         _db.WorkflowSteps.RemoveRange(oldSteps);
 
@@ -244,6 +244,7 @@ public class WorkflowsController : ControllerBase
             .Where(e => e.WorkflowDefinitionId == id && e.ProjectId == projectId)
             .Include(e => e.StepResults)
             .Include(e => e.ReviewScores)
+            .AsSplitQuery()
             .OrderByDescending(e => e.StartedAt)
             .ToListAsync(ct);
 
@@ -260,6 +261,7 @@ public class WorkflowsController : ControllerBase
         WorkflowExecution? execution = await _db.WorkflowExecutions
             .Include(e => e.StepResults)
             .Include(e => e.ReviewScores)
+            .AsSplitQuery()
             .FirstOrDefaultAsync(e => e.Id == executionId && e.ProjectId == projectId, ct);
         if (execution == null) return NotFound();
 

@@ -118,6 +118,12 @@ public class ParallelStepExecutor : IStepExecutor
                 AgentRunResult agentResult = await agent.RunAsync(stepInput, token);
                 sw.Stop();
 
+                _logger.LogInformation(
+                    "Parallel step {StepOrder}: agent {AgentName} responded with preview: {ResponsePreview}",
+                    context.Step.StepOrder,
+                    name,
+                    CreateResponsePreview(agentResult.Output, 250));
+
                 Interlocked.Add(ref totalDurationMs, sw.ElapsedMilliseconds);
                 Interlocked.Add(ref totalTokens, agentResult.TokensUsed);
 
@@ -163,6 +169,18 @@ public class ParallelStepExecutor : IStepExecutor
 
         // Deduplicate while preserving order
         return ids.Distinct().ToList();
+    }
+
+    private static string CreateResponsePreview(string? response, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(response))
+            return string.Empty;
+
+        string normalized = response.Replace("\r", " ").Replace("\n", " ").Trim();
+        if (normalized.Length <= maxLength)
+            return normalized;
+
+        return normalized[..maxLength];
     }
 }
 

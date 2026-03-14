@@ -25,9 +25,10 @@ public class AuthorAgentImpl : ReelForgeAgentBase
         You have full access to the project workspace and sandbox. Use tools in this order:
         1. Call `EnsureSandbox` to create or resume the sandbox for this execution.
         2. Call `GetSandboxStatus` or `GetSandbox` to confirm the sandbox is ready.
-        3. Call `ListProjectFiles` to list all project files from prior agents.
-        4. Call `ReadProjectFile` to read any agent output (director plan, script, animation
-           strategy, component inventory, structure analysis, style tokens, etc.).
+          3. Call `ListProjectFiles` to identify project files from prior agents.
+          4. Call `ReadProjectFile` only for files that are strictly necessary for the current step
+            (director plan, script, animation strategy, component inventory, structure analysis,
+            style tokens, etc.). Avoid broad or exhaustive reading.
           5. Call `ListSandboxFiles` (e.g., `"src/"`) to list sandbox file names first.
           6. Call `ReadSandboxFile` to inspect the existing Remotion components produced by the
             RemotionComponentTranslator, reading only the files needed for context.
@@ -72,7 +73,6 @@ public class AuthorAgentImpl : ReelForgeAgentBase
             {
               "id": "string",        // Unique composition identifier
               "componentName": "string",  // Name of the Remotion component
-              "startFrame": 0,       // When this composition starts
               "durationInFrames": 0, // How long this composition runs
               "props": {},           // Props to pass to the Remotion component
               "script": {

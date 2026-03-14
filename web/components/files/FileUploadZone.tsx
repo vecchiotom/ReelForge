@@ -11,9 +11,10 @@ import { UploadProgressList, UploadItem } from './UploadProgressList';
 interface FileUploadZoneProps {
   projectId: string;
   onSuccess: () => void;
+  targetDirectoryPath?: string;
 }
 
-export function FileUploadZone({ projectId, onSuccess }: FileUploadZoneProps) {
+export function FileUploadZone({ projectId, onSuccess, targetDirectoryPath }: FileUploadZoneProps) {
   const [uploads, setUploads] = useState<UploadItem[]>([]);
 
   const handleDrop = async (files: File[]) => {
@@ -30,6 +31,13 @@ export function FileUploadZone({ projectId, onSuccess }: FileUploadZoneProps) {
     await Promise.all(
       newItems.map(async (item) => {
         try {
+          const basePath = (targetDirectoryPath || '')
+            .trim()
+            .replace(/\\/g, '/')
+            .replace(/^\/+|\/+$/g, '');
+          const fileRelativePath = (item.file as any).webkitRelativePath || item.file.name;
+          const finalRelativePath = basePath ? `${basePath}/${fileRelativePath}` : fileRelativePath;
+
           const result = await uploadFileWithProgress(
             projectId,
             item.file,
@@ -40,6 +48,7 @@ export function FileUploadZone({ projectId, onSuccess }: FileUploadZoneProps) {
                 ),
               );
             },
+            { relativePath: finalRelativePath },
           );
           // mark done
           setUploads((u) =>
