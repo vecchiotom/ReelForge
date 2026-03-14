@@ -107,6 +107,17 @@ public record CreateWorkflowStepRequest(
     string? ParallelAgentIdsJson = null);
 public record UpdateWorkflowRequest(string? Name, List<CreateWorkflowStepRequest> Steps, bool? RequiresUserInput = null);
 
+public record WorkflowTemplateSummaryResponse(
+    string Key,
+    string Name,
+    string Description,
+    int Version,
+    bool AutoCreateOnProject,
+    bool RequiresUserInput,
+    int StepCount);
+
+public record ApplyWorkflowTemplateRequest(bool? SkipIfExists = null);
+
 public record WorkflowExecutionResponse(
     Guid Id, Guid WorkflowDefinitionId, string Status,
     DateTime? StartedAt, DateTime? CompletedAt, int IterationCount,

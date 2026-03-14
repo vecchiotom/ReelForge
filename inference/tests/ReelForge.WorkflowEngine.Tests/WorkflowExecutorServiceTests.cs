@@ -15,6 +15,7 @@ using Xunit;
 using System;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
 
 namespace ReelForge.WorkflowEngine.Tests
 {
@@ -56,7 +57,8 @@ namespace ReelForge.WorkflowEngine.Tests
                 eventPublisher: null!,
                 logger: NullLogger<WorkflowExecutorService>.Instance,
                 executors: new[] { new ThrowingExecutor() },
-                rabbitHelper: fakeHelper);
+                rabbitHelper: fakeHelper,
+                hardeningOptions: Options.Create(new WorkflowHardeningOptions()));
 
             await service.CancelExecutionAsync(id, Guid.NewGuid());
             fakeHelper.Called.Should().BeTrue();
@@ -71,7 +73,8 @@ namespace ReelForge.WorkflowEngine.Tests
                 eventPublisher: null!,
                 logger: NullLogger<WorkflowExecutorService>.Instance,
                 executors: new[] { executor },
-                rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()));
+                rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()),
+                hardeningOptions: Options.Create(new WorkflowHardeningOptions()));
 
             var step = new WorkflowStep { StepOrder = 1, StepType = StepType.Agent };
             var context = new StepExecutionContext
@@ -104,7 +107,8 @@ namespace ReelForge.WorkflowEngine.Tests
                 eventPublisher: null!,
                 logger: NullLogger<WorkflowExecutorService>.Instance,
                 executors: new[] { new ThrowingExecutor() },
-                rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()));
+                rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()),
+                hardeningOptions: Options.Create(new WorkflowHardeningOptions()));
 
             // inject a fake cancellation token source
             var field = typeof(WorkflowExecutorService).GetField("_executionCts",

@@ -16,6 +16,7 @@ using ReelForge.Inference.Api.Services.Auth;
 using ReelForge.Inference.Api.Services.Background;
 using ReelForge.Inference.Api.Services.Storage;
 using ReelForge.Inference.Api.Services.VectorSearch;
+using ReelForge.Inference.Api.Services.Workflows;
 using ReelForge.Shared.Auth;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
@@ -98,6 +99,7 @@ builder.Services.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(sp 
 builder.Services.AddSingleton<IFileChunker, SimpleTokenChunker>();
 builder.Services.AddSingleton<IVectorIndexService, QdrantVectorIndexService>();
 builder.Services.AddScoped<VectorSearchQueryService>();
+builder.Services.AddScoped<WorkflowTemplateProvisioningService>();
 
 // --- File Summarizer Agent ---
 builder.Services.AddSingleton<IReelForgeAgent, FileSummarizerAgentImpl>();

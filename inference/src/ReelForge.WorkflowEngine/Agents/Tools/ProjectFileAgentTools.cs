@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.IO;
+using System.Linq;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -88,6 +89,8 @@ public class ProjectFileAgentTools
             if (indexNotReady)
             {
                 payload["fallbackHint"] = SemanticSearchFallbackHint;
+                payload["fallbackFiles"] = JsonSerializer.SerializeToNode(
+                    await BuildDeterministicFallbackCandidatesAsync(context.ProjectId, query, 12));
             }
 
             return payload.ToJsonString();
@@ -95,14 +98,31 @@ public class ProjectFileAgentTools
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Semantic project file search failed for project {ProjectId}", context.ProjectId);
+            IReadOnlyList<object> fallbackFiles = await BuildDeterministicFallbackCandidatesAsync(context.ProjectId, query, 12);
             return JsonSerializer.Serialize(new
             {
                 results = Array.Empty<object>(),
                 indexNotReady = true,
                 fallbackHint = SemanticSearchFallbackHint,
+                fallbackFiles,
                 error = ex.Message
             });
         }
+    }
+
+    [Description("Get a deterministic ranked list of project files to read when semantic index is unavailable. Prioritizes remotion/composition entry points, TSX/TS source files, styles, and configuration.")]
+    public async Task<string> GetDeterministicContextFiles(
+        [Description("Optional focus query to bias ranking, e.g. 'composition timeline transitions' or 'brand theme colors'")] string? focusQuery = null,
+        [Description("Maximum number of files to return, defaults to 12")] int maxFiles = 12)
+    {
+        WorkflowExecutionContext context = RequireContext();
+        IReadOnlyList<object> candidates = await BuildDeterministicFallbackCandidatesAsync(context.ProjectId, focusQuery, maxFiles);
+        return JsonSerializer.Serialize(new
+        {
+            mode = "deterministic-fallback",
+            maxFiles = NormalizeFallbackLimit(maxFiles),
+            files = candidates
+        });
     }
 
     [Description("Create or add a new text file to the current workflow project.")]
@@ -157,5 +177,149 @@ public class ProjectFileAgentTools
             ["indexNotReady"] = false,
             ["rawResponse"] = parsed
         };
+    }
+
+    private async Task<IReadOnlyList<object>> BuildDeterministicFallbackCandidatesAsync(Guid projectId, string? focusQuery, int maxFiles)
+    {
+        IReadOnlyList<ProjectWorkspaceFile> files = await _workspace.ListFilesAsync(projectId, CancellationToken.None);
+        string[] focusTokens = Tokenize(focusQuery);
+        int limit = NormalizeFallbackLimit(maxFiles);
+
+        List<object> ranked = files
+            .Select(file =>
+            {
+                string effectivePath = file.OriginalPath ?? file.OriginalFileName;
+                int score = CalculateDeterministicScore(file, effectivePath, focusTokens);
+                string reason = BuildReason(file, effectivePath, focusTokens);
+                return new
+                {
+                    fileId = file.Id,
+                    fileName = file.OriginalFileName,
+                    filePath = effectivePath,
+                    category = file.Category,
+                    mimeType = file.MimeType,
+                    score,
+                    reason
+                };
+            })
+            .OrderByDescending(item => item.score)
+            .ThenBy(item => item.filePath, StringComparer.OrdinalIgnoreCase)
+            .Take(limit)
+            .Cast<object>()
+            .ToList();
+
+        return ranked;
+    }
+
+    private static int NormalizeFallbackLimit(int maxFiles)
+        => Math.Clamp(maxFiles <= 0 ? 12 : maxFiles, 1, 30);
+
+    private static int CalculateDeterministicScore(ProjectWorkspaceFile file, string effectivePath, string[] focusTokens)
+    {
+        int score = 0;
+        string path = effectivePath.ToLowerInvariant();
+        string fileName = file.OriginalFileName.ToLowerInvariant();
+        string ext = Path.GetExtension(fileName).ToLowerInvariant();
+
+        score += file.Category switch
+        {
+            "userFiles" => 220,
+            "agentFiles" => 140,
+            "outputFiles" => 10,
+            _ => 80
+        };
+
+        score += ext switch
+        {
+            ".tsx" => 320,
+            ".ts" => 260,
+            ".jsx" => 220,
+            ".js" => 180,
+            ".css" or ".scss" => 170,
+            ".json" => 140,
+            ".md" => 80,
+            _ => 60
+        };
+
+        if (fileName is "root.tsx" or "index.ts" or "index.tsx")
+            score += 260;
+
+        if (path.Contains("remotion", StringComparison.Ordinal) ||
+            path.Contains("composition", StringComparison.Ordinal) ||
+            path.Contains("timeline", StringComparison.Ordinal) ||
+            path.Contains("sequence", StringComparison.Ordinal) ||
+            path.Contains("transition", StringComparison.Ordinal))
+            score += 220;
+
+        if (path.Contains("src/", StringComparison.Ordinal) ||
+            path.Contains("components", StringComparison.Ordinal) ||
+            path.Contains("app/", StringComparison.Ordinal) ||
+            path.Contains("pages", StringComparison.Ordinal))
+            score += 150;
+
+        if (path.Contains("style", StringComparison.Ordinal) ||
+            path.Contains("theme", StringComparison.Ordinal) ||
+            path.Contains("tailwind", StringComparison.Ordinal) ||
+            path.Contains("color", StringComparison.Ordinal) ||
+            path.Contains("font", StringComparison.Ordinal))
+            score += 120;
+
+        if (fileName is "package.json" or "tsconfig.json")
+            score += 150;
+
+        if (file.SizeBytes > 600_000)
+            score -= 70;
+
+        if (focusTokens.Length > 0)
+        {
+            string haystack = (effectivePath + " " + (file.AgentSummary ?? string.Empty)).ToLowerInvariant();
+            foreach (string token in focusTokens)
+            {
+                if (haystack.Contains(token, StringComparison.Ordinal))
+                    score += 55;
+            }
+        }
+
+        return score;
+    }
+
+    private static string BuildReason(ProjectWorkspaceFile file, string effectivePath, string[] focusTokens)
+    {
+        List<string> reasons = [];
+        string ext = Path.GetExtension(file.OriginalFileName).ToLowerInvariant();
+        string path = effectivePath.ToLowerInvariant();
+
+        if (ext is ".tsx" or ".ts") reasons.Add("source-code");
+        if (ext is ".css" or ".scss") reasons.Add("styling");
+        if (file.OriginalFileName.Equals("root.tsx", StringComparison.OrdinalIgnoreCase)) reasons.Add("timeline-entrypoint");
+        if (path.Contains("remotion", StringComparison.Ordinal) || path.Contains("composition", StringComparison.Ordinal)) reasons.Add("remotion-related");
+        if (path.Contains("theme", StringComparison.Ordinal) || path.Contains("style", StringComparison.Ordinal) || path.Contains("tailwind", StringComparison.Ordinal)) reasons.Add("brand-tokens");
+
+        if (focusTokens.Length > 0)
+        {
+            string haystack = (effectivePath + " " + (file.AgentSummary ?? string.Empty)).ToLowerInvariant();
+            if (focusTokens.Any(token => haystack.Contains(token, StringComparison.Ordinal)))
+                reasons.Add("focus-query-match");
+        }
+
+        if (reasons.Count == 0)
+            reasons.Add("deterministic-priority");
+
+        return string.Join(", ", reasons.Distinct(StringComparer.OrdinalIgnoreCase));
+    }
+
+    private static string[] Tokenize(string? query)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+            return [];
+
+        char[] separators = [' ', '\t', '\r', '\n', ',', '.', ';', ':', '(', ')', '[', ']', '{', '}', '/', '\\', '-', '_', '"', '\''];
+        return query
+            .ToLowerInvariant()
+            .Split(separators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(token => token.Length >= 3)
+            .Distinct(StringComparer.Ordinal)
+            .Take(12)
+            .ToArray();
     }
 }

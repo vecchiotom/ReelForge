@@ -25,7 +25,7 @@ public static class AgentInputContextResolver
             AgentType.AnimationStrategyAgent => AgentInputContextMode.PreviousStepOnly,
             AgentType.DirectorAgent => AgentInputContextMode.FullWorkflow,
             AgentType.ScriptwriterAgent => AgentInputContextMode.PreviousStepOnly,
-            AgentType.AuthorAgent => AgentInputContextMode.PreviousStepOnly,
+            AgentType.AuthorAgent => AgentInputContextMode.FullWorkflow,
             AgentType.ReviewAgent => AgentInputContextMode.PreviousStepOnly,
             _ => AgentInputContextMode.FullWorkflow
         };

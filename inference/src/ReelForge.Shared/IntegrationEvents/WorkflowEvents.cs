@@ -34,6 +34,19 @@ public record WorkflowExecutionCompleted
 }
 
 /// <summary>
+/// Published by WorkflowEngine when an execution transitions to Running.
+/// </summary>
+public record WorkflowExecutionRunning
+{
+    public Guid ExecutionId { get; init; }
+    public Guid ProjectId { get; init; }
+    public Guid? WorkflowDefinitionId { get; init; }
+    public Guid? InitiatedByUserId { get; init; }
+    public string CorrelationId { get; init; } = string.Empty;
+    public DateTime StartedAt { get; init; } = DateTime.UtcNow;
+}
+
+/// <summary>
 /// Event produced when a user (or admin) requests that a running or queued
 /// workflow execution be aborted. The WorkflowEngine will handle cancellation
 /// and update the execution status accordingly.
@@ -60,11 +73,39 @@ public record WorkflowStepCompleted
     public string? StepType { get; init; }
     public int? IterationNumber { get; init; }
     public string? AgentType { get; init; }
+    public string? AgentName { get; init; }
     public string CorrelationId { get; init; } = string.Empty;
     public string StepStatus { get; init; } = string.Empty;
     public int TokensUsed { get; init; }
+    public int? InputTokens { get; init; }
+    public int? OutputTokens { get; init; }
+    public int? AttemptCount { get; init; }
+    public int? RetryCount { get; init; }
     public long DurationMs { get; init; }
+    public string? ErrorDetails { get; init; }
+    public string? OutputStorageKey { get; init; }
     public DateTime CompletedAt { get; init; } = DateTime.UtcNow;
+}
+
+/// <summary>
+/// Published when a step starts execution.
+/// </summary>
+public record WorkflowStepStarted
+{
+    public Guid ExecutionId { get; init; }
+    public Guid StepId { get; init; }
+    public Guid StepResultId { get; init; }
+    public Guid? ProjectId { get; init; }
+    public Guid? WorkflowDefinitionId { get; init; }
+    public int? StepOrder { get; init; }
+    public string? StepLabel { get; init; }
+    public string? StepType { get; init; }
+    public int? IterationNumber { get; init; }
+    public string? AgentType { get; init; }
+    public string? AgentName { get; init; }
+    public string CorrelationId { get; init; } = string.Empty;
+    public string? InputPreview { get; init; }
+    public DateTime StartedAt { get; init; } = DateTime.UtcNow;
 }
 
 /// <summary>

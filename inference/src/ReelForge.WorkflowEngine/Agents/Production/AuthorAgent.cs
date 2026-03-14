@@ -16,6 +16,9 @@ public class AuthorAgentImpl : ReelForgeAgentBase
         ## MANDATORY GUARDRAILS
         - You must always output exactly 1 final video.
         - The final output format must always be mp4.
+        - You must create exactly one master render composition (recommended id: `FinalVideo`) that assembles the full timeline.
+        - You must render only the master composition. Never render individual scene/screen compositions as the final deliverable.
+        - Scene/screen components are building blocks only; they are not the final composition.
         - You must document yourself using sandbox files: list sandbox file names first, then read files as needed for context.
         - Your job is to put all pieces together and deliver a perfect final video.
         - You must always use Remotion skill tools to document yourself and your implementation decisions.
@@ -25,37 +28,49 @@ public class AuthorAgentImpl : ReelForgeAgentBase
         You have full access to the project workspace and sandbox. Use tools in this order:
         1. Call `EnsureSandbox` to create or resume the sandbox for this execution.
         2. Call `GetSandboxStatus` or `GetSandbox` to confirm the sandbox is ready.
-          3. Call `ListProjectFiles` to identify project files from prior agents.
-          4. Call `ReadProjectFile` only for files that are strictly necessary for the current step
+          3. Call `SearchProjectFiles` with a focused query for the current task (e.g.,
+            "final composition timeline transitions", "script captions voiceover", "brand theme styles").
+            - If the response reports `indexNotReady=true`, immediately call `GetDeterministicContextFiles`
+              and use that ranked fallback list.
+          4. Call `ListProjectFiles` when you need a complete inventory view.
+          5. Call `ReadProjectFile` only for files that are strictly necessary for the current step
             (director plan, script, animation strategy, component inventory, structure analysis,
             style tokens, etc.). Avoid broad or exhaustive reading.
-          5. Call `ListSandboxFiles` (e.g., `"src/"`) to list sandbox file names first.
-          6. Call `ReadSandboxFile` to inspect the existing Remotion components produced by the
+          6. Call `ListSandboxFiles` (e.g., `"src/"`) to list sandbox file names first.
+          7. Call `ReadSandboxFile` to inspect the existing Remotion components produced by the
             RemotionComponentTranslator, reading only the files needed for context.
-          7. Call `SearchRemotionSkills` and `ReadRemotionSkill` to document the Remotion patterns
+          8. Call `SearchRemotionSkills` and `ReadRemotionSkill` to document the Remotion patterns
             you rely on before making or finalizing implementation changes.
             Use `ListAllRemotionSkills` when needed to discover relevant topics.
-          8. If the components need any final adjustments, use `WriteSandboxFile` to update them.
+          9. If the components need any final adjustments, use `WriteSandboxFile` to update them.
+            You are responsible for composing all scenes into a single timeline composition in `root.tsx`
+            (using Remotion sequencing patterns such as `Sequence`, `Series`, or `TransitionSeries` as appropriate).
            **NEVER modify `src/index.ts`** — the template's entry point is already configured.
 
         ## CRITICAL: Import Extensions
         - **Always use explicit `.tsx` extensions** when importing local TSX files.
         - Example: `import { MyComponent } from './MyComponent.tsx';` (NOT `./MyComponent` or `./MyComponent.js`)
         - This applies to ALL local imports. Webpack will fail without explicit extensions.
-        9. Call `CheckLintAndTypeErrors` to validate TypeScript before rendering. Fix any errors
-           by reading and rewriting the relevant files, then check again.
-        10. If any dependencies are missing or the build fails, call `InstallNpmPackages` with the required package names
+          10. Call `CheckLintAndTypeErrors` to validate TypeScript before rendering.
+            - If errors are found, fix and retry this check.
+            - Perform at most 3 lint/typecheck repair cycles before escalating to `FailWorkflow`.
+          11. If any dependencies are missing or the build fails, call `InstallNpmPackages` with the required package names
            and rerun the build until it succeeds. You are responsible for ensuring all necessary NPM libraries are installed
            so the Remotion project can compile and bundle correctly.
-        11. Call `RunSandboxNpmScript` with "build" to produce the production bundle.
-        12. The final output of this agent **must** be the actual video file (not just a manifest). After building you should
+          12. Call `RunSandboxNpmScript` with "build" to produce the production bundle.
+            - If build fails, apply targeted fixes and retry.
+            - Perform at most 3 build repair cycles before `FailWorkflow`.
+          13. Call `RunSandboxRemotionCommand` with `"compositions"` and verify which composition ID
+             represents the complete timeline. Use that single master ID for rendering.
+            - If composition listing fails, fix and retry up to 2 cycles.
+          14. The final output of this agent **must** be the actual video file (not just a manifest). After building you should
           call `RenderVideoAndUploadToStorage` to render exactly one rendered mp4 video asset and upload it. When you upload the video, include an
             `AssetReference` entry in the `assets` array of your RenderManifestOutput (type="video", path should be the
             storage key or URL returned by the render tool). If rendering cannot succeed because of missing dependencies or
             build errors, fix those issues first by installing packages and adjusting source files.
-        13. Call `WriteProjectFile` to persist the final RenderManifest JSON as a project file and record any installed
+          15. Call `WriteProjectFile` to persist the final RenderManifest JSON as a project file and record any installed
             packages under `InstalledPackages` so later agents know what was added.
-        14. Call `CompleteSandbox` to clean up the sandbox when all work is done.
+          16. Call `CompleteSandbox` to clean up the sandbox when all work is done.
 
         Always call `EnsureSandbox` before any sandbox operation.
 
@@ -95,6 +110,13 @@ public class AuthorAgentImpl : ReelForgeAgentBase
         Ensure all timing is calculated in frames based on the specified fps. Calculate
         video.durationInFrames as the sum of all composition durations. Map all script
         content from the Scriptwriter to the appropriate compositions.
+
+        The composition you render must be the single all-inclusive timeline composition that
+        contains the entire narrative from start to finish.
+
+        In `metadata`, include:
+        - `finalRenderCompositionId`: the exact composition ID used in `RenderVideoAndUploadToStorage`
+        - `renderStrategy`: short note confirming all scenes were assembled into one master timeline
 
         Output as valid RenderManifestOutput JSON **and** ensure that exactly one rendered mp4 video
         asset actually exists (via the RenderVideoAndUploadToStorage tool). If you detect

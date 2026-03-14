@@ -82,6 +82,16 @@ export interface WorkflowExecution {
   userRequest?: string | null;
 }
 
+export interface WorkflowTemplateSummary {
+  key: string;
+  name: string;
+  description: string;
+  version: number;
+  autoCreateOnProject: boolean;
+  requiresUserInput: boolean;
+  stepCount: number;
+}
+
 export interface WorkflowStepResult {
   id: string;
   workflowStepId: string;

@@ -21,30 +21,54 @@ type WorkflowEvent struct {
 
 // SSEHub manages a set of SSE subscriber channels and broadcasts events to them.
 type SSEHub struct {
-	mu      sync.RWMutex
-	clients map[chan WorkflowEvent]struct{}
+	mu             sync.RWMutex
+	clients        map[chan WorkflowEvent]string
+	connectionsByUser map[string]int
 }
 
 var Hub = &SSEHub{
-	clients: make(map[chan WorkflowEvent]struct{}),
+	clients:           make(map[chan WorkflowEvent]string),
+	connectionsByUser: make(map[string]int),
 }
+
+const maxConnectionsPerUser = 3
 
 // Subscribe returns a channel that will receive workflow events. Call Unsubscribe
 // when the SSE connection closes.
-func (h *SSEHub) Subscribe() chan WorkflowEvent {
+func (h *SSEHub) Subscribe(scopeKey string) (chan WorkflowEvent, bool) {
+	if scopeKey == "" {
+		scopeKey = "anonymous"
+	}
+
 	ch := make(chan WorkflowEvent, 32)
 	h.mu.Lock()
-	h.clients[ch] = struct{}{}
+	if h.connectionsByUser[scopeKey] >= maxConnectionsPerUser {
+		h.mu.Unlock()
+		close(ch)
+		return nil, false
+	}
+	h.clients[ch] = scopeKey
+	h.connectionsByUser[scopeKey] = h.connectionsByUser[scopeKey] + 1
 	h.mu.Unlock()
-	return ch
+	return ch, true
 }
 
 // Unsubscribe removes the channel and closes it.
 func (h *SSEHub) Unsubscribe(ch chan WorkflowEvent) {
 	h.mu.Lock()
-	delete(h.clients, ch)
+	scopeKey, exists := h.clients[ch]
+	if exists {
+		delete(h.clients, ch)
+		if count := h.connectionsByUser[scopeKey]; count <= 1 {
+			delete(h.connectionsByUser, scopeKey)
+		} else {
+			h.connectionsByUser[scopeKey] = count - 1
+		}
+	}
 	h.mu.Unlock()
-	close(ch)
+	if exists {
+		close(ch)
+	}
 }
 
 // broadcast sends an event to all connected SSE clients (non-blocking).
@@ -62,9 +86,11 @@ func (h *SSEHub) broadcast(event WorkflowEvent) {
 
 // MassTransit fanout exchange names (full .NET type name with colon separator).
 const (
-    exchangeCompleted        = "ReelForge.Shared.IntegrationEvents:WorkflowExecutionCompleted"
-    exchangeFailed           = "ReelForge.Shared.IntegrationEvents:WorkflowExecutionFailed"
-    exchangeStepComplete     = "ReelForge.Shared.IntegrationEvents:WorkflowStepCompleted"
+	exchangeExecutionRunning = "ReelForge.Shared.IntegrationEvents:WorkflowExecutionRunning"
+	exchangeCompleted        = "ReelForge.Shared.IntegrationEvents:WorkflowExecutionCompleted"
+	exchangeFailed           = "ReelForge.Shared.IntegrationEvents:WorkflowExecutionFailed"
+	exchangeStepStarted      = "ReelForge.Shared.IntegrationEvents:WorkflowStepStarted"
+	exchangeStepComplete     = "ReelForge.Shared.IntegrationEvents:WorkflowStepCompleted"
 
     queueName = "go-api-workflow-events"
 )
@@ -113,7 +139,7 @@ func runConsumer() error {
 	// Bind queue to each MassTransit fanout exchange. MassTransit creates these
 	// exchanges when the WorkflowEngine publishes the first event; declare them
 	// here as well so the binding is idempotent even if we start before the engine.
-	for _, exchange := range []string{exchangeCompleted, exchangeFailed, exchangeStepComplete} {
+	for _, exchange := range []string{exchangeExecutionRunning, exchangeCompleted, exchangeFailed, exchangeStepStarted, exchangeStepComplete} {
 		if err := ch.ExchangeDeclare(exchange, "fanout", true, false, false, false, nil); err != nil {
 			return fmt.Errorf("exchange declare %q: %w", exchange, err)
 		}
@@ -153,29 +179,58 @@ func dispatchMessage(msg amqp.Delivery) {
 	// Determine event type from the exchange name.
 	var eventType string
 	switch msg.Exchange {
+	case exchangeExecutionRunning:
+		eventType = "execution.running"
 	case exchangeCompleted:
 		eventType = "execution.completed"
 	case exchangeFailed:
 		eventType = "execution.failed"
+	case exchangeStepStarted:
+		eventType = "step.started"
 	case exchangeStepComplete:
 		eventType = "step.completed"
 	default:
 		return
 	}
 
-	// Extract executionId from the JSON payload (best-effort).
-	var payload map[string]json.RawMessage
-	executionID := ""
-	if err := json.Unmarshal(msg.Body, &payload); err == nil {
-		if raw, ok := payload["executionId"]; ok {
-			_ = json.Unmarshal(raw, &executionID)
-		}
-	}
+	messagePayload := unwrapMassTransitMessage(msg.Body)
+	executionID := extractExecutionID(messagePayload)
 
 	Hub.broadcast(WorkflowEvent{
 		Type:        eventType,
 		ExecutionID: executionID,
 		Timestamp:   time.Now().UTC(),
-		Data:        msg.Body,
+		Data:        messagePayload,
 	})
+}
+
+func unwrapMassTransitMessage(body []byte) json.RawMessage {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return body
+	}
+
+	if message, ok := envelope["message"]; ok && len(message) > 0 {
+		return message
+	}
+
+	return body
+}
+
+func extractExecutionID(payload json.RawMessage) string {
+	var message map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &message); err != nil {
+		return ""
+	}
+
+	for _, key := range []string{"executionId", "ExecutionId"} {
+		if raw, ok := message[key]; ok {
+			var executionID string
+			if err := json.Unmarshal(raw, &executionID); err == nil {
+				return executionID
+			}
+		}
+	}
+
+	return ""
 }

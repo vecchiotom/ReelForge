@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using ReelForge.Shared.Data.Models;
 using ReelForge.WorkflowEngine.Agents;
@@ -68,6 +69,7 @@ public class AgentStepExecutor : IStepExecutor
 
         if (!result.Success)
         {
+            string failureReason = BuildFailureReason(result.Output, result.FailureReason, agent.Name);
             return new StepExecutionResult
             {
                 Output = result.Output,
@@ -75,10 +77,10 @@ public class AgentStepExecutor : IStepExecutor
                 NewIterationCount = context.IterationCount,
                 DurationMs = sw.ElapsedMilliseconds,
                 TokensUsed = result.TokensUsed,
+                InputTokens = result.InputTokens,
+                OutputTokens = result.OutputTokens,
                 Status = StepStatus.Failed,
-                ErrorDetails = string.IsNullOrWhiteSpace(result.FailureReason)
-                    ? $"Agent {agent.Name} reported failure."
-                    : result.FailureReason,
+                ErrorDetails = failureReason,
                 OutputStorageKey = outputStorageKey
             };
         }
@@ -94,6 +96,8 @@ public class AgentStepExecutor : IStepExecutor
                     NewIterationCount = context.IterationCount,
                     DurationMs = sw.ElapsedMilliseconds,
                     TokensUsed = result.TokensUsed,
+                    InputTokens = result.InputTokens,
+                    OutputTokens = result.OutputTokens,
                     Status = StepStatus.Failed,
                     ErrorDetails = failureReason,
                     OutputStorageKey = outputStorageKey
@@ -109,6 +113,8 @@ public class AgentStepExecutor : IStepExecutor
                     NewIterationCount = context.IterationCount,
                     DurationMs = sw.ElapsedMilliseconds,
                     TokensUsed = result.TokensUsed,
+                    InputTokens = result.InputTokens,
+                    OutputTokens = result.OutputTokens,
                     Status = StepStatus.Failed,
                     ErrorDetails = "Author step did not produce a rendered media artifact (missing outputStorageKey).",
                     OutputStorageKey = outputStorageKey
@@ -123,6 +129,8 @@ public class AgentStepExecutor : IStepExecutor
             NewIterationCount = context.IterationCount,
             DurationMs = sw.ElapsedMilliseconds,
             TokensUsed = result.TokensUsed,
+            InputTokens = result.InputTokens,
+            OutputTokens = result.OutputTokens,
             Status = StepStatus.Completed,
             OutputStorageKey = outputStorageKey
         };
@@ -267,5 +275,43 @@ public class AgentStepExecutor : IStepExecutor
     {
         return output.Contains("error TS", StringComparison.OrdinalIgnoreCase)
             || output.Contains("Cannot find module", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildFailureReason(string? output, string? explicitReason, string agentName)
+    {
+        if (!string.IsNullOrWhiteSpace(explicitReason))
+            return explicitReason.Trim();
+
+        if (string.IsNullOrWhiteSpace(output))
+            return $"Agent {agentName} reported failure.";
+
+        string[] lines = output
+            .Replace("\r", string.Empty, StringComparison.Ordinal)
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(line =>
+                line.Contains("error", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("TS", StringComparison.Ordinal)
+                || line.Contains("Cannot find module", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("failed", StringComparison.OrdinalIgnoreCase))
+            .Take(6)
+            .ToArray();
+
+        if (lines.Length == 0)
+            return $"Agent {agentName} reported failure. Output preview: {CreatePreview(output, 220)}";
+
+        StringBuilder builder = new($"Agent {agentName} reported failure diagnostics:");
+        foreach (string line in lines)
+            builder.Append($"\n- {line}");
+
+        return builder.ToString();
+    }
+
+    private static string CreatePreview(string text, int maxLength)
+    {
+        string normalized = text.Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Trim();
+
+        return normalized.Length <= maxLength ? normalized : normalized[..maxLength];
     }
 }

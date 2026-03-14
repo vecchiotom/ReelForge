@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ReelForge.Inference.Api.Controllers.Dto;
 using ReelForge.Inference.Api.Data;
+using ReelForge.Inference.Api.Services.Workflows;
 using ReelForge.Shared.Auth;
 using ReelForge.Shared.Data.Models;
 
@@ -15,11 +16,16 @@ public class ProjectsController : ControllerBase
 {
     private readonly InferenceApiDbContext _db;
     private readonly ICurrentUser _currentUser;
+    private readonly WorkflowTemplateProvisioningService _workflowTemplateProvisioningService;
 
-    public ProjectsController(InferenceApiDbContext db, ICurrentUser currentUser)
+    public ProjectsController(
+        InferenceApiDbContext db,
+        ICurrentUser currentUser,
+        WorkflowTemplateProvisioningService workflowTemplateProvisioningService)
     {
         _db = db;
         _currentUser = currentUser;
+        _workflowTemplateProvisioningService = workflowTemplateProvisioningService;
     }
 
     [HttpGet]
@@ -71,6 +77,8 @@ public class ProjectsController : ControllerBase
 
         _db.Projects.Add(project);
         await _db.SaveChangesAsync(ct);
+
+        await _workflowTemplateProvisioningService.EnsureAutoTemplatesAsync(project.Id, ct);
 
         ProjectResponse response = new(project.Id, project.Name, project.Description, project.Status.ToString(), project.CreatedAt, project.UpdatedAt);
         return CreatedAtAction(nameof(Get), new { id = project.Id }, response);

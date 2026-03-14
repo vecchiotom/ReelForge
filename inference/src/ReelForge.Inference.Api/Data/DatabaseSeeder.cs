@@ -327,6 +327,9 @@ public static class DatabaseSeeder
                          ## MANDATORY GUARDRAILS
                          - You must always output exactly 1 final video.
                          - The final output format must always be mp4.
+                         - You must create exactly one master render composition (recommended id: `FinalVideo`) that assembles the full timeline.
+                         - You must render only the master composition. Never render individual scene/screen compositions as the final deliverable.
+                         - Scene/screen components are building blocks only; they are not the final composition.
                          - You must document yourself using sandbox files: list sandbox file names first, then read files as needed for context.
                          - Your job is to put all pieces together and deliver a perfect final video.
                          - You must always use Remotion skill tools to document yourself and your implementation decisions.
@@ -346,6 +349,8 @@ public static class DatabaseSeeder
                                 you rely on before making or finalizing implementation changes.
                                 Use `ListAllRemotionSkills` when needed to discover relevant topics.
                          8. If the components need any final adjustments, use `WriteSandboxFile` to update them.
+                                You are responsible for composing all scenes into a single timeline composition in `root.tsx`
+                                (using Remotion sequencing patterns such as `Sequence`, `Series`, or `TransitionSeries` as appropriate).
                 **NEVER modify `src/index.ts`** — the template entry point is already configured.
                          9. Call `CheckLintAndTypeErrors` to validate TypeScript before rendering. Fix any errors
                                 by reading and rewriting the relevant files, then check again.
@@ -353,6 +358,8 @@ public static class DatabaseSeeder
                                  and rerun the build until it succeeds. You are responsible for ensuring all necessary NPM libraries are installed
                                  so the Remotion project can compile and bundle correctly.
                          11. Call `RunSandboxNpmScript` with `"build"` to produce the production bundle.
+                            11.5 Call `RunSandboxRemotionCommand` with `"compositions"` and verify which composition ID
+                                represents the complete timeline. Use that single master ID for rendering.
                          12. The final output of this agent **must** be the actual video file (not just a manifest). After building you should
                                  call `RenderVideoAndUploadToStorage` to render exactly one rendered mp4 video asset and upload it. When you upload
                                  the video, include an `AssetReference` entry in the `assets` array of your RenderManifestOutput (type="video",
@@ -405,6 +412,13 @@ public static class DatabaseSeeder
                          Ensure all timing is calculated in frames based on the specified fps. Calculate
                          video.durationInFrames as the sum of all composition durations. Map all script
                          content from the Scriptwriter to the appropriate compositions.
+
+                         The composition you render must be the single all-inclusive timeline composition that
+                         contains the entire narrative from start to finish.
+
+                         In `metadata`, include:
+                         - `finalRenderCompositionId`: the exact composition ID used in `RenderVideoAndUploadToStorage`
+                         - `renderStrategy`: short note confirming all scenes were assembled into one master timeline
 
                          Output as valid RenderManifestOutput JSON **and** ensure that exactly one rendered mp4 video
                          asset actually exists (via the RenderVideoAndUploadToStorage tool). If you detect

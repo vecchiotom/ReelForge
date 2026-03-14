@@ -1,20 +1,28 @@
 'use client';
 
 import { use, useState } from 'react';
-import { TextInput, Button, Stack } from '@mantine/core';
+import { TextInput, Button, Stack, Select, Text } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
-import { createWorkflow } from '@/lib/api/workflows';
+import { applyWorkflowTemplate, createWorkflow, getWorkflowTemplates } from '@/lib/api/workflows';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { FlowchartBuilderWrapper } from '@/components/workflows/FlowchartBuilder';
 import type { StepData } from '@/components/workflows/WorkflowStepList';
+import type { WorkflowTemplateSummary } from '@/lib/types/workflow';
 import { useRouter } from 'next/navigation';
+import useSWR from 'swr';
 
 export default function NewWorkflowPage({ params }: { params: Promise<{ id: string }> }) {
   const { id: projectId } = use(params);
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [steps, setSteps] = useState<StepData[]>([]);
+  const [selectedTemplateKey, setSelectedTemplateKey] = useState<string | null>(null);
+
+  const { data: templates } = useSWR<WorkflowTemplateSummary[]>(
+    projectId ? `workflow-templates-${projectId}` : null,
+    () => getWorkflowTemplates(projectId),
+  );
 
   const form = useForm({
     initialValues: { name: '' },
@@ -79,6 +87,28 @@ export default function NewWorkflowPage({ params }: { params: Promise<{ id: stri
     }
   });
 
+  const handleApplyTemplate = async () => {
+    if (!selectedTemplateKey) {
+      notifications.show({ title: 'Error', message: 'Select a template first', color: 'red' });
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const workflow = await applyWorkflowTemplate(projectId, selectedTemplateKey, true);
+      notifications.show({ title: 'Template applied', message: `Created ${workflow.name}`, color: 'green' });
+      router.push(`/projects/${projectId}/workflows/${workflow.id}`);
+    } catch (err: unknown) {
+      notifications.show({
+        title: 'Error',
+        message: err instanceof Error ? err.message : 'Failed to apply template',
+        color: 'red',
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <>
       <PageHeader
@@ -91,6 +121,36 @@ export default function NewWorkflowPage({ params }: { params: Promise<{ id: stri
       />
       <form onSubmit={handleSubmit}>
         <Stack gap="lg" maw={1200}>
+          <Stack gap="xs">
+            <Select
+              label="Apply WOW Template (Optional)"
+              placeholder="Choose a preloaded workflow template"
+              data={(templates ?? [])
+                .filter((template) => !template.autoCreateOnProject)
+                .map((template) => ({
+                  value: template.key,
+                  label: `${template.name} v${template.version} · ${template.stepCount} steps`,
+                }))}
+              value={selectedTemplateKey}
+              onChange={setSelectedTemplateKey}
+              clearable
+              disabled={loading}
+            />
+            {selectedTemplateKey ? (
+              <Text size="sm" c="dimmed">
+                Applying a template creates a complete workflow instantly.
+              </Text>
+            ) : null}
+            <Button
+              variant="light"
+              onClick={handleApplyTemplate}
+              disabled={!selectedTemplateKey}
+              loading={loading}
+            >
+              Apply Selected Template
+            </Button>
+          </Stack>
+
           <TextInput
             label="Workflow Name"
             placeholder="My Workflow"

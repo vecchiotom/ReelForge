@@ -1,6 +1,6 @@
 'use client';
 
-import { use, useEffect, useState, useCallback } from 'react';
+import { use, useEffect, useState, useCallback, useMemo } from 'react';
 import { Stack, Card, Group, Text, Badge, Loader, Center, Progress, Timeline, Paper, Alert, Modal, Divider, ScrollArea, Button, SimpleGrid } from '@mantine/core';
 import { IconPlayerPlay, IconCheck, IconX, IconClock, IconAlertCircle, IconPlayerStop, IconBolt, IconActivity } from '@tabler/icons-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -29,6 +29,45 @@ import { useExecutionStream } from '@/lib/hooks/use-execution-stream';
 
 function isTerminalExecutionStatus(status: WorkflowExecution['status'] | undefined): boolean {
   return status === 'Passed' || status === 'Failed' || status === 'Cancelled';
+}
+
+function getPayloadString(payload: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === 'string' && value.length > 0) {
+      return value;
+    }
+  }
+
+  return '';
+}
+
+function getPayloadNumber(payload: Record<string, unknown>, ...keys: string[]): number {
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+  }
+
+  return 0;
+}
+
+function getEventBadgeColor(eventType: string): string {
+  if (eventType === 'execution.completed') {
+    return 'green';
+  }
+  if (eventType === 'execution.failed') {
+    return 'red';
+  }
+  if (eventType === 'execution.running') {
+    return 'blue';
+  }
+  if (eventType === 'step.started') {
+    return 'cyan';
+  }
+
+  return 'violet';
 }
 
 function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; workflowId: string; executionId: string }> }) {
@@ -154,6 +193,31 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
     }
   }, []);
 
+  const selectedStepEvents = useMemo(() => {
+    if (!selectedStepResult) {
+      return [];
+    }
+
+    return events.filter((event) => {
+      const eventStepResultId = getPayloadString(event.payload, 'stepResultId', 'StepResultId');
+      const eventStepId = getPayloadString(event.payload, 'stepId', 'StepId', 'workflowStepId', 'WorkflowStepId');
+
+      return eventStepResultId === selectedStepResult.id || eventStepId === selectedStepResult.workflowStepId;
+    });
+  }, [events, selectedStepResult]);
+
+  const selectedStepLiveTokenMetrics = useMemo(() => {
+    const completedStepEvent = selectedStepEvents.find((event) => event.type === 'step.completed');
+    if (!completedStepEvent) {
+      return { inputTokens: 0, outputTokens: 0 };
+    }
+
+    return {
+      inputTokens: getPayloadNumber(completedStepEvent.payload, 'inputTokens', 'InputTokens'),
+      outputTokens: getPayloadNumber(completedStepEvent.payload, 'outputTokens', 'OutputTokens'),
+    };
+  }, [selectedStepEvents]);
+
   // Fetch initial data
   useEffect(() => {
     const fetchData = async () => {
@@ -193,6 +257,17 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
 
     void syncExecution();
   }, [lastEventAt, projectId, executionId, workflow, initializeFlow]);
+
+  useEffect(() => {
+    if (!execution || !selectedStepResult) {
+      return;
+    }
+
+    const updatedSelection = execution.stepResults.find((stepResult) => stepResult.id === selectedStepResult.id);
+    if (updatedSelection) {
+      setSelectedStepResult(updatedSelection);
+    }
+  }, [execution, selectedStepResult]);
 
   if (loading) {
     return <Center h={400}><Loader size="lg" /></Center>;
@@ -353,13 +428,13 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
                   <Text size="lg" fw={700}>{metrics.totalEvents}</Text>
                 </Paper>
                 <Paper withBorder p="sm" radius="md">
-                  <Text size="xs" c="dimmed">Live Tokens</Text>
-                  <Text size="lg" fw={700}>
-                    <Group gap={6} wrap="nowrap">
-                      <IconBolt size={14} />
-                      <span>{metrics.totalTokens.toLocaleString()}</span>
-                    </Group>
-                  </Text>
+                  <Text size="xs" c="dimmed">Live Tokens (In / Out / Total)</Text>
+                  <Group gap={6} wrap="nowrap">
+                    <IconBolt size={14} />
+                    <Text size="lg" fw={700}>
+                      {metrics.totalInputTokens.toLocaleString()} / {metrics.totalOutputTokens.toLocaleString()} / {metrics.totalTokens.toLocaleString()}
+                    </Text>
+                  </Group>
                 </Paper>
               </Group>
 
@@ -436,10 +511,40 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
                       <Text fw={700}>{Math.round(selectedStepResult.durationMs)}ms</Text>
                     </Paper>
                     <Paper withBorder p="sm" radius="md">
-                      <Text size="xs" c="dimmed">Tokens</Text>
+                        <Text size="xs" c="dimmed">Tokens (In / Out / Total)</Text>
                       <Text fw={700}>{selectedStepResult.tokensUsed.toLocaleString()}</Text>
                     </Paper>
                   </Group>
+                    <Group grow>
+                      <Paper withBorder p="sm" radius="md">
+                        <Text size="xs" c="dimmed">Input Tokens</Text>
+                        <Text fw={700}>{selectedStepLiveTokenMetrics.inputTokens.toLocaleString()}</Text>
+                      </Paper>
+                      <Paper withBorder p="sm" radius="md">
+                        <Text size="xs" c="dimmed">Output Tokens</Text>
+                        <Text fw={700}>{selectedStepLiveTokenMetrics.outputTokens.toLocaleString()}</Text>
+                      </Paper>
+                    </Group>
+                    <Card withBorder padding="sm" radius="md">
+                      <Text size="xs" fw={600} mb="xs">Live Step Updates</Text>
+                      <ScrollArea.Autosize mah={180}>
+                        <Stack gap="xs">
+                          {selectedStepEvents.length === 0 ? (
+                            <Text size="xs" c="dimmed">Waiting for step events...</Text>
+                          ) : (
+                            selectedStepEvents.map((event, index) => (
+                              <Paper key={`${event.id}-${index}`} withBorder p="xs" radius="sm">
+                                <Group justify="space-between" mb={4}>
+                                  <Badge size="xs" color={getEventBadgeColor(event.type)}>{event.type}</Badge>
+                                  <Text size="xs" c="dimmed">{new Date(event.timestamp).toLocaleTimeString()}</Text>
+                                </Group>
+                                <Text size="xs" style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(event.payload, null, 2)}</Text>
+                              </Paper>
+                            ))
+                          )}
+                        </Stack>
+                      </ScrollArea.Autosize>
+                    </Card>
                   {selectedStepResult.outputStorageKey && (
                     <video
                       controls
@@ -499,11 +604,13 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
                       bullet={
                         event.type === 'execution.completed' ? <IconCheck size={12} />
                           : event.type === 'execution.failed' ? <IconX size={12} />
-                            : <IconPlayerPlay size={12} />
+                            : event.type === 'execution.running' ? <IconActivity size={12} />
+                              : event.type === 'step.started' ? <IconClock size={12} />
+                                : <IconPlayerPlay size={12} />
                       }
                       title={
                         <Group gap="xs">
-                          <Badge size="sm">{event.type}</Badge>
+                          <Badge size="sm" color={getEventBadgeColor(event.type)}>{event.type}</Badge>
                           <Text size="xs" c="dimmed">{new Date(event.timestamp).toLocaleTimeString()}</Text>
                         </Group>
                       }
@@ -563,6 +670,14 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
                   <Text size="sm" c="dimmed">Tokens Used</Text>
                   <Text size="sm" fw={500}>{selectedStepResult.tokensUsed.toLocaleString()}</Text>
                 </Group>
+                <Group justify="space-between">
+                  <Text size="sm" c="dimmed">Input Tokens (live)</Text>
+                  <Text size="sm" fw={500}>{selectedStepLiveTokenMetrics.inputTokens.toLocaleString()}</Text>
+                </Group>
+                <Group justify="space-between">
+                  <Text size="sm" c="dimmed">Output Tokens (live)</Text>
+                  <Text size="sm" fw={500}>{selectedStepLiveTokenMetrics.outputTokens.toLocaleString()}</Text>
+                </Group>
                 {selectedStepResult.iterationNumber !== null && selectedStepResult.iterationNumber !== undefined && (
                   <Group justify="space-between">
                     <Text size="sm" c="dimmed">Iteration</Text>
@@ -610,6 +725,28 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
                 <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
                   {selectedStepResult.output || 'No output available'}
                 </Text>
+              </ScrollArea.Autosize>
+            </Card>
+
+            <Card withBorder padding="md" radius="md">
+              <Text size="sm" fw={600} mb="xs">Live Event Updates</Text>
+              <Divider mb="sm" />
+              <ScrollArea.Autosize mah={260}>
+                <Stack gap="xs">
+                  {selectedStepEvents.length === 0 ? (
+                    <Text size="sm" c="dimmed">No live updates yet for this step.</Text>
+                  ) : (
+                    selectedStepEvents.map((event, index) => (
+                      <Paper key={`${event.id}-modal-${index}`} withBorder p="xs" radius="sm">
+                        <Group justify="space-between" mb={4}>
+                          <Badge size="xs" color={getEventBadgeColor(event.type)}>{event.type}</Badge>
+                          <Text size="xs" c="dimmed">{new Date(event.timestamp).toLocaleTimeString()}</Text>
+                        </Group>
+                        <Text size="xs" style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(event.payload, null, 2)}</Text>
+                      </Paper>
+                    ))
+                  )}
+                </Stack>
               </ScrollArea.Autosize>
             </Card>
 

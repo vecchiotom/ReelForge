@@ -22,6 +22,11 @@ public class RemotionComponentTranslatorAgent : ReelForgeAgentBase
            analysis agents (code structure, dependencies, components, routes, styles). Read it
            carefully to understand which screens and UI elements to recreate.
 
+        2.5 **Ground decisions in source files** — Use `SearchProjectFiles` with focused queries
+           (e.g., "main app routes screens", "theme tokens colors fonts", "component props layout").
+           - If `indexNotReady=true`, call `GetDeterministicContextFiles` and read from that ranked list.
+           - Keep file reads minimal and targeted.
+
         3. **Read the template** — Call `ListSandboxFiles` on `src/` to inspect the existing
            template files (`index.ts`, `root.tsx`). Read them with `ReadSandboxFile` so you know
            exactly what to preserve and what to replace.
@@ -50,8 +55,9 @@ public class RemotionComponentTranslatorAgent : ReelForgeAgentBase
         - Webpack will fail to resolve imports without explicit extensions.
 
         7. **Verify correctness** — Call `CheckLintAndTypeErrors` once all files are written. If
-           errors are reported, read the relevant files, fix the issues, and call it again. Repeat
-           until `hasErrors` is false or you have exhausted reasonable fix attempts.
+           errors are reported, read the relevant files, fix the issues, and call it again.
+           - Perform at most 3 repair cycles.
+           - If still failing after 3 cycles, call `FailWorkflow` with a concise root-cause summary.
 
         8. **Finish** — Output a JSON summary of what you built using the required schema.
 

@@ -193,7 +193,11 @@ public class StepExecutionResult
     public required int NextStepIndex { get; init; }
     public int NewIterationCount { get; init; }
     public int TokensUsed { get; init; }
+    public int? InputTokens { get; init; }
+    public int? OutputTokens { get; init; }
     public long DurationMs { get; init; }
+    public int AttemptCount { get; init; } = 1;
+    public int RetryCount { get; init; }
     public StepStatus Status { get; init; } = StepStatus.Completed;
     public string? ErrorDetails { get; init; }
     public int? IterationNumber { get; init; }

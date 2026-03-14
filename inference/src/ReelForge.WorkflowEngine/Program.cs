@@ -106,6 +106,7 @@ builder.Services.AddSingleton<WorkflowControlAgentTools>();
 
 builder.Services.AddSingleton<IWorkflowExecutionContextAccessor, WorkflowExecutionContextAccessor>();
 builder.Services.AddHttpClient();
+builder.Services.Configure<WorkflowHardeningOptions>(builder.Configuration.GetSection(WorkflowHardeningOptions.SectionName));
 
 // --- Step Executors ---
 builder.Services.AddSingleton<IStepExecutor, AgentStepExecutor>();

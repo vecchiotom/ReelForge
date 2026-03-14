@@ -4,6 +4,7 @@ import type {
   CreateWorkflowRequest,
   UpdateWorkflowRequest,
   WorkflowExecution,
+  WorkflowTemplateSummary,
 } from '../types/workflow';
 
 export function getWorkflows(projectId: string): Promise<WorkflowDefinition[]> {
@@ -51,6 +52,21 @@ export function executeWorkflow(
 
 export function getWorkflowExecutions(projectId: string, workflowId: string): Promise<WorkflowExecution[]> {
   return apiFetch<WorkflowExecution[]>(`/api/v1/projects/${projectId}/workflows/${workflowId}/executions`);
+}
+
+export function getWorkflowTemplates(projectId: string): Promise<WorkflowTemplateSummary[]> {
+  return apiFetch<WorkflowTemplateSummary[]>(`/api/v1/projects/${projectId}/workflows/templates`);
+}
+
+export function applyWorkflowTemplate(
+  projectId: string,
+  templateKey: string,
+  skipIfExists = false,
+): Promise<WorkflowDefinition> {
+  return apiFetch<WorkflowDefinition>(`/api/v1/projects/${projectId}/workflows/templates/${templateKey}/apply`, {
+    method: 'POST',
+    body: JSON.stringify({ skipIfExists }),
+  });
 }
 
 // legacy helper – the client should prefer `getExecution` from

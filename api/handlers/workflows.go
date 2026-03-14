@@ -110,7 +110,16 @@ func handleWorkflowEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
 
-	ch := services.Hub.Subscribe()
+	scopeKey := uc.UserID
+	if uc.IsAdmin {
+		scopeKey = "admin:" + uc.UserID
+	}
+
+	ch, ok := services.Hub.Subscribe(scopeKey)
+	if !ok {
+		http.Error(w, `{"error":"too many active workflow streams"}`, http.StatusTooManyRequests)
+		return
+	}
 	defer services.Hub.Unsubscribe(ch)
 	visibilityCache := make(map[string]bool)
 
@@ -196,19 +205,66 @@ func handleExecutionEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	streamExecutionEvents(w, r, flusher, uc, executionID)
+}
+
+// handleExecutionEventsByID streams workflow events for a single execution ID
+// under a route rooted at /api/v1/workflows/* (which is already proxied to go-api by nginx).
+func handleExecutionEventsByID(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, `{"error":"streaming not supported"}`, http.StatusInternalServerError)
+		return
+	}
+
+	vars := mux.Vars(r)
+	executionID := vars["executionId"]
+
+	uc, ok := r.Context().Value(middleware.UserContextKey).(middleware.UserContext)
+	if !ok {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	var execution models.WorkflowExecution
+	if err := database.DB.Where("id = ?", executionID).First(&execution).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			http.Error(w, `{"error":"execution not found"}`, http.StatusNotFound)
+			return
+		}
+		http.Error(w, `{"error":"failed to validate execution"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if !userOwnsExecution(uc, &execution) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
+	}
+
+	streamExecutionEvents(w, r, flusher, uc, executionID)
+}
+
+func streamExecutionEvents(w http.ResponseWriter, r *http.Request, flusher http.Flusher, uc middleware.UserContext, executionID string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
+	w.Header().Set("X-Accel-Buffering", "no")
 
-	ch := services.Hub.Subscribe()
+	scopeKey := "execution:" + uc.UserID
+	if uc.IsAdmin {
+		scopeKey = "execution:admin:" + uc.UserID
+	}
+
+	ch, ok := services.Hub.Subscribe(scopeKey)
+	if !ok {
+		http.Error(w, `{"error":"too many active workflow streams"}`, http.StatusTooManyRequests)
+		return
+	}
 	defer services.Hub.Unsubscribe(ch)
 
-	// Send an initial "connected" event so the client knows the stream is live.
 	fmt.Fprintf(w, "event: connected\ndata: {\"ts\":%d}\n\n", time.Now().UnixMilli())
 	flusher.Flush()
 
-	// Keep-alive ping every 25 seconds to prevent proxy timeouts.
 	ticker := time.NewTicker(25 * time.Second)
 	defer ticker.Stop()
 
@@ -216,16 +272,13 @@ func handleExecutionEvents(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
-
 		case <-ticker.C:
 			fmt.Fprintf(w, ": ping\n\n")
 			flusher.Flush()
-
 		case event, open := <-ch:
 			if !open {
 				return
 			}
-			// Filter: only stream events for the requested execution ID
 			if event.ExecutionID != executionID {
 				continue
 			}

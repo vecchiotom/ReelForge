@@ -11,6 +11,29 @@ namespace ReelForge.WorkflowEngine.Tests;
 public class StepExecutionContextTests
 {
     [Fact]
+    public void BuildAgentInput_when_author_mode_unset_uses_full_workflow_default()
+    {
+        StepExecutionContext context = CreateContext(
+            step: CreateStep(agentType: AgentType.AuthorAgent, mode: null, stepOrder: 4),
+            accumulatedOutput: "full-workflow",
+            history: new List<StepOutputHistoryEntry>
+            {
+                new StepOutputHistoryEntry(1, "Analyze", "analysis"),
+                new StepOutputHistoryEntry(2, "Animation", "animation-plan"),
+                new StepOutputHistoryEntry(3, "Script", "script-output")
+            });
+
+        string input = context.BuildAgentInput();
+
+        input.Should().Contain("## Step 1: Analyze");
+        input.Should().Contain("analysis");
+        input.Should().Contain("## Step 2: Animation");
+        input.Should().Contain("animation-plan");
+        input.Should().Contain("## Step 3: Script");
+        input.Should().Contain("script-output");
+    }
+
+    [Fact]
     public void BuildAgentInput_when_mode_unset_uses_agent_type_default()
     {
         StepExecutionContext context = CreateContext(
@@ -88,7 +111,7 @@ public class StepExecutionContextTests
 
         string input = context.BuildAgentInput();
 
-        input.Should().Contain("workflow-output");
+        input.Should().Contain("analysis");
         input.Should().Contain("User Request:");
         input.Should().Contain("Please prioritize transitions");
         context.LastResolvedAgentInput.Should().Be(input);

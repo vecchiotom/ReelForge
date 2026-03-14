@@ -4,9 +4,16 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 export type ExecutionStreamConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'closed';
 
+export type ExecutionStreamEventType =
+  | 'step.started'
+  | 'step.completed'
+  | 'execution.running'
+  | 'execution.completed'
+  | 'execution.failed';
+
 export interface ExecutionStreamEvent {
   id: string;
-  type: 'step.completed' | 'execution.completed' | 'execution.failed';
+  type: ExecutionStreamEventType;
   executionId: string;
   timestamp: string;
   payload: Record<string, unknown>;
@@ -19,6 +26,36 @@ interface IncomingExecutionEvent {
   data?: unknown;
 }
 
+const STREAM_EVENT_TYPES: ExecutionStreamEventType[] = [
+  'step.started',
+  'step.completed',
+  'execution.running',
+  'execution.completed',
+  'execution.failed',
+];
+
+function getNumber(payload: Record<string, unknown>, ...keys: string[]): number {
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+  }
+
+  return 0;
+}
+
+function getString(payload: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === 'string' && value.length > 0) {
+      return value;
+    }
+  }
+
+  return '';
+}
+
 function normalizePayload(data: unknown): Record<string, unknown> {
   if (typeof data === 'object' && data !== null) {
     return data as Record<string, unknown>;
@@ -28,12 +65,17 @@ function normalizePayload(data: unknown): Record<string, unknown> {
 }
 
 function normalizeEvent(type: ExecutionStreamEvent['type'], raw: IncomingExecutionEvent): ExecutionStreamEvent {
+  const payload = normalizePayload(raw.data);
+  const normalizedExecutionId = raw.executionId
+    ?? getString(payload, 'executionId', 'ExecutionId')
+    ?? 'unknown';
+
   return {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     type,
-    executionId: raw.executionId ?? 'unknown',
+    executionId: normalizedExecutionId,
     timestamp: raw.timestamp ?? new Date().toISOString(),
-    payload: normalizePayload(raw.data),
+    payload,
   };
 }
 
@@ -72,7 +114,7 @@ export function useExecutionStream({ projectId, workflowId, executionId, enabled
 
       setConnectionState((current) => (current === 'connected' ? 'reconnecting' : 'connecting'));
 
-      source = new EventSource(`/api/v1/projects/${projectId}/workflows/${workflowId}/executions/${executionId}/events`);
+      source = new EventSource(`/api/v1/workflows/executions/${executionId}/events`);
 
       source.addEventListener('connected', () => {
         attemptRef.current = 0;
@@ -93,9 +135,9 @@ export function useExecutionStream({ projectId, workflowId, executionId, enabled
         }
       };
 
-      source.addEventListener('step.completed', onEvent('step.completed'));
-      source.addEventListener('execution.completed', onEvent('execution.completed'));
-      source.addEventListener('execution.failed', onEvent('execution.failed'));
+      STREAM_EVENT_TYPES.forEach((eventType) => {
+        source?.addEventListener(eventType, onEvent(eventType));
+      });
 
       source.onerror = () => {
         if (cancelled) {
@@ -135,16 +177,22 @@ export function useExecutionStream({ projectId, workflowId, executionId, enabled
     const stepEvents = events.filter((event) => event.type === 'step.completed');
 
     const totalTokens = stepEvents.reduce((sum, event) => {
-      const tokens = event.payload.tokensUsed;
-      return sum + (typeof tokens === 'number' && Number.isFinite(tokens) ? tokens : 0);
+      return sum + getNumber(event.payload, 'tokensUsed', 'TokensUsed');
+    }, 0);
+
+    const totalInputTokens = stepEvents.reduce((sum, event) => {
+      return sum + getNumber(event.payload, 'inputTokens', 'InputTokens');
+    }, 0);
+
+    const totalOutputTokens = stepEvents.reduce((sum, event) => {
+      return sum + getNumber(event.payload, 'outputTokens', 'OutputTokens');
     }, 0);
 
     const averageDurationMs =
       stepEvents.length > 0
         ? Math.round(
             stepEvents.reduce((sum, event) => {
-              const duration = event.payload.durationMs;
-              return sum + (typeof duration === 'number' && Number.isFinite(duration) ? duration : 0);
+              return sum + getNumber(event.payload, 'durationMs', 'DurationMs');
             }, 0) / stepEvents.length,
           )
         : 0;
@@ -153,6 +201,8 @@ export function useExecutionStream({ projectId, workflowId, executionId, enabled
       totalEvents: events.length,
       stepEventCount: stepEvents.length,
       totalTokens,
+      totalInputTokens,
+      totalOutputTokens,
       averageDurationMs,
     };
   }, [events]);

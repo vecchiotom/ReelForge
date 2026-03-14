@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using ReelForge.Shared.Data.Models;
 using ReelForge.Shared.IntegrationEvents;
 using ReelForge.WorkflowEngine.Data;
@@ -15,13 +16,12 @@ namespace ReelForge.WorkflowEngine.Execution;
 /// </summary>
 public class WorkflowExecutorService
 {
-    private const int MaxStepRetries = 3;
-
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IWorkflowEventPublisher _eventPublisher;
     private readonly ILogger<WorkflowExecutorService> _logger;
     private readonly Dictionary<StepType, IStepExecutor> _executors;
     private readonly RabbitMqHelper _rabbitHelper;
+    private readonly WorkflowHardeningOptions _hardeningOptions;
 
     // track cancellation tokens for running executions so external requests can abort them
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, CancellationTokenSource> _executionCts
@@ -32,13 +32,15 @@ public class WorkflowExecutorService
         IWorkflowEventPublisher eventPublisher,
         ILogger<WorkflowExecutorService> logger,
         IEnumerable<IStepExecutor> executors,
-        RabbitMqHelper rabbitHelper)
+        RabbitMqHelper rabbitHelper,
+        IOptions<WorkflowHardeningOptions> hardeningOptions)
     {
         _scopeFactory = scopeFactory;
         _eventPublisher = eventPublisher;
         _logger = logger;
         _executors = executors.ToDictionary(e => e.StepType);
         _rabbitHelper = rabbitHelper;
+        _hardeningOptions = hardeningOptions.Value;
     }
 
     public async Task ExecuteAsync(Guid executionId, string correlationId, CancellationToken ct)
@@ -83,6 +85,7 @@ public class WorkflowExecutorService
         execution.Status = ExecutionStatus.Running;
         execution.StartedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(ct);
+        await _eventPublisher.PublishExecutionRunningAsync(execution, ct);
 
         List<WorkflowStep> steps = execution.WorkflowDefinition.Steps
             .OrderBy(s => s.StepOrder)
@@ -134,7 +137,64 @@ public class WorkflowExecutorService
                     CancellationToken = ct
                 };
 
-                StepExecutionResult result = await ExecuteStepWithRetryAsync(executor, context, step, ct);
+                string? initialInputJson = ResolveInputJsonForPersistence(context.LastResolvedAgentInput, accumulatedOutput);
+                if (step.StepType == StepType.Agent)
+                {
+                    string _ = context.BuildAgentInput();
+                    initialInputJson = ResolveInputJsonForPersistence(context.LastResolvedAgentInput, accumulatedOutput);
+                }
+
+                WorkflowStepResult stepResult = new()
+                {
+                    Id = Guid.NewGuid(),
+                    WorkflowExecutionId = executionId,
+                    WorkflowStepId = step.Id,
+                    Output = string.Empty,
+                    TokensUsed = 0,
+                    DurationMs = 0,
+                    ExecutedAt = DateTime.UtcNow,
+                    InputJson = initialInputJson,
+                    OutputJson = null,
+                    Status = StepStatus.Running,
+                    ErrorDetails = null,
+                    IterationNumber = iterationCount,
+                    CompletedAt = null,
+                    OutputStorageKey = null
+                };
+                db.WorkflowStepResults.Add(stepResult);
+                await db.SaveChangesAsync(ct);
+
+                await _eventPublisher.PublishStepStartedAsync(
+                    execution,
+                    step,
+                    stepResult,
+                    CreateLogPreview(initialInputJson, 800),
+                    ct);
+
+                StepExecutionResult result;
+                try
+                {
+                    result = await ExecuteStepWithRetryAsync(executor, context, step, ct);
+                }
+                catch (Exception ex)
+                {
+                    result = BuildFailureStepResult(step, context, ex);
+
+                    stepResult.Output = result.Output;
+                    stepResult.TokensUsed = result.TokensUsed;
+                    stepResult.DurationMs = result.DurationMs;
+                    stepResult.InputJson = ResolveInputJsonForPersistence(context.LastResolvedAgentInput, accumulatedOutput);
+                    stepResult.OutputJson = result.Output;
+                    stepResult.Status = StepStatus.Failed;
+                    stepResult.ErrorDetails = result.ErrorDetails;
+                    stepResult.IterationNumber = result.IterationNumber;
+                    stepResult.CompletedAt = DateTime.UtcNow;
+                    stepResult.OutputStorageKey = result.OutputStorageKey;
+
+                    await db.SaveChangesAsync(ct);
+                    await _eventPublisher.PublishStepCompletedAsync(execution, step, stepResult, result, ct);
+                    throw;
+                }
 
                 _logger.LogInformation(
                     "Step {StepOrder} ({StepType}) completed for execution {ExecutionId} with status {Status}; duration {DurationMs}ms; tokens {TokensUsed}; nextStepIndex {NextStepIndex}",
@@ -159,25 +219,17 @@ public class WorkflowExecutorService
                     CreateLogPreview(inputJsonForPersistence, 250),
                     CreateLogPreview(outputJsonForPersistence, 250));
 
-                // Persist step result
-                WorkflowStepResult stepResult = new()
-                {
-                    Id = Guid.NewGuid(),
-                    WorkflowExecutionId = executionId,
-                    WorkflowStepId = step.Id,
-                    Output = result.Output,
-                    TokensUsed = result.TokensUsed,
-                    DurationMs = result.DurationMs,
-                    ExecutedAt = DateTime.UtcNow,
-                    InputJson = inputJsonForPersistence,
-                    OutputJson = outputJsonForPersistence,
-                    Status = result.Status,
-                    ErrorDetails = result.ErrorDetails,
-                    IterationNumber = result.IterationNumber,
-                    CompletedAt = DateTime.UtcNow,
-                    OutputStorageKey = result.OutputStorageKey
-                };
-                db.WorkflowStepResults.Add(stepResult);
+                // Persist final state to the previously inserted running step row
+                stepResult.Output = result.Output;
+                stepResult.TokensUsed = result.TokensUsed;
+                stepResult.DurationMs = result.DurationMs;
+                stepResult.InputJson = inputJsonForPersistence;
+                stepResult.OutputJson = outputJsonForPersistence;
+                stepResult.Status = result.Status;
+                stepResult.ErrorDetails = result.ErrorDetails;
+                stepResult.IterationNumber = result.IterationNumber;
+                stepResult.CompletedAt = DateTime.UtcNow;
+                stepResult.OutputStorageKey = result.OutputStorageKey;
 
                 // Handle review scores for ReviewLoop steps
                 if (step.StepType == StepType.ReviewLoop && result.IterationNumber.HasValue)
@@ -212,7 +264,7 @@ public class WorkflowExecutorService
                         CreateLogPreview(outputJsonForPersistence, 250));
                     throw;
                 }
-                await _eventPublisher.PublishStepCompletedAsync(execution, step, stepResult, ct);
+                await _eventPublisher.PublishStepCompletedAsync(execution, step, stepResult, result, ct);
 
                 ReelForgeDiagnostics.StepDuration.Record(result.DurationMs,
                     new KeyValuePair<string, object?>("step.type", step.StepType.ToString()),
@@ -391,10 +443,11 @@ public class WorkflowExecutorService
         WorkflowStep step,
         CancellationToken ct)
     {
+        int maxRetries = ResolveMaxRetries(step);
         int attemptNumber = 0;
         Exception? lastException = null;
 
-        while (attemptNumber < MaxStepRetries)
+        while (attemptNumber < maxRetries)
         {
             attemptNumber++;
             _logger.LogInformation(
@@ -403,7 +456,7 @@ public class WorkflowExecutorService
                 step.StepType,
                 context.Execution.Id,
                 attemptNumber,
-                MaxStepRetries);
+                maxRetries);
             try
             {
                 StepExecutionResult result = await executor.ExecuteAsync(context);
@@ -411,14 +464,17 @@ public class WorkflowExecutorService
                 // Check if step failed
                 if (result.Status == StepStatus.Failed)
                 {
-                    if (attemptNumber < MaxStepRetries)
+                    if (attemptNumber < maxRetries)
                     {
-                        context.RecordRetryFeedback(attemptNumber, result.ErrorDetails ?? "Step returned failed status without details.");
+                        if (_hardeningOptions.EnableStructuredRetryDiagnostics)
+                            context.RecordRetryFeedback(attemptNumber, BuildRetryDiagnosticMessage(result.ErrorDetails));
+                        else
+                            context.RecordRetryFeedback(attemptNumber, result.ErrorDetails ?? "Step returned failed status without details.");
 
-                        double delaySeconds = Math.Pow(2, attemptNumber);
+                        double delaySeconds = Math.Pow(_hardeningOptions.RetryBaseDelaySeconds, attemptNumber);
                         _logger.LogWarning(
                             "Step {StepOrder} ({StepType}) failed on attempt {Attempt}/{Max}. Error: {Error}. Retrying in {Delay}s...",
-                            step.StepOrder, step.StepType, attemptNumber, MaxStepRetries,
+                            step.StepOrder, step.StepType, attemptNumber, maxRetries,
                             result.ErrorDetails, delaySeconds);
 
                         await Task.Delay(TimeSpan.FromSeconds(delaySeconds), ct);
@@ -428,7 +484,7 @@ public class WorkflowExecutorService
                     {
                         // Max retries exceeded - throw to trigger workflow failure
                         throw new InvalidOperationException(
-                            $"Step {step.StepOrder} ({step.StepType}) failed after {MaxStepRetries} attempts. Last error: {result.ErrorDetails}");
+                            $"Step {step.StepOrder} ({step.StepType}) failed after {maxRetries} attempts. Last error: {result.ErrorDetails}");
                     }
                 }
 
@@ -439,7 +495,7 @@ public class WorkflowExecutorService
                         "Step {StepOrder} ({StepType}) succeeded on attempt {Attempt}",
                         step.StepOrder, step.StepType, attemptNumber);
                 }
-                return result;
+                return WithAttemptMetadata(result, attemptNumber);
             }
             // do not retry on InvalidOperationException or our workflow‑abort exception
             catch (AgentWorkflowException awf)
@@ -450,15 +506,15 @@ public class WorkflowExecutorService
                     step.StepOrder, awf.Reason);
                 throw;
             }
-            catch (Exception ex) when (ex is not InvalidOperationException && ex is not AgentWorkflowException && attemptNumber < MaxStepRetries)
+            catch (Exception ex) when (ex is not InvalidOperationException && ex is not AgentWorkflowException && attemptNumber < maxRetries)
             {
                 lastException = ex;
-                context.RecordRetryFeedback(attemptNumber, ex.Message);
+                context.RecordRetryFeedback(attemptNumber, BuildRetryDiagnosticMessage(ex.Message));
 
-                double delaySeconds = Math.Pow(2, attemptNumber);
+                double delaySeconds = Math.Pow(_hardeningOptions.RetryBaseDelaySeconds, attemptNumber);
                 _logger.LogWarning(ex,
                     "Step {StepOrder} ({StepType}) threw exception on attempt {Attempt}/{Max}. Retrying in {Delay}s...",
-                    step.StepOrder, step.StepType, attemptNumber, MaxStepRetries, delaySeconds);
+                    step.StepOrder, step.StepType, attemptNumber, maxRetries, delaySeconds);
 
                 await Task.Delay(TimeSpan.FromSeconds(delaySeconds), ct);
             }
@@ -466,8 +522,79 @@ public class WorkflowExecutorService
 
         // If we get here, all retries are exhausted
         throw new InvalidOperationException(
-            $"Step {step.StepOrder} ({step.StepType}) failed after {MaxStepRetries} attempts",
+            $"Step {step.StepOrder} ({step.StepType}) failed after {maxRetries} attempts",
             lastException);
+    }
+
+    private int ResolveMaxRetries(WorkflowStep step)
+    {
+        int configuredDefault = Math.Clamp(_hardeningOptions.MaxStepRetries, 1, 6);
+        AgentType? agentType = step.AgentDefinition?.AgentType;
+
+        return agentType switch
+        {
+            AgentType.AuthorAgent => Math.Clamp(_hardeningOptions.MaxAuthorStepRetries, 1, 6),
+            AgentType.RemotionComponentTranslator => Math.Clamp(_hardeningOptions.MaxTranslatorStepRetries, 1, 6),
+            _ => configuredDefault
+        };
+    }
+
+    private static StepExecutionResult BuildFailureStepResult(WorkflowStep step, StepExecutionContext context, Exception ex)
+    {
+        string diagnostic = BuildRetryDiagnosticMessage(ex.Message);
+        return new StepExecutionResult
+        {
+            Output = diagnostic,
+            NextStepIndex = context.CurrentStepIndex + 1,
+            NewIterationCount = context.IterationCount,
+            DurationMs = 0,
+            TokensUsed = 0,
+            Status = StepStatus.Failed,
+            ErrorDetails = ex.Message,
+            AttemptCount = 1,
+            RetryCount = 0
+        };
+    }
+
+    private static StepExecutionResult WithAttemptMetadata(StepExecutionResult result, int attemptCount)
+    {
+        return new StepExecutionResult
+        {
+            Output = result.Output,
+            NextStepIndex = result.NextStepIndex,
+            NewIterationCount = result.NewIterationCount,
+            TokensUsed = result.TokensUsed,
+            InputTokens = result.InputTokens,
+            OutputTokens = result.OutputTokens,
+            DurationMs = result.DurationMs,
+            AttemptCount = attemptCount,
+            RetryCount = Math.Max(0, attemptCount - 1),
+            Status = result.Status,
+            ErrorDetails = result.ErrorDetails,
+            IterationNumber = result.IterationNumber,
+            OutputStorageKey = result.OutputStorageKey
+        };
+    }
+
+    private static string BuildRetryDiagnosticMessage(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return "Step execution failed without diagnostics.";
+
+        string[] lines = raw
+            .Replace("\r", string.Empty, StringComparison.Ordinal)
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(line =>
+                line.Contains("error", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("Cannot", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("failed", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("TS", StringComparison.Ordinal))
+            .Take(8)
+            .ToArray();
+
+        return lines.Length == 0
+            ? raw.Trim()
+            : string.Join("\n", lines);
     }
 
     internal static string? ResolveInputJsonForPersistence(string? resolvedAgentInput, string accumulatedOutput)

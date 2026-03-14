@@ -35,6 +35,7 @@ public class AgentToolProvider : IAgentToolProvider
                 AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
                 AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
                 AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
+                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
                 AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
             ],
 
@@ -43,6 +44,7 @@ public class AgentToolProvider : IAgentToolProvider
                 AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
                 AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
                 AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
+                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
                 AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
             ],
 
@@ -51,6 +53,7 @@ public class AgentToolProvider : IAgentToolProvider
                 AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
                 AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
                 AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
+                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
                 AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
             ],
 
@@ -59,6 +62,7 @@ public class AgentToolProvider : IAgentToolProvider
                 AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
                 AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
                 AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
+                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
                 AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
             ],
 
@@ -67,6 +71,7 @@ public class AgentToolProvider : IAgentToolProvider
                 AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
                 AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
                 AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
+                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
                 AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
             ],
 
@@ -80,6 +85,7 @@ public class AgentToolProvider : IAgentToolProvider
                 AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
                 AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
                 AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
+                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
                 AIFunctionFactory.Create(_projectFileTools.WriteProjectFile),
                 AIFunctionFactory.Create(_sandboxTools.GetSandboxStatus),
                 AIFunctionFactory.Create(_sandboxTools.EnsureSandbox),
@@ -102,6 +108,7 @@ public class AgentToolProvider : IAgentToolProvider
                 AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
                 AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
                 AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
+                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
                 AIFunctionFactory.Create(_sandboxTools.GetSandboxStatus),
                 AIFunctionFactory.Create(_sandboxTools.GetSandbox),
                 AIFunctionFactory.Create(_sandboxTools.ListSandboxFiles),
@@ -122,6 +129,7 @@ public class AgentToolProvider : IAgentToolProvider
                 AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
                 AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
                 AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
+                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
                 AIFunctionFactory.Create(_sandboxTools.GetSandboxStatus),
                 AIFunctionFactory.Create(_sandboxTools.ListSandboxFiles),
                 AIFunctionFactory.Create(_sandboxTools.ReadSandboxFile),
@@ -138,6 +146,7 @@ public class AgentToolProvider : IAgentToolProvider
                 AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
                 AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
                 AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
+                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
                 AIFunctionFactory.Create(_projectFileTools.WriteProjectFile),
                 AIFunctionFactory.Create(_sandboxTools.GetSandboxStatus),
                 AIFunctionFactory.Create(_sandboxTools.EnsureSandbox),
@@ -167,6 +176,7 @@ public class AgentToolProvider : IAgentToolProvider
                 AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
                 AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
                 AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
+                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
                 AIFunctionFactory.Create(_sandboxTools.GetSandboxStatus),
                 AIFunctionFactory.Create(_sandboxTools.GetSandbox),
                 AIFunctionFactory.Create(_sandboxTools.ListSandboxFiles),
@@ -186,6 +196,7 @@ public class AgentToolProvider : IAgentToolProvider
                 AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
                 AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
                 AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
+                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
                 AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
             ]
         };

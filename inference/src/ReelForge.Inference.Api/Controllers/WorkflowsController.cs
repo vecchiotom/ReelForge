@@ -4,9 +4,11 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ReelForge.Inference.Api.Controllers.Dto;
 using ReelForge.Inference.Api.Data;
+using ReelForge.Inference.Api.Services.Workflows;
 using ReelForge.Shared.Auth;
 using ReelForge.Shared.Data.Models;
 using ReelForge.Shared.IntegrationEvents;
+using ReelForge.Shared.Workflows;
 using System;
 
 namespace ReelForge.Inference.Api.Controllers;
@@ -19,15 +21,69 @@ public class WorkflowsController : ControllerBase
     private readonly InferenceApiDbContext _db;
     private readonly ICurrentUser _currentUser;
     private readonly IPublishEndpoint _publishEndpoint;
+    private readonly WorkflowTemplateProvisioningService _workflowTemplateProvisioningService;
 
     public WorkflowsController(
         InferenceApiDbContext db,
         ICurrentUser currentUser,
-        IPublishEndpoint publishEndpoint)
+        IPublishEndpoint publishEndpoint,
+        WorkflowTemplateProvisioningService workflowTemplateProvisioningService)
     {
         _db = db;
         _currentUser = currentUser;
         _publishEndpoint = publishEndpoint;
+        _workflowTemplateProvisioningService = workflowTemplateProvisioningService;
+    }
+
+    [HttpGet("templates")]
+    public async Task<ActionResult<List<WorkflowTemplateSummaryResponse>>> ListTemplates(Guid projectId, CancellationToken ct)
+    {
+        Project? project = await _db.Projects.FirstOrDefaultAsync(p => p.Id == projectId, ct);
+        if (project == null) return NotFound();
+        if (project.OwnerId != _currentUser.UserId) return Forbid();
+
+        IReadOnlyList<WorkflowTemplateDefinition> templates = await _workflowTemplateProvisioningService.ListAvailableTemplatesAsync(ct);
+
+        return Ok(templates.Select(template => new WorkflowTemplateSummaryResponse(
+            template.Key,
+            template.Name,
+            template.Description,
+            template.Version,
+            template.AutoCreateOnProject,
+            template.RequiresUserInput,
+            template.Steps.Count)).ToList());
+    }
+
+    [HttpPost("templates/{templateKey}/apply")]
+    public async Task<ActionResult<WorkflowDefinitionResponse>> ApplyTemplate(
+        Guid projectId,
+        string templateKey,
+        [FromBody] ApplyWorkflowTemplateRequest? request,
+        CancellationToken ct)
+    {
+        Project? project = await _db.Projects.FirstOrDefaultAsync(p => p.Id == projectId, ct);
+        if (project == null) return NotFound();
+        if (project.OwnerId != _currentUser.UserId) return Forbid();
+
+        bool skipIfExists = request?.SkipIfExists ?? false;
+        WorkflowDefinition? workflow;
+        try
+        {
+            workflow = await _workflowTemplateProvisioningService.CreateFromTemplateAsync(projectId, templateKey, skipIfExists, ct);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(new { message = ex.Message });
+        }
+
+        if (workflow is null)
+            return Conflict(new { message = "Template could not be applied." });
+
+        workflow = await _db.WorkflowDefinitions
+            .Include(w => w.Steps)
+            .FirstAsync(w => w.Id == workflow.Id, ct);
+
+        return Ok(MapWorkflowResponse(workflow));
     }
 
     [HttpGet]
@@ -101,20 +157,16 @@ public class WorkflowsController : ControllerBase
         if (project == null) return NotFound();
         if (project.OwnerId != _currentUser.UserId) return Forbid();
 
-        // load the workflow and its steps only.
-        // step results are removed by DB cascade when steps are deleted.
         WorkflowDefinition? workflow = await _db.WorkflowDefinitions
-            .Include(w => w.Steps)
             .FirstOrDefaultAsync(w => w.Id == id && w.ProjectId == projectId, ct);
         if (workflow == null) return NotFound();
 
-        // With cascading foreign keys in place we don't manually purge step results.
-        // Deleting the steps cascades through the database.
-        var oldSteps = workflow.Steps.ToList();
-        _db.WorkflowSteps.RemoveRange(oldSteps);
-
-        // also clear the navigation collection so we can safely re-populate it
-        workflow.Steps.Clear();
+        // Replace workflow steps atomically: remove all existing rows for this workflow,
+        // then insert the provided set. This avoids tracked-entity delete/re-add state
+        // conflicts that can surface as false DbUpdateConcurrencyException responses.
+        await _db.WorkflowSteps
+            .Where(s => s.WorkflowDefinitionId == workflow.Id)
+            .ExecuteDeleteAsync(ct);
 
         if (!string.IsNullOrWhiteSpace(request.Name))
             workflow.Name = request.Name;
@@ -124,7 +176,7 @@ public class WorkflowsController : ControllerBase
 
         foreach (CreateWorkflowStepRequest stepReq in request.Steps)
         {
-            workflow.Steps.Add(CreateStep(workflow.Id, stepReq));
+            _db.WorkflowSteps.Add(CreateStep(workflow.Id, stepReq));
         }
 
         workflow.UpdatedAt = DateTime.UtcNow;
