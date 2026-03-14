@@ -33,6 +33,13 @@ public class WorkflowEventPublisher : IWorkflowEventPublisher
             ExecutionId = execution.Id,
             StepId = step.Id,
             StepResultId = stepResult.Id,
+            ProjectId = execution.ProjectId,
+            WorkflowDefinitionId = execution.WorkflowDefinitionId,
+            StepOrder = step.StepOrder,
+            StepLabel = step.Label,
+            StepType = step.StepType.ToString(),
+            IterationNumber = stepResult.IterationNumber,
+            AgentType = step.AgentDefinition?.AgentType.ToString(),
             CorrelationId = execution.CorrelationId,
             StepStatus = stepResult.Status.ToString(),
             TokensUsed = stepResult.TokensUsed,
@@ -53,6 +60,8 @@ public class WorkflowEventPublisher : IWorkflowEventPublisher
         {
             ExecutionId = execution.Id,
             ProjectId = execution.ProjectId,
+            WorkflowDefinitionId = execution.WorkflowDefinitionId,
+            InitiatedByUserId = execution.InitiatedByUserId,
             CorrelationId = execution.CorrelationId,
             FinalStatus = execution.Status.ToString(),
             ResultJson = execution.ResultJson,
@@ -71,6 +80,9 @@ public class WorkflowEventPublisher : IWorkflowEventPublisher
         _publishEndpoint.Publish(new WorkflowExecutionFailed
         {
             ExecutionId = execution.Id,
+            ProjectId = execution.ProjectId,
+            WorkflowDefinitionId = execution.WorkflowDefinitionId,
+            InitiatedByUserId = execution.InitiatedByUserId,
             CorrelationId = execution.CorrelationId,
             ErrorMessage = execution.ErrorMessage ?? "Unknown workflow execution failure.",
             FailedAt = execution.CompletedAt ?? DateTime.UtcNow

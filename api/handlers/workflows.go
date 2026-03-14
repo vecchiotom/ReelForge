@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/vecchiotom/reelforge/middleware"
 	"github.com/vecchiotom/reelforge/models"
 	"github.com/vecchiotom/reelforge/services"
+	"gorm.io/gorm"
 )
 
 // WorkflowStats holds aggregate execution counts by status.
@@ -20,6 +22,36 @@ type WorkflowStats struct {
 	Completed int64 `json:"completed"`
 	Failed    int64 `json:"failed"`
 	Total     int64 `json:"total"`
+}
+
+func userOwnsExecution(uc middleware.UserContext, execution *models.WorkflowExecution) bool {
+	if uc.IsAdmin {
+		return true
+	}
+
+	if execution.InitiatedByUserID != nil {
+		return execution.InitiatedByUserID.String() == uc.UserID
+	}
+
+	var project models.Project
+	if err := database.DB.Select("owner_id").Where("id = ?", execution.ProjectID).First(&project).Error; err != nil {
+		return false
+	}
+
+	return project.OwnerID.String() == uc.UserID
+}
+
+func canUserStreamExecutionByID(uc middleware.UserContext, executionID string) bool {
+	if uc.IsAdmin {
+		return true
+	}
+
+	var execution models.WorkflowExecution
+	if err := database.DB.Select("id", "project_id", "initiated_by_user_id").Where("id = ?", executionID).First(&execution).Error; err != nil {
+		return false
+	}
+
+	return userOwnsExecution(uc, &execution)
 }
 
 // handleWorkflowStats returns aggregate execution statistics queried directly
@@ -67,6 +99,12 @@ func handleWorkflowEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	uc, ok := r.Context().Value(middleware.UserContextKey).(middleware.UserContext)
+	if !ok {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -74,6 +112,7 @@ func handleWorkflowEvents(w http.ResponseWriter, r *http.Request) {
 
 	ch := services.Hub.Subscribe()
 	defer services.Hub.Unsubscribe(ch)
+	visibilityCache := make(map[string]bool)
 
 	// Send an initial "connected" event so the client knows the stream is live.
 	fmt.Fprintf(w, "event: connected\ndata: {\"ts\":%d}\n\n", time.Now().UnixMilli())
@@ -96,6 +135,18 @@ func handleWorkflowEvents(w http.ResponseWriter, r *http.Request) {
 			if !open {
 				return
 			}
+
+			if !uc.IsAdmin {
+				allowed, seen := visibilityCache[event.ExecutionID]
+				if !seen {
+					allowed = canUserStreamExecutionByID(uc, event.ExecutionID)
+					visibilityCache[event.ExecutionID] = allowed
+				}
+				if !allowed {
+					continue
+				}
+			}
+
 			data, err := json.Marshal(event)
 			if err != nil {
 				continue
@@ -118,6 +169,7 @@ func handleExecutionEvents(w http.ResponseWriter, r *http.Request) {
 	// Extract route parameters
 	vars := mux.Vars(r)
 	projectID := vars["projectId"]
+	workflowID := vars["workflowId"]
 	executionID := vars["executionId"]
 
 	// Get user context from auth middleware
@@ -127,17 +179,21 @@ func handleExecutionEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify project ownership (admins bypass this check)
-	if !uc.IsAdmin {
-		var project models.Project
-		if err := database.DB.Where("id = ?", projectID).First(&project).Error; err != nil {
-			http.Error(w, `{"error":"project not found"}`, http.StatusNotFound)
+	// Validate execution belongs to the requested project + workflow path.
+	var execution models.WorkflowExecution
+	if err := database.DB.Where("id = ? AND project_id = ? AND workflow_definition_id = ?", executionID, projectID, workflowID).First(&execution).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			http.Error(w, `{"error":"execution not found"}`, http.StatusNotFound)
 			return
 		}
-		if project.OwnerID.String() != uc.UserID {
-			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
-			return
-		}
+		http.Error(w, `{"error":"failed to validate execution"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// Verify execution ownership (admins bypass this check).
+	if !userOwnsExecution(uc, &execution) {
+		http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		return
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")

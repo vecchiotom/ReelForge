@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Text.Json;
-using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using ReelForge.Shared.Data.Models;
 using ReelForge.Shared.IntegrationEvents;
@@ -22,7 +21,6 @@ public class WorkflowExecutorService
     private readonly IWorkflowEventPublisher _eventPublisher;
     private readonly ILogger<WorkflowExecutorService> _logger;
     private readonly Dictionary<StepType, IStepExecutor> _executors;
-    private readonly IPublishEndpoint _publishEndpoint;
     private readonly RabbitMqHelper _rabbitHelper;
 
     // track cancellation tokens for running executions so external requests can abort them
@@ -34,14 +32,12 @@ public class WorkflowExecutorService
         IWorkflowEventPublisher eventPublisher,
         ILogger<WorkflowExecutorService> logger,
         IEnumerable<IStepExecutor> executors,
-        IPublishEndpoint publishEndpoint,
         RabbitMqHelper rabbitHelper)
     {
         _scopeFactory = scopeFactory;
         _eventPublisher = eventPublisher;
         _logger = logger;
         _executors = executors.ToDictionary(e => e.StepType);
-        _publishEndpoint = publishEndpoint;
         _rabbitHelper = rabbitHelper;
     }
 
@@ -217,19 +213,6 @@ public class WorkflowExecutorService
                     throw;
                 }
                 await _eventPublisher.PublishStepCompletedAsync(execution, step, stepResult, ct);
-
-                // Publish step-level event for real-time monitoring.
-                await _publishEndpoint.Publish(new WorkflowStepCompleted
-                {
-                    ExecutionId = executionId,
-                    StepId = step.Id,
-                    StepResultId = stepResult.Id,
-                    CorrelationId = correlationId,
-                    StepStatus = result.Status.ToString(),
-                    TokensUsed = result.TokensUsed,
-                    DurationMs = result.DurationMs,
-                    CompletedAt = DateTime.UtcNow
-                }, ct);
 
                 ReelForgeDiagnostics.StepDuration.Record(result.DurationMs,
                     new KeyValuePair<string, object?>("step.type", step.StepType.ToString()),

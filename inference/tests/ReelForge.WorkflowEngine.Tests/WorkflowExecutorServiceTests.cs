@@ -56,7 +56,6 @@ namespace ReelForge.WorkflowEngine.Tests
                 eventPublisher: null!,
                 logger: NullLogger<WorkflowExecutorService>.Instance,
                 executors: new[] { new ThrowingExecutor() },
-                publishEndpoint: null!,
                 rabbitHelper: fakeHelper);
 
             await service.CancelExecutionAsync(id, Guid.NewGuid());
@@ -72,7 +71,6 @@ namespace ReelForge.WorkflowEngine.Tests
                 eventPublisher: null!,
                 logger: NullLogger<WorkflowExecutorService>.Instance,
                 executors: new[] { executor },
-                publishEndpoint: null!,
                 rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()));
 
             var step = new WorkflowStep { StepOrder = 1, StepType = StepType.Agent };
@@ -106,7 +104,6 @@ namespace ReelForge.WorkflowEngine.Tests
                 eventPublisher: null!,
                 logger: NullLogger<WorkflowExecutorService>.Instance,
                 executors: new[] { new ThrowingExecutor() },
-                publishEndpoint: null!,
                 rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()));
 
             // inject a fake cancellation token source

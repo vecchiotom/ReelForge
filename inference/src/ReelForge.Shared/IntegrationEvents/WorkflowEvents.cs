@@ -25,6 +25,8 @@ public record WorkflowExecutionCompleted
 {
     public Guid ExecutionId { get; init; }
     public Guid ProjectId { get; init; }
+    public Guid? WorkflowDefinitionId { get; init; }
+    public Guid? InitiatedByUserId { get; init; }
     public string CorrelationId { get; init; } = string.Empty;
     public string FinalStatus { get; init; } = string.Empty;
     public string? ResultJson { get; init; }
@@ -51,6 +53,13 @@ public record WorkflowStepCompleted
     public Guid ExecutionId { get; init; }
     public Guid StepId { get; init; }
     public Guid StepResultId { get; init; }
+    public Guid? ProjectId { get; init; }
+    public Guid? WorkflowDefinitionId { get; init; }
+    public int? StepOrder { get; init; }
+    public string? StepLabel { get; init; }
+    public string? StepType { get; init; }
+    public int? IterationNumber { get; init; }
+    public string? AgentType { get; init; }
     public string CorrelationId { get; init; } = string.Empty;
     public string StepStatus { get; init; } = string.Empty;
     public int TokensUsed { get; init; }
@@ -64,6 +73,9 @@ public record WorkflowStepCompleted
 public record WorkflowExecutionFailed
 {
     public Guid ExecutionId { get; init; }
+    public Guid? ProjectId { get; init; }
+    public Guid? WorkflowDefinitionId { get; init; }
+    public Guid? InitiatedByUserId { get; init; }
     public string CorrelationId { get; init; } = string.Empty;
     public string ErrorMessage { get; init; } = string.Empty;
     public DateTime FailedAt { get; init; } = DateTime.UtcNow;

@@ -1,8 +1,8 @@
 'use client';
 
 import { use, useEffect, useState, useCallback } from 'react';
-import { Stack, Card, Group, Text, Badge, Loader, Center, Progress, Timeline, Paper, Alert, Modal, Divider, ScrollArea, Button } from '@mantine/core';
-import { IconPlayerPlay, IconCheck, IconX, IconClock, IconAlertCircle, IconPlayerStop } from '@tabler/icons-react';
+import { Stack, Card, Group, Text, Badge, Loader, Center, Progress, Timeline, Paper, Alert, Modal, Divider, ScrollArea, Button, SimpleGrid } from '@mantine/core';
+import { IconPlayerPlay, IconCheck, IconX, IconClock, IconAlertCircle, IconPlayerStop, IconBolt, IconActivity } from '@tabler/icons-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ReactFlow,
@@ -25,12 +25,10 @@ import { getExecution, stopExecution } from '@/lib/api/executions';
 import type { WorkflowExecution, WorkflowDefinition, WorkflowStepResult } from '@/lib/types/workflow';
 import { formatDate, formatDurationLong } from '@/lib/utils/format';
 import { JsonViewer } from '@/components/workflows/JsonViewer';
+import { useExecutionStream } from '@/lib/hooks/use-execution-stream';
 
-interface WorkflowEvent {
-  type: string;
-  executionId: string;
-  timestamp: string;
-  data: unknown;
+function isTerminalExecutionStatus(status: WorkflowExecution['status'] | undefined): boolean {
+  return status === 'Passed' || status === 'Failed' || status === 'Cancelled';
 }
 
 function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; workflowId: string; executionId: string }> }) {
@@ -39,11 +37,24 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
   const [execution, setExecution] = useState<WorkflowExecution | null>(null);
   const [workflow, setWorkflow] = useState<WorkflowDefinition | null>(null);
   const [loading, setLoading] = useState(true);
-  const [events, setEvents] = useState<WorkflowEvent[]>([]);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [selectedStepResult, setSelectedStepResult] = useState<WorkflowStepResult | null>(null);
   const [modalOpened, setModalOpened] = useState(false);
+
+  const streamEnabled = !!execution && !!workflow && !isTerminalExecutionStatus(execution.status);
+  const {
+    events,
+    connectionState,
+    lastError,
+    lastEventAt,
+    metrics,
+  } = useExecutionStream({
+    projectId,
+    workflowId,
+    executionId,
+    enabled: streamEnabled,
+  });
 
   // Initialize flow visualization
   const initializeFlow = useCallback((wf: WorkflowDefinition, exec: WorkflowExecution) => {
@@ -53,12 +64,14 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
     wf.steps.forEach((step, index) => {
       const stepResult = exec.stepResults.find((r) => r.workflowStepId === step.id);
       const status = stepResult?.status || 'Pending';
+      const stepName = step.label || `Step ${step.stepOrder}`;
 
       const color =
-        status === 'Completed' ? '#10b981'
-          : status === 'Running' ? '#3b82f6'
-            : status === 'Failed' ? '#ef4444'
-              : '#9ca3af';
+        status === 'Completed' ? 'var(--mantine-color-green-6)'
+          : status === 'Running' ? 'var(--mantine-color-blue-6)'
+            : status === 'Failed' ? 'var(--mantine-color-red-6)'
+              : status === 'Skipped' ? 'var(--mantine-color-yellow-6)'
+                : 'var(--mantine-color-gray-6)';
 
       newNodes.push({
         id: step.id,
@@ -66,15 +79,28 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
         position: { x: 250, y: index * 150 + 50 },
         data: {
           label: (
-            <div style={{ padding: 8, minWidth: 200, cursor: 'pointer' }}>
-              <Group gap="xs" mb={4}>
+            <div style={{ padding: 10, minWidth: 260, cursor: 'pointer' }}>
+              <Group gap="xs" mb={6} justify="space-between">
                 <Badge size="xs" variant="filled" style={{ background: color }}>
                   {status}
                 </Badge>
-                <Text size="xs" fw={600}>{step.label}</Text>
+                <Badge size="xs" variant="light" color="gray">
+                  #{step.stepOrder} {step.stepType ?? 'Agent'}
+                </Badge>
               </Group>
+              <Text size="xs" fw={700} mb={6} lineClamp={2}>{stepName}</Text>
               {stepResult && (
-                <Text size="xs" c="dimmed">{Math.round(stepResult.durationMs)}ms</Text>
+                <Group gap="xs" wrap="nowrap">
+                  <Badge size="xs" variant="dot" color="indigo">
+                    {Math.round(stepResult.durationMs)}ms
+                  </Badge>
+                  <Badge size="xs" variant="dot" color="violet">
+                    {stepResult.tokensUsed.toLocaleString()} tok
+                  </Badge>
+                  {stepResult.iterationNumber != null && (
+                    <Badge size="xs" variant="dot" color="cyan">iter {stepResult.iterationNumber}</Badge>
+                  )}
+                </Group>
               )}
             </div>
           ),
@@ -82,8 +108,16 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
         },
         style: {
           border: `2px solid ${color}`,
-          borderRadius: 8,
-          background: status === 'Running' ? `${color}11` : 'white',
+          borderRadius: 14,
+          background:
+            status === 'Running'
+              ? 'linear-gradient(135deg, var(--mantine-color-dark-7), var(--mantine-color-dark-6))'
+              : 'linear-gradient(135deg, var(--mantine-color-dark-8), var(--mantine-color-dark-7))',
+          color: 'var(--mantine-color-gray-0)',
+          boxShadow:
+            status === 'Running'
+              ? `0 0 0 1px ${color}, 0 0 28px ${color}`
+              : `0 0 0 1px ${color}33`,
           animation: status === 'Running' ? 'pulse 2s infinite' : 'none',
         },
       });
@@ -141,33 +175,24 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
     fetchData();
   }, [projectId, workflowId, executionId, initializeFlow]);
 
-  // SSE connection for real-time updates
+  // Refresh execution snapshot when new stream events arrive.
   useEffect(() => {
-    if (!execution || execution.status === 'Passed' || execution.status === 'Failed' || execution.status === 'Cancelled') {
+    if (!workflow || !lastEventAt) {
       return;
     }
 
-    // TODO: Server doesn't provide per-execution SSE yet
-    // For now, poll the execution endpoint
-    const intervalId = setInterval(async () => {
+    const syncExecution = async () => {
       try {
         const data = await getExecution(projectId, executionId);
         setExecution(data);
-        if (workflow) initializeFlow(workflow, data);
-        
-        // Stop polling if execution completed or cancelled
-        if (data.status === 'Passed' || data.status === 'Failed' || data.status === 'Cancelled') {
-          clearInterval(intervalId);
-        }
+        initializeFlow(workflow, data);
       } catch (error) {
-        console.error('Failed to refresh execution:', error);
+        console.error('Failed to sync execution from event stream:', error);
       }
-    }, 2000); // Poll every 2 seconds
-
-    return () => {
-      clearInterval(intervalId);
     };
-  }, [execution, projectId, executionId, workflow, initializeFlow]);
+
+    void syncExecution();
+  }, [lastEventAt, projectId, executionId, workflow, initializeFlow]);
 
   if (loading) {
     return <Center h={400}><Loader size="lg" /></Center>;
@@ -210,7 +235,16 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4 }}
         >
-          <Card withBorder shadow="sm" radius="lg" padding="lg">
+          <Card
+            withBorder
+            shadow="sm"
+            radius="lg"
+            padding="lg"
+            style={{
+              background: 'linear-gradient(140deg, var(--mantine-color-dark-8), var(--mantine-color-violet-9))',
+              borderColor: 'var(--mantine-color-violet-6)',
+            }}
+          >
             <Stack gap="md">
               <Group justify="space-between">
                 <Group gap="sm">
@@ -237,14 +271,30 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
                   >
                     {execution.status.toUpperCase()}
                   </Badge>
-                  <Text size="sm" c="dimmed">
+                  <Text size="sm" c="gray.3">
                     {duration > 0 ? formatDurationLong(duration) : 'Not started'}
                   </Text>
                 </Group>
 
-                {execution.status === 'Running' && (
-                  <Loader size="sm" />
-                )}
+                <Group gap="xs">
+                  <Badge
+                    size="md"
+                    variant="light"
+                    color={
+                      connectionState === 'connected'
+                        ? 'green'
+                        : connectionState === 'reconnecting'
+                          ? 'yellow'
+                          : connectionState === 'connecting'
+                            ? 'blue'
+                            : 'gray'
+                    }
+                    leftSection={<IconActivity size={12} />}
+                  >
+                    Stream {connectionState}
+                  </Badge>
+                  {execution.status === 'Running' && <Loader size="sm" color="blue" />}
+                </Group>
                 {execution.status === 'Running' && (
                   <Button
                     size="xs"
@@ -257,7 +307,7 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
                         // refresh execution data immediately using root endpoint
                         const data = await getExecution(projectId, executionId);
                         setExecution(data);
-                        if (workflow) initializeFlow(workflow, data);
+                        initializeFlow(workflow, data);
                       } catch (err) {
                         console.error('stop failed', err);
                       }
@@ -298,7 +348,26 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
                     {execution.startedAt ? formatDate(execution.startedAt) : 'Pending'}
                   </Text>
                 </Paper>
+                <Paper withBorder p="sm" radius="md">
+                  <Text size="xs" c="dimmed">Stream Events</Text>
+                  <Text size="lg" fw={700}>{metrics.totalEvents}</Text>
+                </Paper>
+                <Paper withBorder p="sm" radius="md">
+                  <Text size="xs" c="dimmed">Live Tokens</Text>
+                  <Text size="lg" fw={700}>
+                    <Group gap={6} wrap="nowrap">
+                      <IconBolt size={14} />
+                      <span>{metrics.totalTokens.toLocaleString()}</span>
+                    </Group>
+                  </Text>
+                </Paper>
               </Group>
+
+              {lastError && (
+                <Alert icon={<IconAlertCircle size={14} />} color="yellow" variant="light">
+                  {lastError}
+                </Alert>
+              )}
             </Stack>
           </Card>
         </motion.div>
@@ -309,25 +378,84 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.2 }}
         >
-          <Card withBorder shadow="sm" radius="lg" padding="lg">
-            <Text fw={600} mb="md">Workflow Flow</Text>
-            <div style={{ height: 500, border: '1px solid var(--mantine-color-gray-3)', borderRadius: 8 }}>
-              <ReactFlow
-                nodes={nodes}
-                edges={edges}
-                onNodesChange={onNodesChange}
-                onEdgesChange={onEdgesChange}
-                onNodeClick={onNodeClick}
-                fitView
-                nodesDraggable={false}
-                nodesConnectable={false}
-                elementsSelectable={true}
-              >
-                <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
-                <Controls showInteractive={false} />
-              </ReactFlow>
-            </div>
-          </Card>
+          <SimpleGrid cols={{ base: 1, xl: 2 }} spacing="lg">
+            <Card withBorder shadow="sm" radius="lg" padding="lg">
+              <Group justify="space-between" mb="md">
+                <Text fw={600}>Workflow Flow</Text>
+                <Badge size="sm" variant="light" color="indigo">
+                  Avg {metrics.averageDurationMs}ms/step
+                </Badge>
+              </Group>
+              <div style={{ height: 500, border: '1px solid var(--mantine-color-gray-4)', borderRadius: 12, overflow: 'hidden' }}>
+                <ReactFlow
+                  nodes={nodes}
+                  edges={edges}
+                  onNodesChange={onNodesChange}
+                  onEdgesChange={onEdgesChange}
+                  onNodeClick={onNodeClick}
+                  fitView
+                  nodesDraggable={false}
+                  nodesConnectable={false}
+                  elementsSelectable={true}
+                >
+                  <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
+                  <Controls showInteractive={false} />
+                </ReactFlow>
+              </div>
+            </Card>
+
+            <Card withBorder shadow="sm" radius="lg" padding="lg">
+              <Text fw={600} mb="md">Step Bubble Insight</Text>
+              {!selectedStepResult ? (
+                <Alert icon={<IconPlayerPlay size={14} />} color="blue" variant="light">
+                  Select any step bubble to inspect live details.
+                </Alert>
+              ) : (
+                <Stack gap="md">
+                  <Group justify="space-between">
+                    <Badge
+                      size="lg"
+                      variant="light"
+                      color={
+                        selectedStepResult.status === 'Completed'
+                          ? 'green'
+                          : selectedStepResult.status === 'Running'
+                            ? 'blue'
+                            : selectedStepResult.status === 'Failed'
+                              ? 'red'
+                              : 'gray'
+                      }
+                    >
+                      {selectedStepResult.status ?? 'Pending'}
+                    </Badge>
+                    <Text size="sm" c="dimmed">{formatDate(selectedStepResult.executedAt)}</Text>
+                  </Group>
+                  <Group grow>
+                    <Paper withBorder p="sm" radius="md">
+                      <Text size="xs" c="dimmed">Duration</Text>
+                      <Text fw={700}>{Math.round(selectedStepResult.durationMs)}ms</Text>
+                    </Paper>
+                    <Paper withBorder p="sm" radius="md">
+                      <Text size="xs" c="dimmed">Tokens</Text>
+                      <Text fw={700}>{selectedStepResult.tokensUsed.toLocaleString()}</Text>
+                    </Paper>
+                  </Group>
+                  {selectedStepResult.outputStorageKey && (
+                    <video
+                      controls
+                      style={{ width: '100%', borderRadius: 8 }}
+                      src={getOutputVideoUrl(projectId, selectedStepResult.id)}
+                    />
+                  )}
+                  <ScrollArea.Autosize mah={220}>
+                    <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
+                      {selectedStepResult.output || 'No output available'}
+                    </Text>
+                  </ScrollArea.Autosize>
+                </Stack>
+              )}
+            </Card>
+          </SimpleGrid>
         </motion.div>
 
         {/* Event Timeline */}
@@ -337,7 +465,29 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
           transition={{ duration: 0.4, delay: 0.4 }}
         >
           <Card withBorder shadow="sm" radius="lg" padding="lg">
-            <Text fw={600} mb="md">Real-Time Events</Text>
+            <Group justify="space-between" mb="md">
+              <Text fw={600}>Real-Time Events</Text>
+              <Badge
+                size="sm"
+                variant="light"
+                color={
+                  connectionState === 'connected'
+                    ? 'green'
+                    : connectionState === 'reconnecting'
+                      ? 'yellow'
+                      : connectionState === 'connecting'
+                        ? 'blue'
+                        : 'gray'
+                }
+              >
+                Stream: {connectionState}
+              </Badge>
+            </Group>
+            {lastError && (
+              <Alert icon={<IconAlertCircle size={14} />} color="yellow" variant="light" mb="md">
+                {lastError}
+              </Alert>
+            )}
             <AnimatePresence>
               {events.length === 0 ? (
                 <Text size="sm" c="dimmed">Waiting for events...</Text>
@@ -364,7 +514,7 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
                         transition={{ duration: 0.3 }}
                       >
                         <Text size="xs" c="dimmed" mt={4} style={{ whiteSpace: 'pre-wrap' }}>
-                          {JSON.stringify(event.data, null, 2)}
+                          {JSON.stringify(event.payload, null, 2)}
                         </Text>
                       </motion.div>
                     </Timeline.Item>
@@ -483,10 +633,10 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
       <style jsx global>{`
         @keyframes pulse {
           0%, 100% {
-            box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7);
+            box-shadow: 0 0 0 0 var(--mantine-color-blue-6);
           }
           50% {
-            box-shadow: 0 0 0 10px rgba(59, 130, 246, 0);
+            box-shadow: 0 0 0 10px transparent;
           }
         }
       `}</style>
