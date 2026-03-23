@@ -35,6 +35,12 @@ public class WorkflowExecutionRequestedConsumer : IConsumer<WorkflowExecutionReq
                 message.ExecutionId,
                 message.CorrelationId);
         }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation(
+                "Workflow execution {ExecutionId} was cancelled during processing; message will not be retried",
+                message.ExecutionId);
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Workflow execution {ExecutionId} failed", message.ExecutionId);

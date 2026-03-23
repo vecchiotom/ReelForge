@@ -97,6 +97,11 @@ public class ParallelStepExecutor : IStepExecutor
             context.Step.StepOrder, resolved.Count, string.Join(", ", resolved.Select(r => r.Name)));
 
         string stepInput = context.BuildAgentInput();
+        _logger.LogDebug(
+            "Parallel step {StepOrder} input prepared (Chars={InputChars}, Preview={InputPreview})",
+            context.Step.StepOrder,
+            stepInput.Length,
+            CreateResponsePreview(stepInput, 300));
 
         // Execute all agents in parallel
         ParallelAgentOutput[] results = new ParallelAgentOutput[resolved.Count];
@@ -135,6 +140,13 @@ public class ParallelStepExecutor : IStepExecutor
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
         });
+
+        _logger.LogInformation(
+            "Parallel step {StepOrder} completed: AgentCount={AgentCount}, TotalDurationMs={TotalDurationMs}, TotalTokens={TotalTokens}",
+            context.Step.StepOrder,
+            resolved.Count,
+            totalDurationMs,
+            totalTokens);
 
         return new StepExecutionResult
         {

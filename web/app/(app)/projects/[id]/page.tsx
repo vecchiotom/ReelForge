@@ -2,7 +2,7 @@
 
 import { use, useState } from 'react';
 import { Tabs, Loader, Center, Text, Stack, Group, Button, ActionIcon, Card, TextInput, Checkbox } from '@mantine/core';
-import { IconFiles, IconTopologyRing, IconInfoCircle, IconEdit, IconTrash, IconArrowRight, IconVideo } from '@tabler/icons-react';
+import { IconFiles, IconTopologyRing, IconInfoCircle, IconEdit, IconTrash, IconArrowRight, IconVideo, IconRefresh } from '@tabler/icons-react';
 import { useProject } from '@/lib/hooks/use-projects';
 import { useProjectFiles } from '@/lib/hooks/use-files';
 import { useWorkflows } from '@/lib/hooks/use-workflows';
@@ -14,6 +14,8 @@ import {
   createFolder,
   renameFolder,
   deleteFolder,
+  reindexProjectFile,
+  reindexProjectFiles,
 } from '@/lib/api/files';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { ProjectForm } from '@/components/projects/ProjectForm';
@@ -155,6 +157,40 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     }
   };
 
+  const handleReindexFile = async (file: ProjectFile) => {
+    try {
+      await reindexProjectFile(id, file.id);
+      await mutateFiles();
+      notifications.show({ title: 'Queued', message: `Reindex queued for ${file.originalFileName}`, color: 'green' });
+    } catch {
+      notifications.show({ title: 'Error', message: 'Failed to queue file reindex', color: 'red' });
+    }
+  };
+
+  const handleReindexProject = async () => {
+    const confirmed = window.confirm(
+      'Queue reindex for up to 25 eligible files now? This limit helps reduce model rate-limit spikes. You can run again for additional batches.',
+    );
+
+    if (!confirmed)
+      return;
+
+    try {
+      const result = await reindexProjectFiles(id, { maxFiles: 25, includeIndexed: false });
+      await mutateFiles();
+
+      notifications.show({
+        title: 'Queued',
+        message: result.hasMore
+          ? `Queued ${result.queuedFiles} files (${result.eligibleFiles} eligible). Run again to queue the next batch.`
+          : `Queued ${result.queuedFiles} files.`,
+        color: 'green',
+      });
+    } catch {
+      notifications.show({ title: 'Error', message: 'Failed to queue project reindex', color: 'red' });
+    }
+  };
+
   return (
     <>
       <PageHeader
@@ -186,6 +222,12 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
 
         <Tabs.Panel value="files">
           <Stack gap="md">
+            <Group justify="space-between">
+              <Text size="sm" c="dimmed">Indexing badges show semantic search readiness per file.</Text>
+              <Button leftSection={<IconRefresh size={16} />} variant="light" onClick={handleReindexProject}>
+                Reindex project (batch)
+              </Button>
+            </Group>
             <TextInput
               label="Upload path"
               placeholder="Optional base directory, e.g. docs/source"
@@ -243,6 +285,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                 onSelect={setSelectedFile}
                 onDownload={handleDownloadFile}
                 onMove={handleMoveSingleFile}
+                onReindex={handleReindexFile}
               />
             ) : (
               <EmptyState title="No files" description="Upload files to analyze in your workflows." />

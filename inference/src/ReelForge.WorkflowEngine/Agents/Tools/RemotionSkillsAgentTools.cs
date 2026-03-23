@@ -12,10 +12,14 @@ namespace ReelForge.WorkflowEngine.Agents.Tools;
 public class RemotionSkillsAgentTools
 {
     private readonly RemotionSkillsService _skillsService;
+    private readonly ILogger<RemotionSkillsAgentTools> _logger;
 
-    public RemotionSkillsAgentTools(RemotionSkillsService skillsService)
+    public RemotionSkillsAgentTools(
+        RemotionSkillsService skillsService,
+        ILogger<RemotionSkillsAgentTools> logger)
     {
         _skillsService = skillsService;
+        _logger = logger;
     }
 
     [Description(
@@ -26,7 +30,17 @@ public class RemotionSkillsAgentTools
     public async Task<string> SearchRemotionSkills(
         [Description("Search query — a topic keyword like 'animations', 'transitions', 'fonts', '3d', 'audio', etc.")] string query)
     {
-        IReadOnlyList<SkillFileEntry> results = await _skillsService.SearchSkillsAsync(query);
+        if (string.IsNullOrWhiteSpace(query))
+            return "Search query is required.";
+        string safeQuery = query;
+
+        _logger.LogInformation(
+            "Tool call search_remotion_skills (QueryLength={QueryLength})",
+            safeQuery.Length);
+        IReadOnlyList<SkillFileEntry> results = await _skillsService.SearchSkillsAsync(safeQuery);
+        _logger.LogInformation(
+            "Tool result search_remotion_skills returned {ResultCount} match(es)",
+            results.Count);
 
         if (results.Count == 0)
             return "No matching Remotion skill files found. Try a different keyword.";
@@ -43,7 +57,12 @@ public class RemotionSkillsAgentTools
     public async Task<string> ReadRemotionSkill(
         [Description("Topic name (e.g. 'animations', 'transitions') or relative path (e.g. 'rules/animations.md')")] string topicOrPath)
     {
+        _logger.LogInformation("Tool call read_remotion_skill ({TopicOrPath})", topicOrPath);
         string? content = await _skillsService.ReadSkillAsync(topicOrPath);
+        _logger.LogInformation(
+            "Tool result read_remotion_skill found={Found} (TopicOrPath={TopicOrPath})",
+            content != null,
+            topicOrPath);
 
         if (content == null)
             return $"Remotion skill '{topicOrPath}' not found. Use SearchRemotionSkills to discover available topics.";
@@ -56,7 +75,11 @@ public class RemotionSkillsAgentTools
         "covering animations, compositions, timing, transitions, audio, 3D, text, and more.")]
     public async Task<string> ListAllRemotionSkills()
     {
+        _logger.LogInformation("Tool call list_all_remotion_skills");
         IReadOnlyList<SkillFileEntry> entries = await _skillsService.ListSkillsAsync();
+        _logger.LogInformation(
+            "Tool result list_all_remotion_skills returned {EntryCount} topic(s)",
+            entries.Count);
 
         var summaries = entries.Select(e => new { e.Topic, e.Description });
         return JsonSerializer.Serialize(summaries, new JsonSerializerOptions { WriteIndented = true });

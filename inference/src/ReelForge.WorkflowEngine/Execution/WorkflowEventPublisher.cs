@@ -1,11 +1,14 @@
 using MassTransit;
 using ReelForge.Shared.Data.Models;
 using ReelForge.Shared.IntegrationEvents;
+using ReelForge.WorkflowEngine.Agents;
 
 namespace ReelForge.WorkflowEngine.Execution;
 
 public class WorkflowEventPublisher : IWorkflowEventPublisher
 {
+    private const int MaxPreviewLength = 1500;
+
     private readonly IPublishEndpoint _publishEndpoint;
     private readonly ILogger<WorkflowEventPublisher> _logger;
 
@@ -99,10 +102,70 @@ public class WorkflowEventPublisher : IWorkflowEventPublisher
             AttemptCount = stepExecutionResult.AttemptCount,
             RetryCount = stepExecutionResult.RetryCount,
             DurationMs = stepResult.DurationMs,
+            ToolCallCount = stepExecutionResult.ToolCalls.Count,
+            ReasoningCount = stepExecutionResult.Reasoning.Count,
             ErrorDetails = stepResult.ErrorDetails,
             OutputStorageKey = stepResult.OutputStorageKey,
             CompletedAt = stepResult.CompletedAt ?? DateTime.UtcNow
         }, ct);
+    }
+
+    public async Task PublishStepDiagnosticsAsync(
+        WorkflowExecution execution,
+        WorkflowStep step,
+        WorkflowStepResult stepResult,
+        StepExecutionResult stepExecutionResult,
+        CancellationToken ct)
+    {
+        if (stepExecutionResult.ToolCalls.Count == 0 && stepExecutionResult.Reasoning.Count == 0)
+            return;
+
+        for (int index = 0; index < stepExecutionResult.ToolCalls.Count; index++)
+        {
+            AgentToolCallTrace toolCall = stepExecutionResult.ToolCalls[index];
+            await _publishEndpoint.Publish(new WorkflowStepToolCalled
+            {
+                ExecutionId = execution.Id,
+                StepId = step.Id,
+                StepResultId = stepResult.Id,
+                ProjectId = execution.ProjectId,
+                WorkflowDefinitionId = execution.WorkflowDefinitionId,
+                StepOrder = step.StepOrder,
+                StepLabel = step.Label,
+                AgentType = step.AgentDefinition?.AgentType.ToString(),
+                AgentName = step.AgentDefinition?.Name,
+                CorrelationId = execution.CorrelationId,
+                Sequence = index + 1,
+                ToolName = toolCall.ToolName,
+                ArgumentsPreview = Clip(toolCall.Arguments),
+                ResultPreview = Clip(toolCall.Result),
+                OccurredAt = DateTime.UtcNow
+            }, ct);
+        }
+
+        for (int index = 0; index < stepExecutionResult.Reasoning.Count; index++)
+        {
+            string reasoning = stepExecutionResult.Reasoning[index];
+            if (string.IsNullOrWhiteSpace(reasoning))
+                continue;
+
+            await _publishEndpoint.Publish(new WorkflowStepReasoningCaptured
+            {
+                ExecutionId = execution.Id,
+                StepId = step.Id,
+                StepResultId = stepResult.Id,
+                ProjectId = execution.ProjectId,
+                WorkflowDefinitionId = execution.WorkflowDefinitionId,
+                StepOrder = step.StepOrder,
+                StepLabel = step.Label,
+                AgentType = step.AgentDefinition?.AgentType.ToString(),
+                AgentName = step.AgentDefinition?.Name,
+                CorrelationId = execution.CorrelationId,
+                Sequence = index + 1,
+                Content = Clip(reasoning) ?? string.Empty,
+                OccurredAt = DateTime.UtcNow
+            }, ct);
+        }
     }
 
     public Task PublishExecutionCompletedAsync(WorkflowExecution execution, CancellationToken ct)
@@ -144,5 +207,14 @@ public class WorkflowEventPublisher : IWorkflowEventPublisher
             ErrorMessage = execution.ErrorMessage ?? "Unknown workflow execution failure.",
             FailedAt = execution.CompletedAt ?? DateTime.UtcNow
         }, ct);
+    }
+
+    private static string? Clip(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        string trimmed = value.Trim();
+        return trimmed.Length <= MaxPreviewLength ? trimmed : trimmed[..MaxPreviewLength];
     }
 }

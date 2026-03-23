@@ -82,9 +82,53 @@ public record WorkflowStepCompleted
     public int? AttemptCount { get; init; }
     public int? RetryCount { get; init; }
     public long DurationMs { get; init; }
+    public int ToolCallCount { get; init; }
+    public int ReasoningCount { get; init; }
     public string? ErrorDetails { get; init; }
     public string? OutputStorageKey { get; init; }
     public DateTime CompletedAt { get; init; } = DateTime.UtcNow;
+}
+
+/// <summary>
+/// Published when an agent invokes a tool while executing a workflow step.
+/// </summary>
+public record WorkflowStepToolCalled
+{
+    public Guid ExecutionId { get; init; }
+    public Guid StepId { get; init; }
+    public Guid StepResultId { get; init; }
+    public Guid? ProjectId { get; init; }
+    public Guid? WorkflowDefinitionId { get; init; }
+    public int? StepOrder { get; init; }
+    public string? StepLabel { get; init; }
+    public string? AgentType { get; init; }
+    public string? AgentName { get; init; }
+    public string CorrelationId { get; init; } = string.Empty;
+    public int Sequence { get; init; }
+    public string ToolName { get; init; } = string.Empty;
+    public string? ArgumentsPreview { get; init; }
+    public string? ResultPreview { get; init; }
+    public DateTime OccurredAt { get; init; } = DateTime.UtcNow;
+}
+
+/// <summary>
+/// Published when model reasoning text is available for a workflow step.
+/// </summary>
+public record WorkflowStepReasoningCaptured
+{
+    public Guid ExecutionId { get; init; }
+    public Guid StepId { get; init; }
+    public Guid StepResultId { get; init; }
+    public Guid? ProjectId { get; init; }
+    public Guid? WorkflowDefinitionId { get; init; }
+    public int? StepOrder { get; init; }
+    public string? StepLabel { get; init; }
+    public string? AgentType { get; init; }
+    public string? AgentName { get; init; }
+    public string CorrelationId { get; init; } = string.Empty;
+    public int Sequence { get; init; }
+    public string Content { get; init; } = string.Empty;
+    public DateTime OccurredAt { get; init; } = DateTime.UtcNow;
 }
 
 /// <summary>

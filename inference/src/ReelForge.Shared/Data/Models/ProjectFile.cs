@@ -30,6 +30,9 @@ public class ProjectFile
     public long SizeBytes { get; set; }
     public string? AgentSummary { get; set; }
     public SummaryStatus SummaryStatus { get; set; } = SummaryStatus.Pending;
+    public FileIndexingStatus IndexingStatus { get; set; } = FileIndexingStatus.NotIndexed;
+    public DateTime? IndexedAt { get; set; }
+    public string? IndexingError { get; set; }
     public DateTime UploadedAt { get; set; } = DateTime.UtcNow;
 
     public Project Project { get; set; } = null!;

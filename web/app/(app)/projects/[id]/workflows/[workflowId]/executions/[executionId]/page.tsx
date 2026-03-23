@@ -2,8 +2,8 @@
 
 import { use, useEffect, useState, useCallback, useMemo } from 'react';
 import { Stack, Card, Group, Text, Badge, Loader, Center, Progress, Timeline, Paper, Alert, Modal, Divider, ScrollArea, Button, SimpleGrid } from '@mantine/core';
-import { IconPlayerPlay, IconCheck, IconX, IconClock, IconAlertCircle, IconPlayerStop, IconBolt, IconActivity } from '@tabler/icons-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { IconPlayerPlay, IconCheck, IconX, IconClock, IconAlertCircle, IconPlayerStop, IconBolt, IconActivity, IconTool, IconBrain } from '@tabler/icons-react';
+import { motion } from 'framer-motion';
 import {
   ReactFlow,
   Background,
@@ -25,7 +25,7 @@ import { getExecution, stopExecution } from '@/lib/api/executions';
 import type { WorkflowExecution, WorkflowDefinition, WorkflowStepResult } from '@/lib/types/workflow';
 import { formatDate, formatDurationLong } from '@/lib/utils/format';
 import { JsonViewer } from '@/components/workflows/JsonViewer';
-import { useExecutionStream } from '@/lib/hooks/use-execution-stream';
+import { useExecutionStream, type ExecutionStreamEvent } from '@/lib/hooks/use-execution-stream';
 
 function isTerminalExecutionStatus(status: WorkflowExecution['status'] | undefined): boolean {
   return status === 'Passed' || status === 'Failed' || status === 'Cancelled';
@@ -66,8 +66,136 @@ function getEventBadgeColor(eventType: string): string {
   if (eventType === 'step.started') {
     return 'cyan';
   }
+  if (eventType === 'step.tool-called') {
+    return 'indigo';
+  }
+  if (eventType === 'step.reasoning') {
+    return 'grape';
+  }
 
   return 'violet';
+}
+
+function getEventTitle(event: ExecutionStreamEvent): string {
+  if (event.type === 'execution.running') return 'Workflow started';
+  if (event.type === 'execution.completed') return 'Workflow completed';
+  if (event.type === 'execution.failed') return 'Workflow failed';
+  if (event.type === 'step.started') return 'Step started';
+  if (event.type === 'step.tool-called') return 'Tool call';
+  if (event.type === 'step.reasoning') return 'Model reasoning';
+  return 'Step completed';
+}
+
+function getEventIcon(eventType: ExecutionStreamEvent['type']) {
+  if (eventType === 'execution.completed') return <IconCheck size={12} />;
+  if (eventType === 'execution.failed') return <IconX size={12} />;
+  if (eventType === 'execution.running') return <IconActivity size={12} />;
+  if (eventType === 'step.started') return <IconClock size={12} />;
+  if (eventType === 'step.tool-called') return <IconTool size={12} />;
+  if (eventType === 'step.reasoning') return <IconBrain size={12} />;
+  return <IconPlayerPlay size={12} />;
+}
+
+function getEventMetadata(event: ExecutionStreamEvent): string[] {
+  const metadata: string[] = [];
+
+  const stepOrder = getPayloadNumber(event.payload, 'stepOrder', 'StepOrder');
+  if (stepOrder > 0) {
+    metadata.push(`Step #${stepOrder}`);
+  }
+
+  const stepLabel = getPayloadString(event.payload, 'stepLabel', 'StepLabel');
+  if (stepLabel) {
+    metadata.push(stepLabel);
+  }
+
+  const agentName = getPayloadString(event.payload, 'agentName', 'AgentName');
+  if (agentName) {
+    metadata.push(agentName);
+  }
+
+  if (event.type === 'step.completed') {
+    const status = getPayloadString(event.payload, 'stepStatus', 'StepStatus');
+    const durationMs = getPayloadNumber(event.payload, 'durationMs', 'DurationMs');
+    const tokens = getPayloadNumber(event.payload, 'tokensUsed', 'TokensUsed');
+
+    if (status) metadata.push(`Status: ${status}`);
+    if (durationMs > 0) metadata.push(`${Math.round(durationMs)}ms`);
+    if (tokens > 0) metadata.push(`${tokens.toLocaleString()} tokens`);
+  }
+
+  if (event.type === 'step.tool-called') {
+    const toolName = getPayloadString(event.payload, 'toolName', 'ToolName');
+    const sequence = getPayloadNumber(event.payload, 'sequence', 'Sequence');
+    if (toolName) metadata.push(`Tool: ${toolName}`);
+    if (sequence > 0) metadata.push(`Call #${sequence}`);
+  }
+
+  if (event.type === 'step.reasoning') {
+    const sequence = getPayloadNumber(event.payload, 'sequence', 'Sequence');
+    if (sequence > 0) metadata.push(`Reasoning #${sequence}`);
+  }
+
+  return metadata;
+}
+
+function getEventBody(event: ExecutionStreamEvent): string | null {
+  if (event.type === 'execution.failed') {
+    return getPayloadString(event.payload, 'errorMessage', 'ErrorMessage') || null;
+  }
+
+  if (event.type === 'step.tool-called') {
+    return getPayloadString(event.payload, 'argumentsPreview', 'ArgumentsPreview')
+      || getPayloadString(event.payload, 'resultPreview', 'ResultPreview')
+      || null;
+  }
+
+  if (event.type === 'step.reasoning') {
+    return getPayloadString(event.payload, 'content', 'Content') || null;
+  }
+
+  if (event.type === 'step.completed') {
+    return getPayloadString(event.payload, 'errorDetails', 'ErrorDetails') || null;
+  }
+
+  return null;
+}
+
+function ExecutionEventCard({ event }: { event: ExecutionStreamEvent }) {
+  const [showRaw, setShowRaw] = useState(false);
+  const metadata = getEventMetadata(event);
+  const body = getEventBody(event);
+
+  return (
+    <Paper withBorder p="sm" radius="md">
+      <Group justify="space-between" align="flex-start" mb={6}>
+        <Group gap="xs" wrap="wrap">
+          <Badge size="xs" color={getEventBadgeColor(event.type)}>{event.type}</Badge>
+          <Text size="sm" fw={600}>{getEventTitle(event)}</Text>
+        </Group>
+        <Text size="xs" c="dimmed">{new Date(event.timestamp).toLocaleTimeString()}</Text>
+      </Group>
+
+      {metadata.length > 0 && (
+        <Group gap={6} wrap="wrap" mb={body ? 6 : 0}>
+          {metadata.map((item) => (
+            <Badge key={item} size="xs" variant="light" color="gray">{item}</Badge>
+          ))}
+        </Group>
+      )}
+
+      {body && (
+        <Text size="xs" c="dimmed" style={{ whiteSpace: 'pre-wrap' }} mb={8}>
+          {body}
+        </Text>
+      )}
+
+      <Button variant="subtle" size="compact-xs" onClick={() => setShowRaw((current) => !current)}>
+        {showRaw ? 'Hide raw payload' : 'Show raw payload'}
+      </Button>
+      {showRaw && <JsonViewer label="Event payload" value={JSON.stringify(event.payload)} />}
+    </Paper>
+  );
 }
 
 function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; workflowId: string; executionId: string }> }) {
@@ -533,13 +661,7 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
                             <Text size="xs" c="dimmed">Waiting for step events...</Text>
                           ) : (
                             selectedStepEvents.map((event, index) => (
-                              <Paper key={`${event.id}-${index}`} withBorder p="xs" radius="sm">
-                                <Group justify="space-between" mb={4}>
-                                  <Badge size="xs" color={getEventBadgeColor(event.type)}>{event.type}</Badge>
-                                  <Text size="xs" c="dimmed">{new Date(event.timestamp).toLocaleTimeString()}</Text>
-                                </Group>
-                                <Text size="xs" style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(event.payload, null, 2)}</Text>
-                              </Paper>
+                              <ExecutionEventCard key={`${event.id}-${index}`} event={event} />
                             ))
                           )}
                         </Stack>
@@ -593,42 +715,26 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
                 {lastError}
               </Alert>
             )}
-            <AnimatePresence>
-              {events.length === 0 ? (
-                <Text size="sm" c="dimmed">Waiting for events...</Text>
-              ) : (
-                <Timeline active={events.length - 1} bulletSize={24} lineWidth={2}>
-                  {events.map((event, i) => (
-                    <Timeline.Item
-                      key={i}
-                      bullet={
-                        event.type === 'execution.completed' ? <IconCheck size={12} />
-                          : event.type === 'execution.failed' ? <IconX size={12} />
-                            : event.type === 'execution.running' ? <IconActivity size={12} />
-                              : event.type === 'step.started' ? <IconClock size={12} />
-                                : <IconPlayerPlay size={12} />
-                      }
-                      title={
-                        <Group gap="xs">
-                          <Badge size="sm" color={getEventBadgeColor(event.type)}>{event.type}</Badge>
-                          <Text size="xs" c="dimmed">{new Date(event.timestamp).toLocaleTimeString()}</Text>
-                        </Group>
-                      }
-                    >
-                      <motion.div
-                        initial={{ opacity: 0, x: -20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{ duration: 0.3 }}
-                      >
-                        <Text size="xs" c="dimmed" mt={4} style={{ whiteSpace: 'pre-wrap' }}>
-                          {JSON.stringify(event.payload, null, 2)}
-                        </Text>
-                      </motion.div>
-                    </Timeline.Item>
-                  ))}
-                </Timeline>
-              )}
-            </AnimatePresence>
+            {events.length === 0 ? (
+              <Text size="sm" c="dimmed">Waiting for events...</Text>
+            ) : (
+              <Timeline active={events.length - 1} bulletSize={24} lineWidth={2}>
+                {events.map((event, i) => (
+                  <Timeline.Item
+                    key={i}
+                    bullet={getEventIcon(event.type)}
+                    title={
+                      <Group gap="xs">
+                        <Badge size="sm" color={getEventBadgeColor(event.type)}>{event.type}</Badge>
+                        <Text size="xs" c="dimmed">{new Date(event.timestamp).toLocaleTimeString()}</Text>
+                      </Group>
+                    }
+                  >
+                    <ExecutionEventCard event={event} />
+                  </Timeline.Item>
+                ))}
+              </Timeline>
+            )}
           </Card>
         </motion.div>
       </Stack>
@@ -737,13 +843,7 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
                     <Text size="sm" c="dimmed">No live updates yet for this step.</Text>
                   ) : (
                     selectedStepEvents.map((event, index) => (
-                      <Paper key={`${event.id}-modal-${index}`} withBorder p="xs" radius="sm">
-                        <Group justify="space-between" mb={4}>
-                          <Badge size="xs" color={getEventBadgeColor(event.type)}>{event.type}</Badge>
-                          <Text size="xs" c="dimmed">{new Date(event.timestamp).toLocaleTimeString()}</Text>
-                        </Group>
-                        <Text size="xs" style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(event.payload, null, 2)}</Text>
-                      </Paper>
+                      <ExecutionEventCard key={`${event.id}-modal-${index}`} event={event} />
                     ))
                   )}
                 </Stack>

@@ -19,6 +19,9 @@ public record ProjectFileResponse(
     long SizeBytes,
     string? AgentSummary,
     string SummaryStatus,
+    string IndexingStatus,
+    DateTime? IndexedAt,
+    string? IndexingError,
     DateTime UploadedAt);
 
 public record ProjectFileContentResponse(
@@ -55,6 +58,10 @@ public record SearchProjectFileChunkResult(
     float Score);
 
 public record SearchProjectFilesResponse(List<SearchProjectFileChunkResult> Results, bool IndexNotReady);
+
+public record ReindexProjectFilesRequest(int MaxFiles = 25, bool IncludeIndexed = false);
+
+public record ReindexProjectFilesResponse(int QueuedFiles, int EligibleFiles, bool HasMore);
 
 public record AgentDefinitionResponse(
     Guid Id, string Name, string Description, string SystemPrompt,

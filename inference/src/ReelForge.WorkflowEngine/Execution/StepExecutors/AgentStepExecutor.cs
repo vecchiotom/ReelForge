@@ -54,8 +54,18 @@ public class AgentStepExecutor : IStepExecutor
 
         string stepInput = context.BuildAgentInput();
 
-        _logger.LogInformation("Executing agent step {StepOrder}: {AgentName}",
-            context.Step.StepOrder, agent.Name);
+        _logger.LogInformation(
+            "Executing agent step {StepOrder}: {AgentName} (AgentType={AgentType}, AgentDefinitionId={AgentDefinitionId}, Tools={ToolCount})",
+            context.Step.StepOrder,
+            agent.Name,
+            context.Step.AgentDefinition.AgentType,
+            context.Step.AgentDefinitionId,
+            agent.Tools.Count);
+        _logger.LogDebug(
+            "Agent step {StepOrder} input prepared (Chars={InputChars}, Preview={InputPreview})",
+            context.Step.StepOrder,
+            stepInput.Length,
+            CreatePreview(stepInput, 300));
 
         Stopwatch sw = Stopwatch.StartNew();
         using IDisposable _ = _executionContextAccessor.BeginScope(
@@ -65,11 +75,30 @@ public class AgentStepExecutor : IStepExecutor
         AgentRunResult result = await agent.RunAsync(stepInput, context.CancellationToken);
         sw.Stop();
 
+        _logger.LogInformation(
+            "Agent step {StepOrder}: {AgentName} completed in {DurationMs}ms (Tokens={TotalTokens}, InputTokens={InputTokens}, OutputTokens={OutputTokens}, Success={Success})",
+            context.Step.StepOrder,
+            agent.Name,
+            sw.ElapsedMilliseconds,
+            result.TokensUsed,
+            result.InputTokens,
+            result.OutputTokens,
+            result.Success);
+        _logger.LogDebug(
+            "Agent step {StepOrder} output preview: {OutputPreview}",
+            context.Step.StepOrder,
+            CreatePreview(result.Output, 300));
+
         string? outputStorageKey = _executionContextAccessor.Current?.PendingOutputStorageKey;
 
         if (!result.Success)
         {
             string failureReason = BuildFailureReason(result.Output, result.FailureReason, agent.Name);
+            _logger.LogWarning(
+                "Agent step {StepOrder}: {AgentName} returned failed status. Reason={FailureReason}",
+                context.Step.StepOrder,
+                agent.Name,
+                failureReason);
             return new StepExecutionResult
             {
                 Output = result.Output,
@@ -79,6 +108,8 @@ public class AgentStepExecutor : IStepExecutor
                 TokensUsed = result.TokensUsed,
                 InputTokens = result.InputTokens,
                 OutputTokens = result.OutputTokens,
+                ToolCalls = result.ToolCalls,
+                Reasoning = result.Reasoning,
                 Status = StepStatus.Failed,
                 ErrorDetails = failureReason,
                 OutputStorageKey = outputStorageKey
@@ -98,6 +129,8 @@ public class AgentStepExecutor : IStepExecutor
                     TokensUsed = result.TokensUsed,
                     InputTokens = result.InputTokens,
                     OutputTokens = result.OutputTokens,
+                    ToolCalls = result.ToolCalls,
+                    Reasoning = result.Reasoning,
                     Status = StepStatus.Failed,
                     ErrorDetails = failureReason,
                     OutputStorageKey = outputStorageKey
@@ -115,6 +148,8 @@ public class AgentStepExecutor : IStepExecutor
                     TokensUsed = result.TokensUsed,
                     InputTokens = result.InputTokens,
                     OutputTokens = result.OutputTokens,
+                    ToolCalls = result.ToolCalls,
+                    Reasoning = result.Reasoning,
                     Status = StepStatus.Failed,
                     ErrorDetails = "Author step did not produce a rendered media artifact (missing outputStorageKey).",
                     OutputStorageKey = outputStorageKey
@@ -131,6 +166,8 @@ public class AgentStepExecutor : IStepExecutor
             TokensUsed = result.TokensUsed,
             InputTokens = result.InputTokens,
             OutputTokens = result.OutputTokens,
+            ToolCalls = result.ToolCalls,
+            Reasoning = result.Reasoning,
             Status = StepStatus.Completed,
             OutputStorageKey = outputStorageKey
         };
@@ -153,6 +190,18 @@ public class AgentStepExecutor : IStepExecutor
         }
 
         return false;
+    }
+
+    private static string CreatePreview(string? value, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        string normalized = value.Replace("\r", " ").Replace("\n", " ").Trim();
+        if (normalized.Length <= maxLength)
+            return normalized;
+
+        return normalized[..maxLength];
     }
 
     private static bool TryDetectJsonFailure(string output, out string failureReason)
@@ -306,12 +355,4 @@ public class AgentStepExecutor : IStepExecutor
         return builder.ToString();
     }
 
-    private static string CreatePreview(string text, int maxLength)
-    {
-        string normalized = text.Replace("\r", " ", StringComparison.Ordinal)
-            .Replace("\n", " ", StringComparison.Ordinal)
-            .Trim();
-
-        return normalized.Length <= maxLength ? normalized : normalized[..maxLength];
-    }
 }

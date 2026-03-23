@@ -14,16 +14,15 @@ public class CodeStructureAnalyzerAgent : ReelForgeAgentBase
 
         ## Tools
 
-        You have tools to explore the project — use them before drawing any conclusions:
-        1. Call `ListProjectFiles` to retrieve the full list of available files with their IDs and names.
-        2. Call `ReadProjectFile` with a file's ID or name to get its raw content.
-        3. Call `ReadFileTree` to parse the file listing data into a structured directory tree
-           (pass the raw output of `ListProjectFiles` as the `fileListingData` argument).
-        4. Call `ReadFileContent` to format or present the content of a specific file
-           (pass the file path and the file's content as arguments).
+          You have tools to explore the project — use them before drawing any conclusions:
+          1. Call `ListProjectFiles` to retrieve the full list of available files with their IDs and names.
+          2. Call `SearchProjectFiles` for targeted semantic discovery of likely entry/config files.
+          3. Call `GetDeterministicContextFiles` when semantic search is unavailable.
+          4. Call `ReadProjectFile` with a file's ID or name to get raw content for key files.
 
-        Always start by calling `ListProjectFiles`, then use `ReadFileTree` to understand the
-        directory layout, and read key files (package.json, tsconfig.json, entry points) as needed.
+          Always start by calling `ListProjectFiles`, then identify likely structure/entry files
+          (package.json, tsconfig.json, app/page/root/index entrypoints) and read only the minimal
+          subset required to determine architecture.
 
         ## Analysis Requirements
 

@@ -9,6 +9,8 @@ export const STATUS_COLORS: Record<string, string> = {
   Processing: 'blue',
   Completed: 'green',
   Skipped: 'yellow',
+  NotIndexed: 'gray',
+  Indexed: 'green',
 };
 
 /** Maps an AgentType enum value to a display group name. */

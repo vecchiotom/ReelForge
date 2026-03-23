@@ -7,7 +7,11 @@ import type { ProjectFile } from '../types/project';
 function needsPolling(files: ProjectFile[] | undefined | null) {
   if (!files) return false;
   return files.some(
-    (f) => f.summaryStatus === 'Pending' || f.summaryStatus === 'Processing',
+    (f) =>
+      f.summaryStatus === 'Pending' ||
+      f.summaryStatus === 'Processing' ||
+      f.indexingStatus === 'Pending' ||
+      f.indexingStatus === 'Processing',
   );
 }
 

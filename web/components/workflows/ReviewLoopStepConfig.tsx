@@ -56,7 +56,7 @@ export function ReviewLoopStepConfig({
           placeholder="Optional"
         />
         <Text size="xs" c="dimmed">
-          The ReviewLoop agent expects the target step to produce a 'score' field (1-10) in its output.
+          The ReviewLoop agent expects the target step to produce a &apos;score&apos; field (1-10) in its output.
         </Text>
       </Stack>
 

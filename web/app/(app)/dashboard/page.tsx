@@ -1,6 +1,6 @@
 'use client';
 
-import { SimpleGrid, Card, Text, Group, Stack, Loader, Center } from '@mantine/core';
+import { SimpleGrid, Card, Text, Group, Loader, Center } from '@mantine/core';
 import { IconFolder, IconRobot, IconPlayerPlay } from '@tabler/icons-react';
 import { useProjects } from '@/lib/hooks/use-projects';
 import { useAgents } from '@/lib/hooks/use-agents';

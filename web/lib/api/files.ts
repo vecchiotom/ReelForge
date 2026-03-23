@@ -4,7 +4,11 @@ import type {
   ProjectFileContent,
   MoveProjectFilesRequest,
   RenameFolderRequest,
+  ReindexProjectFilesRequest,
+  ReindexProjectFilesResponse,
 } from '../types/project';
+
+type FileWithRelativePath = File & { webkitRelativePath?: string };
 
 export function getProjectFiles(projectId: string): Promise<ProjectFile[]> {
   return apiFetch<ProjectFile[]>(`/api/v1/projects/${projectId}/files`);
@@ -71,7 +75,7 @@ export function uploadFileWithProgress(
 
     const formData = new FormData();
     formData.append('file', file);
-    const relativePath = options?.relativePath || (file as any).webkitRelativePath;
+    const relativePath = options?.relativePath || (file as FileWithRelativePath).webkitRelativePath;
     if (relativePath) {
       formData.append('relativePath', relativePath);
     }
@@ -148,4 +152,17 @@ export async function downloadFile(projectId: string, fileId: string): Promise<B
   }
 
   return res.blob();
+}
+
+export function reindexProjectFile(projectId: string, fileId: string): Promise<{ fileId: string; status: string }> {
+  return apiFetch<{ fileId: string; status: string }>(`/api/v1/projects/${projectId}/files/${fileId}/reindex`, {
+    method: 'POST',
+  });
+}
+
+export function reindexProjectFiles(projectId: string, payload?: ReindexProjectFilesRequest): Promise<ReindexProjectFilesResponse> {
+  return apiFetch<ReindexProjectFilesResponse>(`/api/v1/projects/${projectId}/files/reindex`, {
+    method: 'POST',
+    body: JSON.stringify(payload ?? {}),
+  });
 }

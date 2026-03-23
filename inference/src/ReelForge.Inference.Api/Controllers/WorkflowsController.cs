@@ -22,17 +22,20 @@ public class WorkflowsController : ControllerBase
     private readonly ICurrentUser _currentUser;
     private readonly IPublishEndpoint _publishEndpoint;
     private readonly WorkflowTemplateProvisioningService _workflowTemplateProvisioningService;
+    private readonly ILogger<WorkflowsController> _logger;
 
     public WorkflowsController(
         InferenceApiDbContext db,
         ICurrentUser currentUser,
         IPublishEndpoint publishEndpoint,
-        WorkflowTemplateProvisioningService workflowTemplateProvisioningService)
+        WorkflowTemplateProvisioningService workflowTemplateProvisioningService,
+        ILogger<WorkflowsController> logger)
     {
         _db = db;
         _currentUser = currentUser;
         _publishEndpoint = publishEndpoint;
         _workflowTemplateProvisioningService = workflowTemplateProvisioningService;
+        _logger = logger;
     }
 
     [HttpGet("templates")]
@@ -221,6 +224,13 @@ public class WorkflowsController : ControllerBase
         WorkflowDefinition? workflow = await _db.WorkflowDefinitions.FirstOrDefaultAsync(w => w.Id == id && w.ProjectId == projectId, ct);
         if (workflow == null) return NotFound();
 
+        _logger.LogInformation(
+            "Workflow execution requested via API (ProjectId={ProjectId}, WorkflowId={WorkflowId}, UserId={UserId}, UserRequestLength={UserRequestLength})",
+            projectId,
+            id,
+            _currentUser.UserId,
+            request?.UserRequest?.Length ?? 0);
+
         string correlationId = Guid.NewGuid().ToString();
 
         WorkflowExecution execution = new()
@@ -238,6 +248,13 @@ public class WorkflowsController : ControllerBase
         _db.WorkflowExecutions.Add(execution);
         await _db.SaveChangesAsync(ct);
 
+        _logger.LogInformation(
+            "Workflow execution queued (ExecutionId={ExecutionId}, WorkflowId={WorkflowId}, ProjectId={ProjectId}, CorrelationId={CorrelationId})",
+            execution.Id,
+            id,
+            projectId,
+            correlationId);
+
         // Publish to RabbitMQ via MassTransit
         await _publishEndpoint.Publish(new WorkflowExecutionRequested
         {
@@ -249,6 +266,11 @@ public class WorkflowsController : ControllerBase
             RequestedAt = DateTime.UtcNow,
             UserRequest = request?.UserRequest
         }, ct);
+
+        _logger.LogInformation(
+            "Workflow execution request published to bus (ExecutionId={ExecutionId}, CorrelationId={CorrelationId})",
+            execution.Id,
+            correlationId);
 
         return StatusCode(201, new WorkflowExecutionResponse(
             execution.Id, execution.WorkflowDefinitionId, execution.Status.ToString(),
@@ -273,11 +295,24 @@ public class WorkflowsController : ControllerBase
             .FirstOrDefaultAsync(e => e.Id == executionId && e.ProjectId == projectId && e.WorkflowDefinitionId == id, ct);
         if (exec == null) return NotFound();
 
+        _logger.LogInformation(
+            "Workflow stop requested via API (ExecutionId={ExecutionId}, WorkflowId={WorkflowId}, ProjectId={ProjectId}, UserId={UserId}, CurrentStatus={CurrentStatus})",
+            executionId,
+            id,
+            projectId,
+            _currentUser.UserId,
+            exec.Status);
+
         await _publishEndpoint.Publish(new WorkflowExecutionStopRequested
         {
             ExecutionId = executionId,
             RequestedByUserId = _currentUser.UserId
         }, ct);
+
+        _logger.LogInformation(
+            "Workflow stop request published to bus (ExecutionId={ExecutionId}, UserId={UserId})",
+            executionId,
+            _currentUser.UserId);
 
         return Accepted();
     }

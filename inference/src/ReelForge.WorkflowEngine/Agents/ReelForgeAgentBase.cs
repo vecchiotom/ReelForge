@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using System.Collections;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using ReelForge.Shared.Data.Models;
@@ -11,6 +12,7 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
     private readonly IChatClient _chatClient;
     private readonly List<AIFunction> _tools;
     private readonly Type? _outputSchemaType;
+    private readonly int _agentRunTimeoutSeconds;
 
     protected ReelForgeAgentBase(
         IChatClient chatClient,
@@ -30,6 +32,10 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
         AgentType = agentType;
         AgentId = agentId;
         _tools = tools?.ToList() ?? new List<AIFunction>();
+        _agentRunTimeoutSeconds = Math.Clamp(
+            configuration.GetValue("WorkflowEngine:AgentRunTimeoutSeconds", 300),
+            30,
+            1800);
 
         string configKey = $"Agents:{name}:SystemPrompt";
         SystemPrompt = BuildSystemPrompt(
@@ -59,47 +65,58 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
         AIAgent agent = CreateAgent();
 
         AgentResponse agentResponse;
+        using CancellationTokenSource timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(_agentRunTimeoutSeconds));
+        CancellationToken effectiveToken = timeoutCts.Token;
 
-        // If structured output is required, configure ResponseFormat at runtime via AgentRunOptions
-        if (_outputSchemaType != null)
+        try
         {
-            // Use reflection to call ChatResponseFormat.ForJsonSchema<T>() with the runtime type
-            var method = typeof(ChatResponseFormat).GetMethod(nameof(ChatResponseFormat.ForJsonSchema),
-                BindingFlags.Public | BindingFlags.Static,
-                null,
-                Type.EmptyTypes,
-                null);
-
-            if (method != null)
+            // If structured output is required, configure ResponseFormat at runtime via AgentRunOptions
+            if (_outputSchemaType != null)
             {
-                var genericMethod = method.MakeGenericMethod(_outputSchemaType);
-                var responseFormat = genericMethod.Invoke(null, null) as ChatResponseFormat;
+                // Use reflection to call ChatResponseFormat.ForJsonSchema<T>() with the runtime type
+                var method = typeof(ChatResponseFormat).GetMethod(nameof(ChatResponseFormat.ForJsonSchema),
+                    BindingFlags.Public | BindingFlags.Static,
+                    null,
+                    Type.EmptyTypes,
+                    null);
 
-                if (responseFormat != null)
+                if (method != null)
                 {
-                    var runOptions = new AgentRunOptions
-                    {
-                        ResponseFormat = responseFormat
-                    };
+                    var genericMethod = method.MakeGenericMethod(_outputSchemaType);
+                    var responseFormat = genericMethod.Invoke(null, null) as ChatResponseFormat;
 
-                    agentResponse = await agent.RunAsync(prompt, options: runOptions, cancellationToken: ct);
+                    if (responseFormat != null)
+                    {
+                        var runOptions = new AgentRunOptions
+                        {
+                            ResponseFormat = responseFormat
+                        };
+
+                        agentResponse = await agent.RunAsync(prompt, options: runOptions, cancellationToken: effectiveToken);
+                    }
+                    else
+                    {
+                        // Fallback if reflection fails
+                        agentResponse = await agent.RunAsync(prompt, cancellationToken: effectiveToken);
+                    }
                 }
                 else
                 {
                     // Fallback if reflection fails
-                    agentResponse = await agent.RunAsync(prompt, cancellationToken: ct);
+                    agentResponse = await agent.RunAsync(prompt, cancellationToken: effectiveToken);
                 }
             }
             else
             {
                 // Fallback if reflection fails
-                agentResponse = await agent.RunAsync(prompt, cancellationToken: ct);
+                agentResponse = await agent.RunAsync(prompt, cancellationToken: effectiveToken);
             }
         }
-        else
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && timeoutCts.IsCancellationRequested)
         {
-            // Fallback for agents without structured output schema
-            agentResponse = await agent.RunAsync(prompt, cancellationToken: ct);
+            throw new TimeoutException(
+                $"Agent '{Name}' timed out after {_agentRunTimeoutSeconds} seconds while processing the step.");
         }
 
         var chatResponse = agentResponse.AsChatResponse();
@@ -118,13 +135,130 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
                           ((inputTokens ?? 0) + (outputTokens ?? 0)));
         }
 
+        (IReadOnlyList<AgentToolCallTrace> toolCalls, IReadOnlyList<string> reasoning) = ExtractDiagnostics(agentResponse, chatResponse);
+
         return new AgentRunResult
         {
             Output = output,
             TokensUsed = totalTokens,
             InputTokens = inputTokens,
-            OutputTokens = outputTokens
+            OutputTokens = outputTokens,
+            ToolCalls = toolCalls,
+            Reasoning = reasoning
         };
+    }
+
+    private static (IReadOnlyList<AgentToolCallTrace> ToolCalls, IReadOnlyList<string> Reasoning) ExtractDiagnostics(object agentResponse, object chatResponse)
+    {
+        List<AgentToolCallTrace> toolCalls = [];
+        List<string> reasoning = [];
+
+        ExtractFromContainer(agentResponse, toolCalls, reasoning);
+        ExtractFromContainer(chatResponse, toolCalls, reasoning);
+
+        return (toolCalls, reasoning);
+    }
+
+    private static void ExtractFromContainer(object container, List<AgentToolCallTrace> toolCalls, List<string> reasoning)
+    {
+        foreach (object content in EnumerateProperty(container, "Contents"))
+            ExtractFromContent(content, toolCalls, reasoning);
+
+        foreach (object message in EnumerateProperty(container, "Messages"))
+        {
+            foreach (object content in EnumerateProperty(message, "Contents"))
+            {
+                ExtractFromContent(content, toolCalls, reasoning);
+            }
+        }
+    }
+
+    private static void ExtractFromContent(object content, List<AgentToolCallTrace> toolCalls, List<string> reasoning)
+    {
+        string typeName = content.GetType().Name;
+
+        if (typeName.Contains("FunctionCall", StringComparison.OrdinalIgnoreCase) || typeName.Contains("ToolCall", StringComparison.OrdinalIgnoreCase))
+        {
+            string toolName = ReadStringProperty(content, "Name", "FunctionName", "ToolName") ?? "unknown_tool";
+            string? arguments = ReadStringProperty(content, "Arguments", "ArgumentsJson", "Input", "Value");
+            toolCalls.Add(new AgentToolCallTrace
+            {
+                ToolName = toolName,
+                Arguments = arguments,
+                Result = null
+            });
+            return;
+        }
+
+        if (typeName.Contains("FunctionResult", StringComparison.OrdinalIgnoreCase) || typeName.Contains("ToolResult", StringComparison.OrdinalIgnoreCase))
+        {
+            string? resultText = ReadStringProperty(content, "Result", "Output", "Value", "Text", "Content");
+            if (!string.IsNullOrWhiteSpace(resultText) && toolCalls.Count > 0)
+            {
+                AgentToolCallTrace last = toolCalls[^1];
+                toolCalls[^1] = new AgentToolCallTrace
+                {
+                    ToolName = last.ToolName,
+                    Arguments = last.Arguments,
+                    Result = resultText
+                };
+            }
+            return;
+        }
+
+        if (typeName.Contains("Reasoning", StringComparison.OrdinalIgnoreCase) || typeName.Contains("Thought", StringComparison.OrdinalIgnoreCase))
+        {
+            string? text = ReadStringProperty(content, "Text", "Content", "Value", "Reasoning");
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                reasoning.Add(text);
+            }
+        }
+    }
+
+    private static IEnumerable<object> EnumerateProperty(object instance, string propertyName)
+    {
+        PropertyInfo? property = instance.GetType().GetProperty(propertyName, BindingFlags.Public | BindingFlags.Instance);
+        if (property == null)
+            yield break;
+
+        object? value = property.GetValue(instance);
+        if (value is null || value is string)
+            yield break;
+
+        if (value is IEnumerable enumerable)
+        {
+            foreach (object? item in enumerable)
+            {
+                if (item != null)
+                    yield return item;
+            }
+        }
+    }
+
+    private static string? ReadStringProperty(object instance, params string[] propertyNames)
+    {
+        foreach (string propertyName in propertyNames)
+        {
+            PropertyInfo? property = instance.GetType().GetProperty(propertyName, BindingFlags.Public | BindingFlags.Instance);
+            if (property == null)
+                continue;
+
+            object? value = property.GetValue(instance);
+            if (value is null)
+                continue;
+
+            if (value is string text && !string.IsNullOrWhiteSpace(text))
+                return text;
+
+            if (value is JsonElement jsonElement)
+                return jsonElement.ToString();
+
+            if (value is not string)
+                return value.ToString();
+        }
+
+        return null;
     }
 
     private AIAgent CreateAgent()

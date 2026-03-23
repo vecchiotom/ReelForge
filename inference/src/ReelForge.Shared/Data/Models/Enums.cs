@@ -23,6 +23,18 @@ public enum SummaryStatus
 }
 
 /// <summary>
+/// Status of semantic/vector indexing for a project file.
+/// </summary>
+public enum FileIndexingStatus
+{
+    NotIndexed,
+    Pending,
+    Processing,
+    Indexed,
+    Failed
+}
+
+/// <summary>
 /// Status of a workflow execution.
 /// </summary>
 public enum ExecutionStatus

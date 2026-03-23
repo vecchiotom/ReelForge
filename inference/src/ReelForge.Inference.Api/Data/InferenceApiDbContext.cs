@@ -63,6 +63,8 @@ public class InferenceApiDbContext : DbContext
                 .OnDelete(DeleteBehavior.Cascade);
             entity.Property(e => e.SummaryStatus)
                 .HasConversion<string>();
+            entity.Property(e => e.IndexingStatus)
+                .HasConversion<string>();
             entity.Property(e => e.StorageMetadataJson)
                 .HasColumnType("jsonb");
 

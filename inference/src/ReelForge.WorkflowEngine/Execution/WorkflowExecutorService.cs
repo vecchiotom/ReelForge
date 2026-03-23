@@ -73,10 +73,14 @@ public class WorkflowExecutorService
             return;
         }
 
-        // if it was cancelled before we started, just bail out
-        if (execution.Status == ExecutionStatus.Cancelled)
+        // only queued executions are eligible to start; this prevents redelivery
+        // or duplicate messages from re-running a completed/cancelled execution
+        if (execution.Status != ExecutionStatus.Queued)
         {
-            _logger.LogInformation("Execution {ExecutionId} was already cancelled, skipping", executionId);
+            _logger.LogInformation(
+                "Execution {ExecutionId} is in status {Status} and will not be started again",
+                executionId,
+                execution.Status);
             ReelForgeDiagnostics.ActiveWorkflows.Add(-1);
             _executionCts.TryRemove(executionId, out _);
             return;
@@ -122,6 +126,15 @@ public class WorkflowExecutorService
                     _logger.LogWarning("No executor for step type {StepType}, using Agent executor", step.StepType);
                     executor = _executors[StepType.Agent];
                 }
+
+                _logger.LogInformation(
+                    "Dispatching execution {ExecutionId} step {StepOrder} ({StepType}) to executor {ExecutorType} (Iteration={IterationCount}, CurrentStepIndex={CurrentStepIndex})",
+                    executionId,
+                    step.StepOrder,
+                    step.StepType,
+                    executor.GetType().Name,
+                    iterationCount,
+                    currentStepIndex);
 
                 StepExecutionContext context = new()
                 {
@@ -193,6 +206,7 @@ public class WorkflowExecutorService
 
                     await db.SaveChangesAsync(ct);
                     await _eventPublisher.PublishStepCompletedAsync(execution, step, stepResult, result, ct);
+                    await _eventPublisher.PublishStepDiagnosticsAsync(execution, step, stepResult, result, ct);
                     throw;
                 }
 
@@ -265,6 +279,7 @@ public class WorkflowExecutorService
                     throw;
                 }
                 await _eventPublisher.PublishStepCompletedAsync(execution, step, stepResult, result, ct);
+                await _eventPublisher.PublishStepDiagnosticsAsync(execution, step, stepResult, result, ct);
 
                 ReelForgeDiagnostics.StepDuration.Record(result.DurationMs,
                     new KeyValuePair<string, object?>("step.type", step.StepType.ToString()),
@@ -316,6 +331,12 @@ public class WorkflowExecutorService
                 new KeyValuePair<string, object?>("status", "passed"));
 
             _logger.LogInformation("Workflow execution {ExecutionId} completed successfully", executionId);
+            _logger.LogInformation(
+                "Execution {ExecutionId} summary: FinalStatus={Status}, Iterations={IterationCount}, StepOutputsRecorded={StepOutputCount}",
+                executionId,
+                execution.Status,
+                execution.IterationCount,
+                stepOutputHistory.Count);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -323,9 +344,9 @@ public class WorkflowExecutorService
             execution.Status = ExecutionStatus.Cancelled;
             execution.ErrorMessage = "Cancelled by user request";
             execution.CompletedAt = DateTime.UtcNow;
-            await db.SaveChangesAsync(ct);
+            await db.SaveChangesAsync(CancellationToken.None);
             // publish as failed so existing consumers treat it similarly
-            await _eventPublisher.PublishExecutionFailedAsync(execution, ct);
+            await _eventPublisher.PublishExecutionFailedAsync(execution, CancellationToken.None);
 
             ReelForgeDiagnostics.CompletedWorkflows.Add(1,
                 new KeyValuePair<string, object?>("status", "cancelled"));
@@ -395,23 +416,6 @@ public class WorkflowExecutorService
             else
             {
                 _logger.LogDebug("No queued message found for execution {ExecutionId} during cancellation", executionId);
-            }
-        }
-
-        if (execution.Status == ExecutionStatus.Queued)
-        {
-            // if we haven't yet processed the message, try to remove it from the
-            // RabbitMQ queue so it doesn't get dispatched later. it's okay if the
-            // call fails or the message has already been consumed; the status
-            // update below will ensure the execution stays cancelled.
-            bool removed = await _rabbitHelper.RemoveExecutionMessageAsync(executionId);
-            if (removed)
-            {
-                _logger.LogInformation("Removed queued message for cancelled execution {ExecutionId}", executionId);
-            }
-            else
-            {
-                _logger.LogDebug("No queued message was found for execution {ExecutionId} during cancellation", executionId);
             }
         }
 

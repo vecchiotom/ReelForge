@@ -15,22 +15,32 @@ interface SchemaField {
   children?: SchemaField[];
 }
 
-function parseProperties(properties: Record<string, any>, parentPath: string): SchemaField[] {
+interface SchemaNode {
+  type?: string;
+  description?: string;
+  properties?: Record<string, unknown>;
+  items?: {
+    properties?: Record<string, unknown>;
+  };
+}
+
+function parseProperties(properties: Record<string, unknown>, parentPath: string): SchemaField[] {
   return Object.entries(properties).map(([key, value]) => {
+    const node = typeof value === 'object' && value !== null ? (value as SchemaNode) : {};
     const path = parentPath ? `${parentPath}.${key}` : key;
     const field: SchemaField = {
       name: key,
-      type: value.type || 'unknown',
+      type: node.type || 'unknown',
       path,
-      description: value.description,
+      description: node.description,
     };
 
-    if (value.type === 'object' && value.properties) {
-      field.children = parseProperties(value.properties, path);
+    if (node.type === 'object' && node.properties) {
+      field.children = parseProperties(node.properties, path);
     }
 
-    if (value.type === 'array' && value.items?.properties) {
-      field.children = parseProperties(value.items.properties, `${path}[*]`);
+    if (node.type === 'array' && node.items?.properties) {
+      field.children = parseProperties(node.items.properties, `${path}[*]`);
     }
 
     return field;

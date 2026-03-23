@@ -15,12 +15,11 @@ public class DependencyAnalyzerAgent : ReelForgeAgentBase
 
         ## Tools
 
-        You have tools to locate and inspect dependency files — use them:
-        1. Call `ListProjectFiles` to discover all available project files.
-        2. Call `ReadProjectFile` with a file's ID or name to retrieve its raw content.
-        3. Call `ReadPackageManifest` with the content of a manifest file (e.g. package.json)
-           to parse and structure its dependency information.
-        4. Call `ReadFileContent` to read any supplementary file you need to examine.
+          You have tools to locate and inspect dependency files — use them:
+          1. Call `ListProjectFiles` to discover all available project files.
+          2. Call `SearchProjectFiles` to locate dependency manifests/configuration quickly.
+          3. Call `GetDeterministicContextFiles` when semantic search is unavailable.
+          4. Call `ReadProjectFile` with a file's ID or name to retrieve raw manifest/config content.
 
         Always start with `ListProjectFiles`, then identify and read the package manifest file(s)
         before analyzing dependencies.

@@ -31,6 +31,9 @@ export interface ProjectFile {
   storageFileName?: string;
   agentSummary: string | null;
   summaryStatus: 'Pending' | 'Processing' | 'Completed' | 'Failed';
+  indexingStatus: 'NotIndexed' | 'Pending' | 'Processing' | 'Indexed' | 'Failed';
+  indexedAt?: string;
+  indexingError?: string | null;
   uploadedAt: string;
 }
 
@@ -57,4 +60,15 @@ export interface RenameFolderRequest {
 export interface DeleteFolderRequest {
   path: string;
   recursive?: boolean;
+}
+
+export interface ReindexProjectFilesRequest {
+  maxFiles?: number;
+  includeIndexed?: boolean;
+}
+
+export interface ReindexProjectFilesResponse {
+  queuedFiles: number;
+  eligibleFiles: number;
+  hasMore: boolean;
 }

@@ -1,4 +1,11 @@
-export type WorkflowEventType = 'execution.completed' | 'execution.failed' | 'step.completed';
+export type WorkflowEventType =
+  | 'execution.running'
+  | 'execution.completed'
+  | 'execution.failed'
+  | 'step.started'
+  | 'step.completed'
+  | 'step.tool-called'
+  | 'step.reasoning';
 
 export interface WorkflowStatsSnapshot {
   queued: number;

@@ -14,16 +14,14 @@ public class ComponentInventoryAnalyzerAgent : ReelForgeAgentBase
 
         ## Tools
 
-        You have tools to explore component files — use them systematically:
-        1. Call `ListProjectFiles` to get the full list of available project files.
-        2. Call `ListFilesByExtension` to filter the file listing by component extensions
-           (e.g., `.tsx`, `.jsx`, `.vue`) — pass the extension and the listing data.
-        3. Call `ReadProjectFile` with a file's ID or name to read its content.
-        4. Call `ReadFileContent` to format and present the content of a specific file
-           (pass the file path and content as arguments).
+          You have tools to explore component files — use them systematically:
+          1. Call `ListProjectFiles` to get the full list of available project files.
+          2. Call `SearchProjectFiles` with targeted queries like "tsx components", "export default", "props".
+          3. Call `GetDeterministicContextFiles` when semantic search is unavailable.
+          4. Call `ReadProjectFile` with a file's ID or name to read component candidates.
 
-        Start with `ListProjectFiles`, then use `ListFilesByExtension` to quickly find all
-        component files, and read each component file individually using `ReadProjectFile`.
+          Start with `ListProjectFiles`, identify likely component files by extension/path/name,
+          and read only the most relevant files using `ReadProjectFile`.
 
         For each component, extract:
         - Name: The component name

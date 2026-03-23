@@ -8,6 +8,8 @@ import { notifications } from '@mantine/notifications';
 import { uploadFileWithProgress } from '@/lib/api/files';
 import { UploadProgressList, UploadItem } from './UploadProgressList';
 
+type FileWithRelativePath = File & { webkitRelativePath?: string };
+
 interface FileUploadZoneProps {
   projectId: string;
   onSuccess: () => void;
@@ -35,10 +37,10 @@ export function FileUploadZone({ projectId, onSuccess, targetDirectoryPath }: Fi
             .trim()
             .replace(/\\/g, '/')
             .replace(/^\/+|\/+$/g, '');
-          const fileRelativePath = (item.file as any).webkitRelativePath || item.file.name;
+          const fileRelativePath = (item.file as FileWithRelativePath).webkitRelativePath || item.file.name;
           const finalRelativePath = basePath ? `${basePath}/${fileRelativePath}` : fileRelativePath;
 
-          const result = await uploadFileWithProgress(
+          await uploadFileWithProgress(
             projectId,
             item.file,
             (pct) => {
@@ -88,7 +90,7 @@ export function FileUploadZone({ projectId, onSuccess, targetDirectoryPath }: Fi
         loading={anyUploading}
         maxSize={100 * 1024 * 1024}
         inputProps={{
-          ...( { webkitdirectory: '', directory: '' } as any ),
+          ...({ webkitdirectory: '', directory: '' } as Record<string, string>),
           multiple: true,
         }}
       >

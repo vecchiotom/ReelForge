@@ -1,6 +1,6 @@
 'use client';
 
-import { Card, Text, Stack, Group, Badge, Loader, Center } from '@mantine/core';
+import { Card, Text, Stack, Group, Badge, Loader } from '@mantine/core';
 import { IconServer } from '@tabler/icons-react';
 import Link from 'next/link';
 import { PageHeader } from '@/components/shared/PageHeader';

@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useCallback } from 'react';
 import { Card, Group, Progress, Text, ThemeIcon, ActionIcon, Tooltip } from '@mantine/core';
 import { IconCheck, IconX, IconTrash } from '@tabler/icons-react';
 import type { Dispatch, SetStateAction } from 'react';
@@ -18,14 +18,16 @@ interface UploadProgressListProps {
   setUploads: Dispatch<SetStateAction<UploadItem[]>>;
 }
 
+type FileWithRelativePath = File & { webkitRelativePath?: string };
+
 export function UploadProgressList({ uploads, setUploads }: UploadProgressListProps) {
-  const handleRemove = (id: string) => {
+  const handleRemove = useCallback((id: string) => {
     setUploads((u) => u.filter((x) => x.id !== id));
-  };
+  }, [setUploads]);
 
   // automatically clear completed items after a short delay
   React.useEffect(() => {
-    const timers: Array<NodeJS.Timeout> = [];
+    const timers: Array<ReturnType<typeof setTimeout>> = [];
     uploads.forEach((u) => {
       if (u.status === 'done') {
         const t = setTimeout(() => handleRemove(u.id), 3000);
@@ -35,7 +37,7 @@ export function UploadProgressList({ uploads, setUploads }: UploadProgressListPr
     return () => {
       timers.forEach(clearTimeout);
     };
-  }, [uploads]);
+  }, [uploads, handleRemove]);
 
   return (
     <div style={{ marginTop: 16 }}>
@@ -43,7 +45,7 @@ export function UploadProgressList({ uploads, setUploads }: UploadProgressListPr
         <Card key={u.id} withBorder padding="sm" mb="sm">
           <Group justify="space-between" align="center">
             <Text size="sm" truncate style={{ maxWidth: 300 }}>
-              {(u.file as any).webkitRelativePath || u.file.name}
+              {(u.file as FileWithRelativePath).webkitRelativePath || u.file.name}
             </Text>
             <Group gap="xs">
               {u.status === 'done' && (

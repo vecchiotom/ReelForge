@@ -37,16 +37,35 @@ public class ProjectFileAgentTools
     public async Task<string> ListProjectFiles()
     {
         WorkflowExecutionContext context = RequireContext();
+        _logger.LogInformation(
+            "Tool call list_project_files (ExecutionId={ExecutionId}, ProjectId={ProjectId}, CorrelationId={CorrelationId})",
+            context.ExecutionId,
+            context.ProjectId,
+            context.CorrelationId);
         IReadOnlyList<ProjectWorkspaceFile> files = await _workspace.ListFilesAsync(context.ProjectId, CancellationToken.None);
+        _logger.LogInformation(
+            "Tool result list_project_files returned {FileCount} file(s) for project {ProjectId}",
+            files.Count,
+            context.ProjectId);
         return JsonSerializer.Serialize(files);
     }
 
     [Description("Read a project file by file ID, storage key, or original filename. Only read files that are strictly necessary for the current task/context; avoid broad or exhaustive reading.")]
-    public Task<string> ReadProjectFile(
+    public async Task<string> ReadProjectFile(
         [Description("File ID, storage key, or original filename")] string fileReference)
     {
         WorkflowExecutionContext context = RequireContext();
-        return _workspace.ReadFileAsync(context.ProjectId, fileReference, CancellationToken.None);
+        _logger.LogInformation(
+            "Tool call read_project_file (ExecutionId={ExecutionId}, ProjectId={ProjectId}, Reference={FileReference})",
+            context.ExecutionId,
+            context.ProjectId,
+            fileReference);
+        string content = await _workspace.ReadFileAsync(context.ProjectId, fileReference, CancellationToken.None);
+        _logger.LogInformation(
+            "Tool result read_project_file returned {ContentChars} chars for reference {FileReference}",
+            content.Length,
+            fileReference);
+        return content;
     }
 
     [Description("Search project files semantically using vector index and return the most relevant file snippets for the current project.")]
@@ -55,6 +74,12 @@ public class ProjectFileAgentTools
         [Description("Maximum number of results to return, defaults to 5")] int limit = 5)
     {
         WorkflowExecutionContext context = RequireContext();
+        _logger.LogInformation(
+            "Tool call search_project_files (ExecutionId={ExecutionId}, ProjectId={ProjectId}, QueryLength={QueryLength}, Limit={Limit})",
+            context.ExecutionId,
+            context.ProjectId,
+            query?.Length ?? 0,
+            limit);
         if (string.IsNullOrWhiteSpace(query))
         {
             return JsonSerializer.Serialize(new
@@ -93,6 +118,11 @@ public class ProjectFileAgentTools
                     await BuildDeterministicFallbackCandidatesAsync(context.ProjectId, query, 12));
             }
 
+            _logger.LogInformation(
+                "Tool result search_project_files (ProjectId={ProjectId}, IndexNotReady={IndexNotReady})",
+                context.ProjectId,
+                indexNotReady);
+
             return payload.ToJsonString();
         }
         catch (Exception ex)
@@ -116,7 +146,17 @@ public class ProjectFileAgentTools
         [Description("Maximum number of files to return, defaults to 12")] int maxFiles = 12)
     {
         WorkflowExecutionContext context = RequireContext();
+        _logger.LogInformation(
+            "Tool call get_deterministic_context_files (ExecutionId={ExecutionId}, ProjectId={ProjectId}, FocusQueryLength={FocusQueryLength}, MaxFiles={MaxFiles})",
+            context.ExecutionId,
+            context.ProjectId,
+            focusQuery?.Length ?? 0,
+            maxFiles);
         IReadOnlyList<object> candidates = await BuildDeterministicFallbackCandidatesAsync(context.ProjectId, focusQuery, maxFiles);
+        _logger.LogInformation(
+            "Tool result get_deterministic_context_files returned {CandidateCount} candidate file(s) for project {ProjectId}",
+            candidates.Count,
+            context.ProjectId);
         return JsonSerializer.Serialize(new
         {
             mode = "deterministic-fallback",
@@ -131,16 +171,33 @@ public class ProjectFileAgentTools
         [Description("File contents to store")] string content,
         [Description("MIME type, defaults to text/plain")] string? contentType = null)
     {
+        if (string.IsNullOrEmpty(content))
+            throw new InvalidOperationException("content is required.");
+        string safeContent = content;
+
         WorkflowExecutionContext context = RequireContext();
+        _logger.LogInformation(
+            "Tool call write_project_file (ExecutionId={ExecutionId}, ProjectId={ProjectId}, FileName={FileName}, ContentChars={ContentChars}, ContentType={ContentType})",
+            context.ExecutionId,
+            context.ProjectId,
+            fileName,
+            safeContent.Length,
+            contentType ?? "text/plain");
         // treat the provided name as the original path and basename (agentFiles category)
         ProjectWorkspaceFile file = await _workspace.WriteTextFileAsync(
             context.ProjectId,
             Path.GetFileName(fileName),
-            content,
+            safeContent,
             string.IsNullOrWhiteSpace(contentType) ? "text/plain" : contentType,
             CancellationToken.None,
             category: "agentFiles",
             originalPath: fileName);
+
+        _logger.LogInformation(
+            "Tool result write_project_file wrote file {FileId} ({OriginalFileName}) with storage key {StorageKey}",
+            file.Id,
+            file.OriginalFileName,
+            file.StorageKey);
 
         return JsonSerializer.Serialize(file);
     }

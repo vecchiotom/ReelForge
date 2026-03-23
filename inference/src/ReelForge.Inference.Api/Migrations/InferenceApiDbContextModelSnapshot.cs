@@ -214,6 +214,19 @@ namespace ReelForge.Inference.Api.Migrations
                         .HasColumnType("character varying(1000)")
                         .HasColumnName("directory_path");
 
+                    b.Property<DateTime?>("IndexedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("indexed_at");
+
+                    b.Property<string>("IndexingError")
+                        .HasColumnType("text")
+                        .HasColumnName("indexing_error");
+
+                    b.Property<string>("IndexingStatus")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("indexing_status");
+
                     b.Property<string>("MimeType")
                         .IsRequired()
                         .HasColumnType("text")

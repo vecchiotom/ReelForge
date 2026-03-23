@@ -348,9 +348,15 @@ public class ReactRemotionSandboxTools
     public async Task<string> GetSandbox()
     {
         string executionId = RequireContext().ExecutionId.ToString();
+        _logger.LogInformation("Tool call get_sandbox for execution {ExecutionId}", executionId);
         using HttpClient client = CreateClient();
         HttpResponseMessage response = await client.GetAsync($"/api/v1/sandboxes/{executionId}", CancellationToken.None);
         SandboxInfo sandbox = await ReadJsonAsync<SandboxInfo>(response);
+        _logger.LogInformation(
+            "Tool result get_sandbox for execution {ExecutionId}: container={ContainerName}, workspace={WorkspacePath}",
+            executionId,
+            sandbox.ContainerName,
+            sandbox.WorkspacePath);
         return JsonSerializer.Serialize(sandbox);
     }
 
@@ -359,6 +365,10 @@ public class ReactRemotionSandboxTools
         [Description("Relative path inside sandbox workspace, defaults to root")] string path = ".")
     {
         string executionId = RequireContext().ExecutionId.ToString();
+        _logger.LogInformation(
+            "Tool call list_sandbox_files for execution {ExecutionId} at path {Path}",
+            executionId,
+            path);
         string encodedPath = Uri.EscapeDataString(path);
         using HttpClient client = CreateClient();
         HttpResponseMessage response = await client.GetAsync(
@@ -366,6 +376,10 @@ public class ReactRemotionSandboxTools
             CancellationToken.None);
 
         List<SandboxFileEntry> entries = await ReadJsonAsync<List<SandboxFileEntry>>(response);
+        _logger.LogInformation(
+            "Tool result list_sandbox_files for execution {ExecutionId}: {EntryCount} entrie(s)",
+            executionId,
+            entries.Count);
         return JsonSerializer.Serialize(entries);
     }
 
@@ -374,6 +388,10 @@ public class ReactRemotionSandboxTools
         [Description("Relative file path inside sandbox workspace")] string path)
     {
         string executionId = RequireContext().ExecutionId.ToString();
+        _logger.LogInformation(
+            "Tool call read_sandbox_file for execution {ExecutionId}: path={Path}",
+            executionId,
+            path);
         string encodedPath = Uri.EscapeDataString(path);
         using HttpClient client = CreateClient();
         HttpResponseMessage response = await client.GetAsync(
@@ -383,6 +401,11 @@ public class ReactRemotionSandboxTools
         SandboxFileContent payload = await ReadJsonAsync<SandboxFileContent>(response);
         byte[] data = Convert.FromBase64String(payload.ContentBase64);
         string text = Encoding.UTF8.GetString(data);
+        _logger.LogInformation(
+            "Tool result read_sandbox_file for execution {ExecutionId}: path={Path}, chars={CharCount}",
+            executionId,
+            path,
+            text.Length);
         return JsonSerializer.Serialize(new { payload.Path, content = text });
     }
 
@@ -391,16 +414,30 @@ public class ReactRemotionSandboxTools
         [Description("Relative file path inside sandbox workspace")] string path,
         [Description("UTF-8 text content to write")] string content)
     {
+        if (content is null)
+            throw new InvalidOperationException("content is required.");
+        string safeContent = content;
+
         string executionId = RequireContext().ExecutionId.ToString();
+        _logger.LogInformation(
+            "Tool call write_sandbox_file for execution {ExecutionId}: path={Path}, chars={CharCount}",
+            executionId,
+            path,
+            safeContent.Length);
         string encodedPath = Uri.EscapeDataString(path);
         using HttpClient client = CreateClient();
-        string base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(content));
+        string base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(safeContent));
         HttpResponseMessage response = await client.PutAsJsonAsync(
             $"/api/v1/sandboxes/{executionId}/files/content?path={encodedPath}",
             new { contentBase64 = base64 },
             CancellationToken.None);
 
         SandboxActionResult result = await ReadJsonAsync<SandboxActionResult>(response);
+        _logger.LogInformation(
+            "Tool result write_sandbox_file for execution {ExecutionId}: ok={Ok}, path={Path}",
+            executionId,
+            result.Ok,
+            path);
         return JsonSerializer.Serialize(new { result.Ok, path });
     }
 
@@ -409,6 +446,10 @@ public class ReactRemotionSandboxTools
         [Description("Relative file or directory path to remove")] string path)
     {
         string executionId = RequireContext().ExecutionId.ToString();
+        _logger.LogInformation(
+            "Tool call delete_sandbox_path for execution {ExecutionId}: path={Path}",
+            executionId,
+            path);
         string encodedPath = Uri.EscapeDataString(path);
         using HttpClient client = CreateClient();
         HttpResponseMessage response = await client.DeleteAsync(
@@ -416,6 +457,11 @@ public class ReactRemotionSandboxTools
             CancellationToken.None);
 
         SandboxActionResult result = await ReadJsonAsync<SandboxActionResult>(response);
+        _logger.LogInformation(
+            "Tool result delete_sandbox_path for execution {ExecutionId}: ok={Ok}, path={Path}",
+            executionId,
+            result.Ok,
+            path);
         return JsonSerializer.Serialize(new { result.Ok, path });
     }
 
@@ -431,6 +477,12 @@ public class ReactRemotionSandboxTools
         List<string> args = ["run", script];
         if (additionalArgs is { Length: > 0 })
             args.AddRange(additionalArgs);
+
+        _logger.LogInformation(
+            "Tool call run_sandbox_npm_script: script={Script}, argsCount={ArgCount}, timeoutSeconds={TimeoutSeconds}",
+            script,
+            additionalArgs?.Length ?? 0,
+            timeoutSeconds);
 
         return ExecuteSandboxCommand("npm", args.ToArray(), timeoutSeconds);
     }
@@ -460,6 +512,12 @@ public class ReactRemotionSandboxTools
                 commandArgs.Add("--chromium-executable=/workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/chrome-headless-shell");
             }
         }
+
+        _logger.LogInformation(
+            "Tool call run_sandbox_remotion_command: command={Command}, argsCount={ArgCount}, timeoutSeconds={TimeoutSeconds}",
+            command,
+            args?.Length ?? 0,
+            timeoutSeconds);
 
         return ExecuteSandboxCommand("npx", commandArgs.ToArray(), timeoutSeconds);
     }
@@ -600,6 +658,12 @@ public class ReactRemotionSandboxTools
 
         if (!response.Success)
             return JsonSerializer.Serialize(response.ErrorResponse);
+
+        _logger.LogInformation(
+            "Sandbox command succeeded for execution {ExecutionId}: {Command} (args={ArgsCount})",
+            executionId,
+            command,
+            args.Length);
 
         return JsonSerializer.Serialize(response.Payload);
     }

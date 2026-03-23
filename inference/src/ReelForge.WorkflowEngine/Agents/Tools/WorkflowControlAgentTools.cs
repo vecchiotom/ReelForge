@@ -1,4 +1,5 @@
 using System.Threading.Tasks;
+using ReelForge.WorkflowEngine.Execution;
 
 namespace ReelForge.WorkflowEngine.Agents.Tools;
 
@@ -8,6 +9,17 @@ namespace ReelForge.WorkflowEngine.Agents.Tools;
 /// </summary>
 public class WorkflowControlAgentTools
 {
+    private readonly IWorkflowExecutionContextAccessor _executionContextAccessor;
+    private readonly ILogger<WorkflowControlAgentTools> _logger;
+
+    public WorkflowControlAgentTools(
+        IWorkflowExecutionContextAccessor executionContextAccessor,
+        ILogger<WorkflowControlAgentTools> logger)
+    {
+        _executionContextAccessor = executionContextAccessor;
+        _logger = logger;
+    }
+
     /// <summary>
     /// Signals that the workflow cannot continue and must be aborted. The provided reason is
     /// stored on the workflow execution record and shown in the UI. This method never returns;
@@ -20,6 +32,13 @@ public class WorkflowControlAgentTools
     /// <returns>Never returns; always throws.</returns>
     public Task FailWorkflow(string reason)
     {
+        WorkflowExecutionContext? context = _executionContextAccessor.Current;
+        _logger.LogWarning(
+            "Tool call fail_workflow requested (ExecutionId={ExecutionId}, ProjectId={ProjectId}, CorrelationId={CorrelationId}, Reason={Reason})",
+            context?.ExecutionId,
+            context?.ProjectId,
+            context?.CorrelationId,
+            reason);
         throw new AgentWorkflowException(reason);
     }
 }

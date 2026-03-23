@@ -14,17 +14,15 @@ public class StyleAndThemeExtractorAgent : ReelForgeAgentBase
 
         ## Tools
 
-        You have tools to locate and inspect style files — use them:
-        1. Call `ListProjectFiles` to get the full list of available project files.
-        2. Call `ReadProjectFile` with a file's ID or name to retrieve its raw content.
-        3. Call `ReadStyleConfig` with the raw content of a CSS, SCSS, or Tailwind config file
-           to parse and extract design token information.
-        4. Call `ReadFileContent` to read any supplementary file you need to examine
-           (pass the file path and content as arguments).
+          You have tools to locate and inspect style files — use them:
+          1. Call `ListProjectFiles` to get the full list of available project files.
+          2. Call `SearchProjectFiles` with focused queries ("tailwind", "theme", "tokens", "global.css", "variables").
+          3. Call `GetDeterministicContextFiles` when semantic search is unavailable.
+          4. Call `ReadProjectFile` with a file's ID or name to retrieve raw style/config content.
 
         Start with `ListProjectFiles`, identify style/theme files (global.css, tailwind.config.*,
-        theme.ts, tokens.*, variables.*, etc.), read them with `ReadProjectFile`, then pass
-        their content to `ReadStyleConfig` to extract structured design token data.
+          theme.ts, tokens.*, variables.*, etc.), and extract structured design token data directly
+          from the content.
 
         Extract and structure:
 

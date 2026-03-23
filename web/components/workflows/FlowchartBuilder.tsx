@@ -18,8 +18,8 @@ import {
   ReactFlowProvider,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Button, Group, Stack, ActionIcon, Tooltip } from '@mantine/core';
-import { IconPlus, IconLayoutGrid, IconZoomIn, IconZoomOut } from '@tabler/icons-react';
+import { Stack, ActionIcon, Tooltip } from '@mantine/core';
+import { IconPlus, IconLayoutGrid } from '@tabler/icons-react';
 import { AgentNode } from './nodes/AgentNode';
 import { ConditionalNode } from './nodes/ConditionalNode';
 import { ForEachNode } from './nodes/ForEachNode';
@@ -29,13 +29,13 @@ import { AddStepModal } from './AddStepModal';
 import type { StepData } from './WorkflowStepList';
 import type { StepType } from '@/lib/types/workflow';
 
-const nodeTypes: NodeTypes = {
-  agent: AgentNode as any,
-  conditional: ConditionalNode as any,
-  forEach: ForEachNode as any,
-  reviewLoop: ReviewLoopNode as any,
-  parallel: ParallelNode as any,
-};
+const nodeTypes = {
+  agent: AgentNode,
+  conditional: ConditionalNode,
+  forEach: ForEachNode,
+  reviewLoop: ReviewLoopNode,
+  parallel: ParallelNode,
+} satisfies NodeTypes;
 
 interface FlowchartBuilderProps {
   steps: StepData[];
@@ -104,8 +104,8 @@ export function FlowchartBuilder({ steps, onChange }: FlowchartBuilderProps) {
   }, [steps, onChange, setNodes, setEdges]);
 
   const onConnect = useCallback(
-    (params: Connection) => setEdges((eds) => addEdge(params, eds as Edge[]) as Edge[]),
-    [setEdges]
+    (params: Connection) => setEdges((existingEdges) => addEdge(params, existingEdges)),
+    [setEdges],
   );
 
   const handleAddStep = (stepType: StepType) => {

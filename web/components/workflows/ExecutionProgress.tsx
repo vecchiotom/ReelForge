@@ -1,7 +1,7 @@
 'use client';
 
 import { Timeline, Text, Badge, Card, Stack, Group, Loader, Alert } from '@mantine/core';
-import { IconCheck, IconX, IconClock, IconPlayerPlay, IconPlayerSkipForward, IconAlertCircle } from '@tabler/icons-react';
+import { IconCheck, IconX, IconClock, IconPlayerSkipForward, IconAlertCircle } from '@tabler/icons-react';
 import { StatusBadge } from '@/components/projects/StatusBadge';
 import { StepTypeBadge } from './StepTypeBadge';
 import { JsonViewer } from './JsonViewer';

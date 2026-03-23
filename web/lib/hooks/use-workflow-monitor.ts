@@ -43,7 +43,13 @@ function readString(payload: WorkflowEventPayload, key: string): string | null {
 }
 
 function isWorkflowEventType(value: string): value is WorkflowEventType {
-  return value === 'execution.completed' || value === 'execution.failed' || value === 'step.completed';
+  return value === 'execution.running'
+    || value === 'execution.completed'
+    || value === 'execution.failed'
+    || value === 'step.started'
+    || value === 'step.completed'
+    || value === 'step.tool-called'
+    || value === 'step.reasoning';
 }
 
 function toMillis(iso: string): number {
@@ -136,9 +142,13 @@ export function useWorkflowMonitor() {
     };
 
     source.addEventListener('connected', onConnected);
+    source.addEventListener('execution.running', upsertEvent('execution.running'));
     source.addEventListener('execution.completed', upsertEvent('execution.completed'));
     source.addEventListener('execution.failed', upsertEvent('execution.failed'));
+    source.addEventListener('step.started', upsertEvent('step.started'));
     source.addEventListener('step.completed', upsertEvent('step.completed'));
+    source.addEventListener('step.tool-called', upsertEvent('step.tool-called'));
+    source.addEventListener('step.reasoning', upsertEvent('step.reasoning'));
     source.onerror = onError;
 
     return () => {
@@ -202,7 +212,7 @@ export function useWorkflowMonitor() {
       .map((event, index) => ({
         id: event.id,
         lane:
-          event.type === 'step.completed'
+          event.type === 'step.started' || event.type === 'step.completed' || event.type === 'step.tool-called' || event.type === 'step.reasoning'
             ? ('execution' as const)
             : ('egress' as const),
         delayMs: index * 130,
@@ -211,6 +221,8 @@ export function useWorkflowMonitor() {
             ? ('success' as const)
             : event.type === 'execution.failed'
               ? ('failed' as const)
+              : event.type === 'execution.running'
+                ? ('queue' as const)
               : ('step' as const),
       }));
 

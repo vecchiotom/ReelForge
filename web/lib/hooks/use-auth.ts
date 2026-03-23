@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useCallback, useMemo, useSyncExternalStore } from 'react';
+import { useCallback, useMemo, useSyncExternalStore } from 'react';
 import type { UserInfo } from '../types/auth';
 
 function getUserFromCookie(): UserInfo | null {

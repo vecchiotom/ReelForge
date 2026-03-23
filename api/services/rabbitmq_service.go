@@ -91,6 +91,8 @@ const (
 	exchangeFailed           = "ReelForge.Shared.IntegrationEvents:WorkflowExecutionFailed"
 	exchangeStepStarted      = "ReelForge.Shared.IntegrationEvents:WorkflowStepStarted"
 	exchangeStepComplete     = "ReelForge.Shared.IntegrationEvents:WorkflowStepCompleted"
+	exchangeStepToolCalled   = "ReelForge.Shared.IntegrationEvents:WorkflowStepToolCalled"
+	exchangeStepReasoning    = "ReelForge.Shared.IntegrationEvents:WorkflowStepReasoningCaptured"
 
     queueName = "go-api-workflow-events"
 )
@@ -139,7 +141,7 @@ func runConsumer() error {
 	// Bind queue to each MassTransit fanout exchange. MassTransit creates these
 	// exchanges when the WorkflowEngine publishes the first event; declare them
 	// here as well so the binding is idempotent even if we start before the engine.
-	for _, exchange := range []string{exchangeExecutionRunning, exchangeCompleted, exchangeFailed, exchangeStepStarted, exchangeStepComplete} {
+	for _, exchange := range []string{exchangeExecutionRunning, exchangeCompleted, exchangeFailed, exchangeStepStarted, exchangeStepComplete, exchangeStepToolCalled, exchangeStepReasoning} {
 		if err := ch.ExchangeDeclare(exchange, "fanout", true, false, false, false, nil); err != nil {
 			return fmt.Errorf("exchange declare %q: %w", exchange, err)
 		}
@@ -189,6 +191,10 @@ func dispatchMessage(msg amqp.Delivery) {
 		eventType = "step.started"
 	case exchangeStepComplete:
 		eventType = "step.completed"
+	case exchangeStepToolCalled:
+		eventType = "step.tool-called"
+	case exchangeStepReasoning:
+		eventType = "step.reasoning"
 	default:
 		return
 	}

@@ -1,6 +1,6 @@
 'use client';
 
-import { Modal, Stack, Button, Group, Text } from '@mantine/core';
+import { Modal, Stack, Button, Text } from '@mantine/core';
 import { IconRobot, IconGitBranch, IconRepeat, IconStarFilled, IconLayoutColumns } from '@tabler/icons-react';
 import type { StepType } from '@/lib/types/workflow';
 

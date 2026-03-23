@@ -1,7 +1,7 @@
 'use client';
 
 import { Table, ActionIcon, Group } from '@mantine/core';
-import { IconTrash, IconDownload, IconArrowsMove } from '@tabler/icons-react';
+import { IconTrash, IconDownload, IconArrowsMove, IconRefresh } from '@tabler/icons-react';
 import { StatusBadge } from '@/components/projects/StatusBadge';
 import { formatDate, formatFileSize } from '@/lib/utils/format';
 import type { ProjectFile } from '@/lib/types/project';
@@ -12,9 +12,10 @@ interface FileListProps {
   onSelect: (file: ProjectFile) => void;
   onDownload?: (file: ProjectFile) => void;
   onMove?: (file: ProjectFile) => void;
+  onReindex?: (file: ProjectFile) => void;
 }
 
-export function FileList({ files, onDelete, onSelect, onDownload, onMove }: FileListProps) {
+export function FileList({ files, onDelete, onSelect, onDownload, onMove, onReindex }: FileListProps) {
   // show path-aware name; if an originalPath exists use it, otherwise fallback to the simple
   // file name. Indent the row based on the number of path segments to give a visual
   // directory structure. The list is sorted by that display string so folders cluster.
@@ -40,6 +41,7 @@ export function FileList({ files, onDelete, onSelect, onDownload, onMove }: File
           <Table.Th>Type</Table.Th>
           <Table.Th>Size</Table.Th>
           <Table.Th>Summary</Table.Th>
+          <Table.Th>Index</Table.Th>
           <Table.Th>Uploaded</Table.Th>
           <Table.Th />
         </Table.Tr>
@@ -51,9 +53,23 @@ export function FileList({ files, onDelete, onSelect, onDownload, onMove }: File
             <Table.Td>{file.category}</Table.Td>
             <Table.Td>{formatFileSize(file.sizeBytes)}</Table.Td>
             <Table.Td><StatusBadge status={file.summaryStatus} /></Table.Td>
+            <Table.Td><StatusBadge status={file.indexingStatus} /></Table.Td>
             <Table.Td>{formatDate(file.uploadedAt)}</Table.Td>
             <Table.Td>
               <Group justify="flex-end">
+                {onReindex ? (
+                  <ActionIcon
+                    color="teal"
+                    variant="subtle"
+                    disabled={file.indexingStatus === 'Pending' || file.indexingStatus === 'Processing'}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onReindex(file);
+                    }}
+                  >
+                    <IconRefresh size={16} />
+                  </ActionIcon>
+                ) : null}
                 {onDownload ? (
                   <ActionIcon
                     color="blue"

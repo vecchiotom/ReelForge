@@ -1,5 +1,6 @@
 using System.Text.Json;
 using ReelForge.Shared.Data.Models;
+using ReelForge.WorkflowEngine.Agents;
 
 namespace ReelForge.WorkflowEngine.Execution;
 
@@ -198,6 +199,8 @@ public class StepExecutionResult
     public long DurationMs { get; init; }
     public int AttemptCount { get; init; } = 1;
     public int RetryCount { get; init; }
+    public IReadOnlyList<AgentToolCallTrace> ToolCalls { get; init; } = [];
+    public IReadOnlyList<string> Reasoning { get; init; } = [];
     public StepStatus Status { get; init; } = StepStatus.Completed;
     public string? ErrorDetails { get; init; }
     public int? IterationNumber { get; init; }

@@ -34,6 +34,10 @@ public class ForEachStepExecutor : IStepExecutor
         IReelForgeAgent? agent = _agentRegistry.GetByType(context.Step.AgentDefinition.AgentType);
         if (agent == null)
         {
+            _logger.LogWarning(
+                "ForEach step {StepOrder}: no agent registered for type {AgentType}",
+                context.Step.StepOrder,
+                context.Step.AgentDefinition.AgentType);
             return new StepExecutionResult
             {
                 Output = context.AccumulatedOutput,
@@ -66,6 +70,13 @@ public class ForEachStepExecutor : IStepExecutor
 
         int maxIterations = context.Step.MaxIterations > 0 ? context.Step.MaxIterations : items.Count;
         int iterations = Math.Min(items.Count, maxIterations);
+        _logger.LogInformation(
+            "ForEach step {StepOrder}: running {Iterations} iteration(s) (MaxConfigured={MaxIterations}, Agent={AgentName}, Parallelism={Parallelism})",
+            context.Step.StepOrder,
+            iterations,
+            maxIterations,
+            agent.Name,
+            _maxParallelism);
         string[] results = new string[iterations];
         long totalDuration = 0;
         int totalTokens = 0;
@@ -94,12 +105,26 @@ public class ForEachStepExecutor : IStepExecutor
                 Stopwatch sw = Stopwatch.StartNew();
                 AgentRunResult result = await agent.RunAsync(itemInput, token);
                 sw.Stop();
+                _logger.LogDebug(
+                    "ForEach step {StepOrder} iteration {IterationIndex} completed in {DurationMs}ms (Tokens={TokensUsed}, InputPreview={InputPreview}, OutputPreview={OutputPreview})",
+                    context.Step.StepOrder,
+                    index,
+                    sw.ElapsedMilliseconds,
+                    result.TokensUsed,
+                    CreatePreview(itemInput, 200),
+                    CreatePreview(result.Output, 200));
                 Interlocked.Add(ref totalDuration, sw.ElapsedMilliseconds);
                 Interlocked.Add(ref totalTokens, result.TokensUsed);
                 results[index] = result.Output;
             });
 
         string aggregatedOutput = JsonSerializer.Serialize(new { results, sourceCount = items.Count });
+        _logger.LogInformation(
+            "ForEach step {StepOrder} completed: Iterations={Iterations}, TotalDurationMs={TotalDurationMs}, TotalTokens={TotalTokens}",
+            context.Step.StepOrder,
+            iterations,
+            totalDuration,
+            totalTokens);
 
         return new StepExecutionResult
         {
@@ -110,5 +135,17 @@ public class ForEachStepExecutor : IStepExecutor
             TokensUsed = totalTokens,
             Status = StepStatus.Completed
         };
+    }
+
+    private static string CreatePreview(string? value, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        string normalized = value.Replace("\r", " ").Replace("\n", " ").Trim();
+        if (normalized.Length <= maxLength)
+            return normalized;
+
+        return normalized[..maxLength];
     }
 }

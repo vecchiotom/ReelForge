@@ -31,6 +31,10 @@ public class ReviewLoopStepExecutor : IStepExecutor
         IReelForgeAgent? agent = _agentRegistry.GetByType(context.Step.AgentDefinition.AgentType);
         if (agent == null)
         {
+            _logger.LogWarning(
+                "ReviewLoop step {StepOrder}: no agent registered for type {AgentType}",
+                context.Step.StepOrder,
+                context.Step.AgentDefinition.AgentType);
             return new StepExecutionResult
             {
                 Output = context.AccumulatedOutput,
@@ -42,11 +46,23 @@ public class ReviewLoopStepExecutor : IStepExecutor
         }
 
         Stopwatch sw = Stopwatch.StartNew();
+        string input = context.BuildAgentInput();
+        _logger.LogInformation(
+            "ReviewLoop step {StepOrder}: executing agent {AgentName} (Iteration={CurrentIteration}, MaxIterations={MaxIterations}, MinScore={MinScore})",
+            context.Step.StepOrder,
+            agent.Name,
+            context.IterationCount + 1,
+            context.Step.MaxIterations,
+            context.Step.MinScore ?? 9);
+        _logger.LogDebug(
+            "ReviewLoop step {StepOrder} input preview: {InputPreview}",
+            context.Step.StepOrder,
+            CreatePreview(input, 250));
         using IDisposable _ = _executionContextAccessor.BeginScope(
             context.Execution.Id,
             context.Execution.ProjectId,
             context.CorrelationId);
-        AgentRunResult result = await agent.RunAsync(context.BuildAgentInput(), context.CancellationToken);
+        AgentRunResult result = await agent.RunAsync(input, context.CancellationToken);
         sw.Stop();
 
         int score = ParseReviewScore(result.Output);
@@ -55,8 +71,12 @@ public class ReviewLoopStepExecutor : IStepExecutor
         int newIterationCount = context.IterationCount + 1;
 
         _logger.LogInformation(
-            "ReviewLoop step {StepOrder}: score={Score}, minScore={MinScore}, iteration={Iteration}/{Max}",
-            context.Step.StepOrder, score, minScore, newIterationCount, maxIterations);
+            "ReviewLoop step {StepOrder}: score={Score}, minScore={MinScore}, iteration={Iteration}/{Max}, duration={DurationMs}ms, tokens={TokensUsed}",
+            context.Step.StepOrder, score, minScore, newIterationCount, maxIterations, sw.ElapsedMilliseconds, result.TokensUsed);
+        _logger.LogDebug(
+            "ReviewLoop step {StepOrder} output preview: {OutputPreview}",
+            context.Step.StepOrder,
+            CreatePreview(result.Output, 250));
 
         // If score is below threshold and we haven't exceeded max iterations, loop back
         if (score < minScore && newIterationCount < maxIterations && context.Step.LoopTargetStepOrder.HasValue)
@@ -102,5 +122,17 @@ public class ReviewLoopStepExecutor : IStepExecutor
         }
         catch (JsonException) { }
         return 0;
+    }
+
+    private static string CreatePreview(string? value, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        string normalized = value.Replace("\r", " ").Replace("\n", " ").Trim();
+        if (normalized.Length <= maxLength)
+            return normalized;
+
+        return normalized[..maxLength];
     }
 }

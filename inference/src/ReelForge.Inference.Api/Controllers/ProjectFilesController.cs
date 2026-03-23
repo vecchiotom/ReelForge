@@ -19,6 +19,10 @@ namespace ReelForge.Inference.Api.Controllers;
 [Authorize]
 public class ProjectFilesController : ControllerBase
 {
+    private const int ProjectReindexDefaultMaxFiles = 25;
+    private const int ProjectReindexAbsoluteMaxFiles = 200;
+    private static readonly TimeSpan ProjectReindexPublishInterval = TimeSpan.FromMilliseconds(200);
+
     private readonly InferenceApiDbContext _db;
     private readonly ICurrentUser _currentUser;
     private readonly IFileStorageService _fileStorage;
@@ -63,6 +67,9 @@ public class ProjectFilesController : ControllerBase
                 f.SizeBytes,
                 f.AgentSummary,
                 f.SummaryStatus.ToString(),
+                f.IndexingStatus.ToString(),
+                f.IndexedAt,
+                f.IndexingError,
                 f.UploadedAt))
             .ToListAsync(ct);
         return Ok(files);
@@ -119,6 +126,7 @@ public class ProjectFilesController : ControllerBase
             MimeType = file.ContentType,
             SizeBytes = file.Length,
             SummaryStatus = SummaryStatus.Pending,
+            IndexingStatus = FileIndexingStatus.Pending,
             UploadedAt = DateTime.UtcNow
         };
 
@@ -147,6 +155,9 @@ public class ProjectFilesController : ControllerBase
             projectFile.SizeBytes,
             projectFile.AgentSummary,
             projectFile.SummaryStatus.ToString(),
+                projectFile.IndexingStatus.ToString(),
+                projectFile.IndexedAt,
+                projectFile.IndexingError,
             projectFile.UploadedAt));
     }
 
@@ -245,6 +256,9 @@ public class ProjectFilesController : ControllerBase
         file.MimeType = contentType;
         file.SizeBytes = System.Text.Encoding.UTF8.GetByteCount(request.Content);
         file.SummaryStatus = SummaryStatus.Pending;
+        file.IndexingStatus = FileIndexingStatus.Pending;
+        file.IndexedAt = null;
+        file.IndexingError = null;
         file.UploadedAt = DateTime.UtcNow;
 
         await _db.SaveChangesAsync(ct);
@@ -271,6 +285,9 @@ public class ProjectFilesController : ControllerBase
             file.SizeBytes,
             file.AgentSummary,
             file.SummaryStatus.ToString(),
+                file.IndexingStatus.ToString(),
+                file.IndexedAt,
+                file.IndexingError,
             file.UploadedAt));
     }
 
@@ -316,10 +333,24 @@ public class ProjectFilesController : ControllerBase
             file.StorageFileName = storageFileName;
             file.StorageKey = nextStorageKey;
             file.StoragePrefix = ProjectFilePath.BuildStoragePrefix(projectId, targetCategory);
+            file.IndexingStatus = FileIndexingStatus.Pending;
+            file.IndexedAt = null;
+            file.IndexingError = null;
             file.UploadedAt = DateTime.UtcNow;
         }
 
         await _db.SaveChangesAsync(ct);
+
+        foreach (ProjectFile file in files)
+        {
+            await _publishEndpoint.Publish(new ProjectFileIndexingRequested
+            {
+                ProjectId = projectId,
+                FileId = file.Id,
+                Operation = "Upsert",
+                RequestedAt = DateTime.UtcNow
+            }, ct);
+        }
 
         return Ok(files.Select(f => new ProjectFileResponse(
             f.Id,
@@ -333,6 +364,9 @@ public class ProjectFilesController : ControllerBase
             f.SizeBytes,
             f.AgentSummary,
             f.SummaryStatus.ToString(),
+                f.IndexingStatus.ToString(),
+                f.IndexedAt,
+                f.IndexingError,
             f.UploadedAt)).ToList());
     }
 
@@ -391,10 +425,25 @@ public class ProjectFilesController : ControllerBase
             file.StorageFileName = storageFileName;
             file.StorageKey = nextStorageKey;
             file.StoragePrefix = ProjectFilePath.BuildStoragePrefix(projectId, file.Category);
+            file.IndexingStatus = FileIndexingStatus.Pending;
+            file.IndexedAt = null;
+            file.IndexingError = null;
             file.UploadedAt = DateTime.UtcNow;
         }
 
         await _db.SaveChangesAsync(ct);
+
+        foreach (ProjectFile file in files)
+        {
+            await _publishEndpoint.Publish(new ProjectFileIndexingRequested
+            {
+                ProjectId = projectId,
+                FileId = file.Id,
+                Operation = "Upsert",
+                RequestedAt = DateTime.UtcNow
+            }, ct);
+        }
+
         return Ok(new { sourcePath, targetPath, movedFiles = files.Count });
     }
 
@@ -503,6 +552,92 @@ public class ProjectFilesController : ControllerBase
         {
             return Ok(new SearchProjectFilesResponse([], true));
         }
+    }
+
+    [HttpPost("{fileId:guid}/reindex")]
+    public async Task<IActionResult> ReindexFile(Guid projectId, Guid fileId, CancellationToken ct)
+    {
+        Project? project = await _db.Projects.FirstOrDefaultAsync(p => p.Id == projectId, ct);
+        if (project == null) return NotFound();
+        if (project.OwnerId != _currentUser.UserId) return Forbid();
+
+        ProjectFile? file = await _db.ProjectFiles.FirstOrDefaultAsync(f => f.Id == fileId && f.ProjectId == projectId, ct);
+        if (file == null) return NotFound();
+
+        file.IndexingStatus = FileIndexingStatus.Pending;
+        file.IndexedAt = null;
+        file.IndexingError = null;
+        await _db.SaveChangesAsync(ct);
+
+        await _publishEndpoint.Publish(new ProjectFileIndexingRequested
+        {
+            ProjectId = projectId,
+            FileId = file.Id,
+            Operation = "Upsert",
+            RequestedAt = DateTime.UtcNow
+        }, ct);
+
+        return Accepted(new { fileId = file.Id, status = file.IndexingStatus.ToString() });
+    }
+
+    [HttpPost("reindex")]
+    public async Task<ActionResult<ReindexProjectFilesResponse>> ReindexProjectFiles(
+        Guid projectId,
+        [FromBody] ReindexProjectFilesRequest? request,
+        CancellationToken ct)
+    {
+        Project? project = await _db.Projects.FirstOrDefaultAsync(p => p.Id == projectId, ct);
+        if (project == null) return NotFound();
+        if (project.OwnerId != _currentUser.UserId) return Forbid();
+
+        bool includeIndexed = request?.IncludeIndexed ?? false;
+        int maxFiles = Math.Clamp(
+            request?.MaxFiles ?? ProjectReindexDefaultMaxFiles,
+            1,
+            ProjectReindexAbsoluteMaxFiles);
+
+        IQueryable<ProjectFile> eligibleQuery = _db.ProjectFiles
+            .Where(f => f.ProjectId == projectId)
+            .Where(f => f.IndexingStatus != FileIndexingStatus.Pending && f.IndexingStatus != FileIndexingStatus.Processing);
+
+        if (!includeIndexed)
+            eligibleQuery = eligibleQuery.Where(f => f.IndexingStatus != FileIndexingStatus.Indexed);
+
+        int eligibleFiles = await eligibleQuery.CountAsync(ct);
+
+        List<ProjectFile> selectedFiles = await eligibleQuery
+            .OrderByDescending(f => f.UploadedAt)
+            .Take(maxFiles)
+            .ToListAsync(ct);
+
+        foreach (ProjectFile file in selectedFiles)
+        {
+            file.IndexingStatus = FileIndexingStatus.Pending;
+            file.IndexedAt = null;
+            file.IndexingError = null;
+        }
+
+        await _db.SaveChangesAsync(ct);
+
+        for (int index = 0; index < selectedFiles.Count; index++)
+        {
+            ProjectFile file = selectedFiles[index];
+            await _publishEndpoint.Publish(new ProjectFileIndexingRequested
+            {
+                ProjectId = projectId,
+                FileId = file.Id,
+                Operation = "Upsert",
+                RequestedAt = DateTime.UtcNow
+            }, ct);
+
+            if (index < selectedFiles.Count - 1)
+                await Task.Delay(ProjectReindexPublishInterval, ct);
+        }
+
+        return Ok(new ReindexProjectFilesResponse(
+            selectedFiles.Count,
+            eligibleFiles,
+            eligibleFiles > selectedFiles.Count));
     }
 
     private static bool IsLikelyText(string mimeType, string fileName)

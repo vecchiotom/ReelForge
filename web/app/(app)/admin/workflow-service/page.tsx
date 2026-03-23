@@ -1,6 +1,8 @@
 'use client';
 
+import { useMemo, useState } from 'react';
 import {
+  Collapse,
   Badge,
   Button,
   Card,
@@ -13,14 +15,23 @@ import {
   Text,
 } from '@mantine/core';
 import {
+  IconBrain,
   IconActivityHeartbeat,
+  IconCheck,
+  IconClock,
+  IconInfoCircle,
+  IconPlayerPlay,
+  IconPlayerSkipForward,
   IconRefresh,
-  IconRocket,
   IconShieldCheck,
   IconShieldX,
+  IconTool,
   IconUsers,
+  IconX,
 } from '@tabler/icons-react';
 import { useWorkflowMonitor } from '@/lib/hooks/use-workflow-monitor';
+import type { WorkflowStreamEvent } from '@/lib/types/workflow-monitor';
+import { JsonViewer } from '@/components/workflows/JsonViewer';
 import styles from './page.module.css';
 
 function formatTime(value: string | null): string {
@@ -64,8 +75,174 @@ function packetToneClass(tone: 'queue' | 'step' | 'success' | 'failed'): string 
   return styles.packetStep;
 }
 
+function getNumber(payload: Record<string, unknown>, ...keys: string[]): number {
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value;
+    }
+  }
+
+  return 0;
+}
+
+function getString(payload: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === 'string' && value.length > 0) {
+      return value;
+    }
+  }
+
+  return '';
+}
+
+function getEventBadgeColor(type: WorkflowStreamEvent['type']): string {
+  if (type === 'execution.completed') return 'teal';
+  if (type === 'execution.failed') return 'red';
+  if (type === 'execution.running') return 'blue';
+  if (type === 'step.started') return 'cyan';
+  if (type === 'step.tool-called') return 'indigo';
+  if (type === 'step.reasoning') return 'grape';
+  return 'violet';
+}
+
+function getEventIcon(type: WorkflowStreamEvent['type']) {
+  if (type === 'execution.completed') return <IconCheck size={12} />;
+  if (type === 'execution.failed') return <IconX size={12} />;
+  if (type === 'execution.running') return <IconPlayerPlay size={12} />;
+  if (type === 'step.started') return <IconClock size={12} />;
+  if (type === 'step.completed') return <IconPlayerSkipForward size={12} />;
+  if (type === 'step.tool-called') return <IconTool size={12} />;
+  if (type === 'step.reasoning') return <IconBrain size={12} />;
+  return <IconInfoCircle size={12} />;
+}
+
+function getEventTitle(type: WorkflowStreamEvent['type']): string {
+  if (type === 'execution.running') return 'Execution Started';
+  if (type === 'execution.completed') return 'Execution Completed';
+  if (type === 'execution.failed') return 'Execution Failed';
+  if (type === 'step.started') return 'Step Started';
+  if (type === 'step.completed') return 'Step Completed';
+  if (type === 'step.tool-called') return 'Tool Invocation';
+  if (type === 'step.reasoning') return 'Model Reasoning';
+  return 'Workflow Event';
+}
+
+function getEventMetadata(event: WorkflowStreamEvent): string[] {
+  const metadata: string[] = [];
+  const stepOrder = getNumber(event.payload, 'stepOrder', 'StepOrder');
+  const stepLabel = getString(event.payload, 'stepLabel', 'StepLabel');
+  const stepStatus = getString(event.payload, 'stepStatus', 'StepStatus');
+  const agentName = getString(event.payload, 'agentName', 'AgentName');
+
+  if (stepOrder > 0) metadata.push(`Step #${stepOrder}`);
+  if (stepLabel) metadata.push(stepLabel);
+  if (agentName) metadata.push(agentName);
+  if (stepStatus) metadata.push(`Status: ${stepStatus}`);
+
+  if (event.type === 'step.tool-called') {
+    const toolName = getString(event.payload, 'toolName', 'ToolName');
+    const sequence = getNumber(event.payload, 'sequence', 'Sequence');
+    if (toolName) metadata.push(`Tool: ${toolName}`);
+    if (sequence > 0) metadata.push(`Call #${sequence}`);
+  }
+
+  if (event.type === 'step.reasoning') {
+    const sequence = getNumber(event.payload, 'sequence', 'Sequence');
+    if (sequence > 0) metadata.push(`Reasoning #${sequence}`);
+  }
+
+  const durationMs = getNumber(event.payload, 'durationMs', 'DurationMs');
+  const tokensUsed = getNumber(event.payload, 'tokensUsed', 'TokensUsed');
+  if (durationMs > 0) metadata.push(formatDuration(durationMs));
+  if (tokensUsed > 0) metadata.push(`${tokensUsed.toLocaleString()} tok`);
+
+  return metadata;
+}
+
+function getEventBody(event: WorkflowStreamEvent): string {
+  if (event.type === 'execution.failed') {
+    return getString(event.payload, 'errorMessage', 'ErrorMessage') || 'Execution failed.';
+  }
+
+  if (event.type === 'step.tool-called') {
+    return getString(event.payload, 'argumentsPreview', 'ArgumentsPreview')
+      || getString(event.payload, 'resultPreview', 'ResultPreview')
+      || 'Tool call captured.';
+  }
+
+  if (event.type === 'step.reasoning') {
+    return getString(event.payload, 'content', 'Content') || 'Reasoning captured.';
+  }
+
+  if (event.type === 'step.started') {
+    return getString(event.payload, 'inputPreview', 'InputPreview') || 'Step dispatching in workflow engine.';
+  }
+
+  if (event.type === 'step.completed') {
+    const errorDetails = getString(event.payload, 'errorDetails', 'ErrorDetails');
+    return errorDetails || 'Step completed successfully.';
+  }
+
+  return 'Execution telemetry event.';
+}
+
+function WarRoomEventCard({ event }: { event: WorkflowStreamEvent }) {
+  const [expanded, setExpanded] = useState(false);
+  const metadata = getEventMetadata(event);
+  const body = getEventBody(event);
+
+  return (
+    <div className={styles.eventRow}>
+      <Group justify="space-between" align="flex-start">
+        <Group gap="xs">
+          {getEventIcon(event.type)}
+          <Text fw={600} size="sm">{getEventTitle(event.type)}</Text>
+          <Badge size="xs" color={getEventBadgeColor(event.type)}>{event.type}</Badge>
+        </Group>
+        <Text className={styles.eventMeta}>{new Date(event.timestamp).toLocaleTimeString()}</Text>
+      </Group>
+      <Text size="xs" ff="monospace" mt={4}>exec: {event.executionId}</Text>
+      <Text size="xs" c="dimmed" mt={4} style={{ whiteSpace: 'pre-wrap' }}>{body}</Text>
+      {metadata.length > 0 && (
+        <Group gap={6} mt={6} wrap="wrap">
+          {metadata.map((item) => (
+            <Badge key={`${event.id}-${item}`} size="xs" variant="light" color="gray">{item}</Badge>
+          ))}
+        </Group>
+      )}
+      <Button variant="subtle" size="compact-xs" mt={6} onClick={() => setExpanded((current) => !current)}>
+        {expanded ? 'Hide raw payload' : 'Show raw payload'}
+      </Button>
+      <Collapse in={expanded}>
+        <JsonViewer label="Event payload" value={JSON.stringify(event.payload)} />
+      </Collapse>
+    </div>
+  );
+}
+
 export default function WorkflowServiceDashboardPage() {
   const monitor = useWorkflowMonitor();
+
+  const eventInsights = useMemo(() => {
+    const windowEvents = monitor.events.slice(0, 80);
+    return {
+      runningEvents: windowEvents.filter((event) => event.type === 'execution.running').length,
+      stepStarted: windowEvents.filter((event) => event.type === 'step.started').length,
+      stepCompleted: windowEvents.filter((event) => event.type === 'step.completed').length,
+      toolCalls: windowEvents.filter((event) => event.type === 'step.tool-called').length,
+      reasoning: windowEvents.filter((event) => event.type === 'step.reasoning').length,
+      failures: windowEvents.filter((event) => event.type === 'execution.failed').length,
+      avgStepTokens: (() => {
+        const completed = windowEvents.filter((event) => event.type === 'step.completed');
+        if (completed.length === 0) return 0;
+        return Math.round(
+          completed.reduce((sum, event) => sum + getNumber(event.payload, 'tokensUsed', 'TokensUsed'), 0) / completed.length,
+        );
+      })(),
+    };
+  }, [monitor.events]);
 
   return (
     <Stack className={styles.screen} gap="lg">
@@ -114,6 +291,37 @@ export default function WorkflowServiceDashboardPage() {
         <Card className={styles.kpiCard} radius="md" p="md">
           <Text className={styles.kpiLabel}>Token Rate / Min</Text>
           <Text className={styles.kpiValue}>{monitor.derived.tokenRatePerMinute}</Text>
+        </Card>
+      </SimpleGrid>
+
+      <SimpleGrid cols={{ base: 2, md: 3, xl: 7 }} className={styles.kpiGrid}>
+        <Card className={styles.kpiCard} radius="md" p="sm">
+          <Text className={styles.kpiLabel}>Exec Started</Text>
+          <Text className={styles.kpiValue}>{eventInsights.runningEvents}</Text>
+        </Card>
+        <Card className={styles.kpiCard} radius="md" p="sm">
+          <Text className={styles.kpiLabel}>Step Started</Text>
+          <Text className={styles.kpiValue}>{eventInsights.stepStarted}</Text>
+        </Card>
+        <Card className={styles.kpiCard} radius="md" p="sm">
+          <Text className={styles.kpiLabel}>Step Completed</Text>
+          <Text className={styles.kpiValue}>{eventInsights.stepCompleted}</Text>
+        </Card>
+        <Card className={styles.kpiCard} radius="md" p="sm">
+          <Text className={styles.kpiLabel}>Tool Calls</Text>
+          <Text className={styles.kpiValue}>{eventInsights.toolCalls}</Text>
+        </Card>
+        <Card className={styles.kpiCard} radius="md" p="sm">
+          <Text className={styles.kpiLabel}>Reasoning Events</Text>
+          <Text className={styles.kpiValue}>{eventInsights.reasoning}</Text>
+        </Card>
+        <Card className={styles.kpiCard} radius="md" p="sm">
+          <Text className={styles.kpiLabel}>Failures</Text>
+          <Text className={styles.kpiValue}>{eventInsights.failures}</Text>
+        </Card>
+        <Card className={styles.kpiCard} radius="md" p="sm">
+          <Text className={styles.kpiLabel}>Avg Step Tokens</Text>
+          <Text className={styles.kpiValue}>{eventInsights.avgStepTokens}</Text>
         </Card>
       </SimpleGrid>
 
@@ -219,7 +427,10 @@ export default function WorkflowServiceDashboardPage() {
                     </Text>
                   </Table.Td>
                   <Table.Td>
-                    <Text size="xs">{execution.lastStepStatus ?? 'running'}</Text>
+                    <Group gap="xs" wrap="nowrap">
+                      <Text size="xs">{execution.lastStepStatus ?? 'running'}</Text>
+                      <Badge size="xs" variant="light" color="gray">{execution.lastEventType}</Badge>
+                    </Group>
                   </Table.Td>
                 </Table.Tr>
               ))}
@@ -248,19 +459,7 @@ export default function WorkflowServiceDashboardPage() {
           <ScrollArea className={styles.eventFeed} type="always" scrollbarSize={8}>
             <Stack gap="xs">
               {monitor.events.slice(0, 40).map((event) => (
-                <div key={event.id} className={styles.eventRow}>
-                  <Group justify="space-between" align="flex-start">
-                    <Group gap="xs">
-                      <IconRocket size={14} />
-                      <Text fw={600} size="sm">{event.type}</Text>
-                    </Group>
-                    <Text className={styles.eventMeta}>{new Date(event.timestamp).toLocaleTimeString()}</Text>
-                  </Group>
-                  <Text size="xs" ff="monospace">exec: {event.executionId}</Text>
-                  <Text size="xs" c="dimmed">
-                    correlation: {String(event.payload.correlationId ?? 'n/a')} | tokens: {String(event.payload.tokensUsed ?? 0)} | duration: {String(event.payload.durationMs ?? 0)}ms
-                  </Text>
-                </div>
+                <WarRoomEventCard key={event.id} event={event} />
               ))}
               {monitor.events.length === 0 && (
                 <Text size="sm" c="dimmed">Waiting for SSE events from `/api/v1/workflows/events`.</Text>

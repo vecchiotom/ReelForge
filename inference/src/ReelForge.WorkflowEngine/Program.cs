@@ -29,6 +29,12 @@ using ReelForge.WorkflowEngine.Workers;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
+builder.Logging.ClearProviders();
+builder.Logging.AddSimpleConsole(options =>
+{
+    options.SingleLine = false;
+    options.TimestampFormat = "yyyy-MM-dd HH:mm:ss.fff ";
+});
 builder.Logging.AddFilter("Microsoft.EntityFrameworkCore.Database.Command", LogLevel.None);
 
 // --- Database ---

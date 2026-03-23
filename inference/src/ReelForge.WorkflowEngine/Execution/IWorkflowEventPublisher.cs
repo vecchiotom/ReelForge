@@ -20,6 +20,13 @@ public interface IWorkflowEventPublisher
         StepExecutionResult stepExecutionResult,
         CancellationToken ct);
 
+    Task PublishStepDiagnosticsAsync(
+        WorkflowExecution execution,
+        WorkflowStep step,
+        WorkflowStepResult stepResult,
+        StepExecutionResult stepExecutionResult,
+        CancellationToken ct);
+
     Task PublishExecutionCompletedAsync(WorkflowExecution execution, CancellationToken ct);
     Task PublishExecutionFailedAsync(WorkflowExecution execution, CancellationToken ct);
 }
