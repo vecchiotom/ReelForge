@@ -164,8 +164,15 @@ services:
       Sandbox__BaseUrl: http://sandbox-executor:8080
       WorkflowEngine__MaxConcurrency: ${WORKFLOW_MAX_CONCURRENCY:-4}
       DataProtection__KeysPath: /keys
+      VideoEditing__ScratchPath: /var/tmp/reelforge-video
+      VideoEditing__FfmpegPath: ffmpeg
+      VideoEditing__FfprobePath: ffprobe
+      VideoEditing__MaxConcurrentJobs: ${VIDEO_MAX_CONCURRENT_JOBS:-1}
+      VideoEditing__AnalyzeTimeoutSeconds: ${VIDEO_ANALYZE_TIMEOUT_SECONDS:-900}
+      VideoEditing__CompileTimeoutSeconds: ${VIDEO_COMPILE_TIMEOUT_SECONDS:-1800}
     volumes:
       - dpkeys:/keys
+      - videoscratch:/var/tmp/reelforge-video
     depends_on:
       postgres:
         condition: service_healthy
@@ -345,6 +352,7 @@ volumes:
   miniodata:
   rabbitmqdata:
   dpkeys:
+  videoscratch:
 
 networks:
   reelforge:

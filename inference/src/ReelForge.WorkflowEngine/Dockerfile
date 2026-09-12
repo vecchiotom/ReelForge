@@ -1,4 +1,13 @@
 FROM mcr.microsoft.com/dotnet/aspnet:9.0-alpine AS base
+USER root
+# ffmpeg/ffprobe run in-process for the video-editing pipeline (plan §2) — never in the sandbox
+# service, which is untrusted-code territory this feature deliberately does not touch. The
+# scratch directory is created and chowned to $APP_UID here, in the image, because Docker seeds a
+# fresh named volume's ownership from the image directory at first mount (R12); creating it only
+# at container runtime would leave the volume root-owned and unwritable by the non-root user.
+RUN apk add --no-cache ffmpeg \
+ && mkdir -p /var/tmp/reelforge-video \
+ && chown -R $APP_UID:$APP_UID /var/tmp/reelforge-video
 USER $APP_UID
 WORKDIR /app
 EXPOSE 8080
