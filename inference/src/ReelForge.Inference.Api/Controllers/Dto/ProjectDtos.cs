@@ -67,7 +67,8 @@ public record AgentDefinitionResponse(
     Guid Id, string Name, string Description, string SystemPrompt,
     string AgentType, bool IsBuiltIn, Guid? OwnerId, string? ConfigJson,
     DateTime CreatedAt, string? Color, string? OutputSchemaJson,
-    string[]? AvailableTools, bool GeneratesOutput, string? OutputSchemaName);
+    string[]? AvailableTools, bool GeneratesOutput, string? OutputSchemaName,
+    Guid? InferenceProviderId = null, string? InferenceProviderName = null);
 
 public record CreateAgentRequest(string Name, string Description, string SystemPrompt, string? ConfigJson, string? Color);
 public record UpdateAgentRequest(string Name, string Description, string SystemPrompt, string? ConfigJson, string? Color);
