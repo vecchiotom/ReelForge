@@ -26,3 +26,10 @@ export function updateAgent(id: string, data: UpdateAgentRequest): Promise<Agent
 export function deleteAgent(id: string): Promise<void> {
   return apiFetch<void>(`/api/v1/agents/${id}`, { method: 'DELETE' });
 }
+
+export function setAgentInferenceProvider(id: string, inferenceProviderId: string | null): Promise<AgentDefinition> {
+  return apiFetch<AgentDefinition>(`/api/v1/agents/${id}/inference-provider`, {
+    method: 'PUT',
+    body: JSON.stringify({ inferenceProviderId }),
+  });
+}

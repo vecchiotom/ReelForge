@@ -25,7 +25,10 @@ import { ConditionalNode } from './nodes/ConditionalNode';
 import { ForEachNode } from './nodes/ForEachNode';
 import { ReviewLoopNode } from './nodes/ReviewLoopNode';
 import { ParallelNode } from './nodes/ParallelNode';
+import { ExtractNode } from './nodes/ExtractNode';
 import { AddStepModal } from './AddStepModal';
+import { createDefaultExtractStepConfig } from './ExtractStepConfig';
+import { useAgents } from '@/lib/hooks/use-agents';
 import type { StepData } from './WorkflowStepList';
 import type { StepType } from '@/lib/types/workflow';
 
@@ -35,7 +38,18 @@ const nodeTypes = {
   forEach: ForEachNode,
   reviewLoop: ReviewLoopNode,
   parallel: ParallelNode,
+  extract: ExtractNode,
 } satisfies NodeTypes;
+
+/** Maps a workflow StepType to its React Flow node type key. */
+const STEP_TYPE_TO_NODE_TYPE: Record<StepType, keyof typeof nodeTypes> = {
+  Agent: 'agent',
+  Conditional: 'conditional',
+  ForEach: 'forEach',
+  ReviewLoop: 'reviewLoop',
+  Parallel: 'parallel',
+  Extract: 'extract',
+};
 
 interface FlowchartBuilderProps {
   steps: StepData[];
@@ -46,6 +60,7 @@ export function FlowchartBuilder({ steps, onChange }: FlowchartBuilderProps) {
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const { data: agents } = useAgents();
 
   // Convert steps to nodes and edges
   useMemo(() => {
@@ -53,11 +68,7 @@ export function FlowchartBuilder({ steps, onChange }: FlowchartBuilderProps) {
     const newEdges: Edge[] = [];
 
     steps.forEach((step, index) => {
-      const nodeType = step.stepType === 'Agent' ? 'agent'
-        : step.stepType === 'Conditional' ? 'conditional'
-        : step.stepType === 'ForEach' ? 'forEach'
-            : step.stepType === 'Parallel' ? 'parallel'
-        : 'reviewLoop';
+      const nodeType = STEP_TYPE_TO_NODE_TYPE[step.stepType] ?? 'agent';
 
       newNodes.push({
         id: step.id,
@@ -109,10 +120,14 @@ export function FlowchartBuilder({ steps, onChange }: FlowchartBuilderProps) {
   );
 
   const handleAddStep = (stepType: StepType) => {
+    // Extract steps run no model — auto-assign the built-in, non-LLM ExtractTransform agent so
+    // the non-nullable AgentDefinitionId FK is always satisfied without user action.
+    const extractTransformAgentId = agents?.find((a) => a.agentType === 'ExtractTransform')?.id ?? '';
+
     const newStep: StepData = {
       id: `step-${Date.now()}`,
       label: '',
-      agentDefinitionId: '',
+      agentDefinitionId: stepType === 'Extract' ? extractTransformAgentId : '',
       stepType,
       conditionExpression: null,
       loopSourceExpression: null,
@@ -125,6 +140,7 @@ export function FlowchartBuilder({ steps, onChange }: FlowchartBuilderProps) {
       trueBranchStepOrder: null,
       falseBranchStepOrder: null,
       parallelAgentIds: [],
+      extractConfig: stepType === 'Extract' ? createDefaultExtractStepConfig() : null,
     };
     onChange([...steps, newStep]);
     setAddModalOpen(false);

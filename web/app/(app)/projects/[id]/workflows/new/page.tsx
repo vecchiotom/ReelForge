@@ -72,6 +72,7 @@ export default function NewWorkflowPage({ params }: { params: Promise<{ id: stri
           trueBranchStepOrder: s.trueBranchStepOrder,
           falseBranchStepOrder: s.falseBranchStepOrder,
           parallelAgentIdsJson: s.parallelAgentIds.length > 0 ? JSON.stringify(s.parallelAgentIds) : null,
+          extractConfigJson: s.extractConfig ? JSON.stringify(s.extractConfig) : null,
         })),
       });
       notifications.show({ title: 'Created', message: 'Workflow created', color: 'green' });

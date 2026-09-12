@@ -9,6 +9,7 @@ import { PageHeader } from '@/components/shared/PageHeader';
 import { AgentTypeBadge } from '@/components/agents/AgentTypeBadge';
 import { AgentSchemaViewer } from '@/components/agents/AgentSchemaViewer';
 import { AgentForm } from '@/components/agents/AgentForm';
+import { AgentInferenceProviderSelect } from '@/components/agents/AgentInferenceProviderSelect';
 import { ConfirmModal } from '@/components/shared/ConfirmModal';
 import { notifications } from '@mantine/notifications';
 import { useRouter } from 'next/navigation';
@@ -67,6 +68,15 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
         </Group>
 
         {agent.description && <Text>{agent.description}</Text>}
+
+        <Card withBorder>
+          <AgentInferenceProviderSelect
+            agentId={agent.id}
+            inferenceProviderId={agent.inferenceProviderId}
+            inferenceProviderName={agent.inferenceProviderName}
+            onUpdated={() => mutate()}
+          />
+        </Card>
 
         {agent.availableTools && agent.availableTools.length > 0 && (
           <Card withBorder>

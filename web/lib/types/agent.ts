@@ -12,6 +12,8 @@ export interface AgentDefinition {
   availableTools: string[] | null;
   generatesOutput: boolean;
   outputSchemaName: string | null;
+  inferenceProviderId: string | null;
+  inferenceProviderName: string | null;
 }
 
 export interface CreateAgentRequest {

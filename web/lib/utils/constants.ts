@@ -27,6 +27,7 @@ export const AGENT_TYPE_GROUP: Record<string, string> = {
   AuthorAgent: 'Production',
   ReviewAgent: 'Quality',
   FileSummarizerAgent: 'File Processing',
+  ExtractTransform: 'Extract',
   Custom: 'Custom',
 };
 
@@ -36,6 +37,7 @@ export const AGENT_GROUP_COLORS: Record<string, string> = {
   Production: 'violet',
   Quality: 'orange',
   'File Processing': 'teal',
+  Extract: 'grape',
   Custom: 'pink',
 };
 
@@ -49,6 +51,7 @@ export const STEP_TYPE_LABELS: Record<StepType, string> = {
   ForEach: 'For Each',
   ReviewLoop: 'Review Loop',
   Parallel: 'Parallel',
+  Extract: 'Extract',
 };
 
 export const STEP_TYPE_COLORS: Record<StepType, string> = {
@@ -57,6 +60,7 @@ export const STEP_TYPE_COLORS: Record<StepType, string> = {
   ForEach: 'cyan',
   ReviewLoop: 'green',
   Parallel: 'teal',
+  Extract: 'grape',
 };
 
 export const STEP_TYPE_DESCRIPTIONS: Record<StepType, string> = {
@@ -65,4 +69,5 @@ export const STEP_TYPE_DESCRIPTIONS: Record<StepType, string> = {
   ForEach: 'Iterate a step over each item in a collection',
   ReviewLoop: 'Loop back to a target step until a quality score is met',
   Parallel: 'Run multiple agents in parallel and merge their outputs',
+  Extract: 'Deterministically reduce prior outputs or project files into a bounded view (no AI call)',
 };

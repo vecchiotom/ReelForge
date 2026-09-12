@@ -56,6 +56,7 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
             trueBranchStepOrder: s.trueBranchStepOrder ?? null,
             falseBranchStepOrder: s.falseBranchStepOrder ?? null,
             parallelAgentIds: s.parallelAgentIdsJson ? JSON.parse(s.parallelAgentIdsJson) : [],
+            extractConfig: s.extractConfigJson ? JSON.parse(s.extractConfigJson) : null,
           })),
       );
       setInitialized(true);
@@ -92,6 +93,7 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
           trueBranchStepOrder: s.trueBranchStepOrder,
           falseBranchStepOrder: s.falseBranchStepOrder,
           parallelAgentIdsJson: s.parallelAgentIds.length > 0 ? JSON.stringify(s.parallelAgentIds) : null,
+          extractConfigJson: s.extractConfig ? JSON.stringify(s.extractConfig) : null,
         })),
       });
       mutate();
