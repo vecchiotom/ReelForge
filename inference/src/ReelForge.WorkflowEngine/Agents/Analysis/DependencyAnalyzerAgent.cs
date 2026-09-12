@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using ReelForge.Shared.Inference;
 using ReelForge.Shared.Data.Models;
 using ReelForge.Shared.Data.OutputSchemas;
 using ReelForge.WorkflowEngine.Agents.Tools;
@@ -54,10 +55,10 @@ public class DependencyAnalyzerAgent : ReelForgeAgentBase
         """;
 
     public DependencyAnalyzerAgent(
-        IChatClient chatClient,
+        IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         IAgentToolProvider toolProvider)
-        : base(chatClient, configuration, "DependencyAnalyzer",
+        : base(chatClients, configuration, "DependencyAnalyzer",
             "Enumerates frameworks, libraries, and major dependencies.",
             AgentType.DependencyAnalyzer, DefaultPrompt,
             toolProvider.GetTools(AgentType.DependencyAnalyzer),

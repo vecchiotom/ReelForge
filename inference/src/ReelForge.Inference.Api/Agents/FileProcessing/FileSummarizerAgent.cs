@@ -1,6 +1,7 @@
 using Microsoft.Extensions.AI;
 using ReelForge.Shared.Data.Models;
 using ReelForge.Shared.Data.OutputSchemas;
+using ReelForge.Shared.Inference;
 
 namespace ReelForge.Inference.Api.Agents.FileProcessing;
 
@@ -23,9 +24,9 @@ public class FileSummarizerAgentImpl : ReelForgeAgentBase
         Output ONLY JSON matching FileSummaryOutput.
         """;
 
-    public FileSummarizerAgentImpl(IChatClient chatClient, IConfiguration configuration)
+    public FileSummarizerAgentImpl(IAgentChatClientProvider chatClients, IConfiguration configuration)
         : base(
-            chatClient,
+            chatClients,
             configuration,
             "FileSummarizer",
             "Produces concise summaries of uploaded files.",

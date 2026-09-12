@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using ReelForge.Shared.Inference;
 using ReelForge.Shared.Data.Models;
 using ReelForge.Shared.Data.OutputSchemas;
 using ReelForge.WorkflowEngine.Agents.Tools;
@@ -48,10 +49,10 @@ public class ComponentInventoryAnalyzerAgent : ReelForgeAgentBase
         """;
 
     public ComponentInventoryAnalyzerAgent(
-        IChatClient chatClient,
+        IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         IAgentToolProvider toolProvider)
-        : base(chatClient, configuration, "ComponentInventoryAnalyzer",
+        : base(chatClients, configuration, "ComponentInventoryAnalyzer",
             "Enumerates all UI components, their props and basic responsibilities.",
             AgentType.ComponentInventoryAnalyzer, DefaultPrompt,
             toolProvider.GetTools(AgentType.ComponentInventoryAnalyzer),

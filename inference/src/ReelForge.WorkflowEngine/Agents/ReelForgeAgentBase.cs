@@ -4,18 +4,19 @@ using System.Collections;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using ReelForge.Shared.Data.Models;
+using ReelForge.Shared.Inference;
 
 namespace ReelForge.WorkflowEngine.Agents;
 
 public abstract class ReelForgeAgentBase : IReelForgeAgent
 {
-    private readonly IChatClient _chatClient;
+    private readonly IAgentChatClientProvider _chatClients;
     private readonly List<AIFunction> _tools;
     private readonly Type? _outputSchemaType;
     private readonly int _agentRunTimeoutSeconds;
 
     protected ReelForgeAgentBase(
-        IChatClient chatClient,
+        IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         string name,
         string description,
@@ -25,7 +26,7 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
         Guid? agentId = null,
         Type? outputSchemaType = null)
     {
-        _chatClient = chatClient;
+        _chatClients = chatClients;
         _outputSchemaType = outputSchemaType;
         Name = name;
         Description = description;
@@ -55,15 +56,11 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
     public string SystemPrompt { get; }
     public AgentType AgentType { get; }
     public IReadOnlyList<AIFunction> Tools => _tools.AsReadOnly();
-    public AIAgent AIAgent => CreateAgent();
     public string? OutputSchemaJson { get; }
     public Type? OutputSchemaType => _outputSchemaType;
 
     public async Task<AgentRunResult> RunAsync(string prompt, CancellationToken ct = default)
     {
-        // Structured output is enforced via ChatResponseFormat.ForJsonSchema<T>() when OutputSchemaType is specified
-        AIAgent agent = CreateAgent();
-
         AgentResponse agentResponse;
         using CancellationTokenSource timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(_agentRunTimeoutSeconds));
@@ -71,6 +68,9 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
 
         try
         {
+            // Structured output is enforced via ChatResponseFormat.ForJsonSchema<T>() when OutputSchemaType is specified
+            AIAgent agent = await CreateAgentAsync(effectiveToken);
+
             // If structured output is required, configure ResponseFormat at runtime via AgentRunOptions
             if (_outputSchemaType != null)
             {
@@ -261,10 +261,11 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
         return null;
     }
 
-    private AIAgent CreateAgent()
+    private async ValueTask<AIAgent> CreateAgentAsync(CancellationToken ct)
     {
-        // Create agent with standard parameters - structured output is applied via AgentRunOptions at runtime
-        return _chatClient.AsAIAgent(
+        // Structured output is applied via AgentRunOptions at runtime, not here.
+        IChatClient chatClient = await _chatClients.GetAsync(AgentType, AgentId, ct);
+        return chatClient.AsAIAgent(
             instructions: SystemPrompt,
             name: Name,
             tools: _tools.Cast<AITool>().ToList());

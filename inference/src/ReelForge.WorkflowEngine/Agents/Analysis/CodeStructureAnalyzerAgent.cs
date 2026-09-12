@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using ReelForge.Shared.Inference;
 using ReelForge.Shared.Data.Models;
 using ReelForge.Shared.Data.OutputSchemas;
 using ReelForge.WorkflowEngine.Agents.Tools;
@@ -42,10 +43,10 @@ public class CodeStructureAnalyzerAgent : ReelForgeAgentBase
         """;
 
     public CodeStructureAnalyzerAgent(
-        IChatClient chatClient,
+        IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         IAgentToolProvider toolProvider)
-        : base(chatClient, configuration, "CodeStructureAnalyzer",
+        : base(chatClients, configuration, "CodeStructureAnalyzer",
             "Maps the overall directory/module structure of the webapp source.",
             AgentType.CodeStructureAnalyzer, DefaultPrompt,
             toolProvider.GetTools(AgentType.CodeStructureAnalyzer),

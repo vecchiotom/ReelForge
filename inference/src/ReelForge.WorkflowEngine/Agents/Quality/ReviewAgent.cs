@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using ReelForge.Shared.Inference;
 using ReelForge.Shared.Data.Models;
 using ReelForge.Shared.Data.OutputSchemas;
 using ReelForge.WorkflowEngine.Agents.Tools;
@@ -87,10 +88,10 @@ public class ReviewAgentImpl : ReelForgeAgentBase
         """;
 
     public ReviewAgentImpl(
-        IChatClient chatClient,
+        IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         IAgentToolProvider toolProvider)
-        : base(chatClient, configuration, "Review",
+        : base(chatClients, configuration, "Review",
             "Scores output quality and provides structured feedback.",
             AgentType.ReviewAgent, DefaultPrompt,
             toolProvider.GetTools(AgentType.ReviewAgent),

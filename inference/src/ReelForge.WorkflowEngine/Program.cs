@@ -1,16 +1,16 @@
 using System.Text;
 using Amazon.S3;
-using Azure.AI.OpenAI;
 using MassTransit;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
+using ReelForge.Shared.Inference;
 using ReelForge.WorkflowEngine.Agents;
 using ReelForge.WorkflowEngine.Agents.Analysis;
 using ReelForge.WorkflowEngine.Agents.Production;
@@ -22,6 +22,7 @@ using ReelForge.WorkflowEngine.Data;
 using ReelForge.WorkflowEngine.Execution;
 using ReelForge.WorkflowEngine.Execution.StepExecutors;
 using ReelForge.WorkflowEngine.Observability;
+using ReelForge.WorkflowEngine.Services.Inference;
 using ReelForge.WorkflowEngine.Services.Storage;
 using ReelForge.WorkflowEngine.Services.Messaging;
 using ReelForge.WorkflowEngine.Services.RemotionSkills;
@@ -60,19 +61,17 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     });
 builder.Services.AddAuthorization();
 
-// --- AI Chat Client ---
-builder.Services.AddSingleton<IChatClient>(sp =>
-{
-    string endpoint = builder.Configuration["AzureOpenAI:Endpoint"] ?? string.Empty;
-    string apiKey = builder.Configuration["AzureOpenAI:ApiKey"] ?? string.Empty;
-    string deploymentName = builder.Configuration["AzureOpenAI:DeploymentName"] ?? "gpt-4o-mini";
+// --- Inference provider abstraction ---
+builder.Services.AddDataProtection()
+    .SetApplicationName("ReelForge")
+    .PersistKeysToFileSystem(new DirectoryInfo(
+        builder.Configuration["DataProtection:KeysPath"] ?? "/keys"));
 
-    AzureOpenAIClient client = new(
-        new Uri(endpoint),
-        new System.ClientModel.ApiKeyCredential(apiKey));
-
-    return client.GetChatClient(deploymentName).AsIChatClient();
-});
+builder.Services.AddSingleton<ISecretProtector, DataProtectionSecretProtector>();
+builder.Services.AddSingleton<IChatClientFactory, ChatClientFactory>();
+builder.Services.AddScoped<IInferenceProviderStore, WorkflowEngineProviderStore>();
+builder.Services.AddSingleton<IInferenceProviderResolver, InferenceProviderResolver>();
+builder.Services.AddSingleton<IAgentChatClientProvider, AgentChatClientProvider>();
 
 // --- MinIO / S3 ---
 builder.Services.AddSingleton<IAmazonS3>(sp =>

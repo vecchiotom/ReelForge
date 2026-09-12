@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using ReelForge.Shared.Inference;
 using ReelForge.Shared.Data.Models;
 using ReelForge.Shared.Data.OutputSchemas;
 using ReelForge.WorkflowEngine.Agents.Tools;
@@ -149,10 +150,10 @@ public class AuthorAgentImpl : ReelForgeAgentBase
         """;
 
     public AuthorAgentImpl(
-        IChatClient chatClient,
+        IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         IAgentToolProvider toolProvider)
-        : base(chatClient, configuration, "Author",
+        : base(chatClients, configuration, "Author",
             "Assembles all outputs into a RenderManifest for Remotion.",
             AgentType.AuthorAgent, DefaultPrompt,
             toolProvider.GetTools(AgentType.AuthorAgent),

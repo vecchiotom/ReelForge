@@ -1,4 +1,3 @@
-using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using ReelForge.Shared.Data.Models;
 
@@ -12,7 +11,6 @@ public interface IReelForgeAgent
     string SystemPrompt { get; }
     AgentType AgentType { get; }
     IReadOnlyList<AIFunction> Tools { get; }
-    AIAgent AIAgent { get; }
     string? OutputSchemaJson { get; }
     Type? OutputSchemaType { get; }
     Task<AgentRunResult> RunAsync(string prompt, CancellationToken ct = default);

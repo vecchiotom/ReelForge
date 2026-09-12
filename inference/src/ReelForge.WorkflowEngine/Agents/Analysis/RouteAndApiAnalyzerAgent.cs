@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using ReelForge.Shared.Inference;
 using ReelForge.Shared.Data.Models;
 using ReelForge.Shared.Data.OutputSchemas;
 using ReelForge.WorkflowEngine.Agents.Tools;
@@ -48,10 +49,10 @@ public class RouteAndApiAnalyzerAgent : ReelForgeAgentBase
         """;
 
     public RouteAndApiAnalyzerAgent(
-        IChatClient chatClient,
+        IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         IAgentToolProvider toolProvider)
-        : base(chatClient, configuration, "RouteAndApiAnalyzer",
+        : base(chatClients, configuration, "RouteAndApiAnalyzer",
             "Extracts all routes, API endpoints, and navigation structure.",
             AgentType.RouteAndApiAnalyzer, DefaultPrompt,
             toolProvider.GetTools(AgentType.RouteAndApiAnalyzer),

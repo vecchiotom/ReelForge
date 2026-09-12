@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using ReelForge.Shared.Inference;
 using ReelForge.Shared.Data.Models;
 using ReelForge.Shared.Data.OutputSchemas;
 using ReelForge.WorkflowEngine.Agents.Tools;
@@ -50,10 +51,10 @@ public class DirectorAgentImpl : ReelForgeAgentBase
         """;
 
     public DirectorAgentImpl(
-        IChatClient chatClient,
+        IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         IAgentToolProvider toolProvider)
-        : base(chatClient, configuration, "Director",
+        : base(chatClients, configuration, "Director",
             "Composes the overall video narrative structure.",
             AgentType.DirectorAgent, DefaultPrompt,
             toolProvider.GetTools(AgentType.DirectorAgent),

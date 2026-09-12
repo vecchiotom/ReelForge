@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using ReelForge.Shared.Inference;
 using ReelForge.Shared.Data.Models;
 using ReelForge.Shared.Data.OutputSchemas;
 using ReelForge.WorkflowEngine.Agents.Tools;
@@ -90,10 +91,10 @@ public class RemotionComponentTranslatorAgent : ReelForgeAgentBase
         """;
 
     public RemotionComponentTranslatorAgent(
-        IChatClient chatClient,
+        IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         IAgentToolProvider toolProvider)
-        : base(chatClient, configuration, "RemotionComponentTranslator",
+        : base(chatClients, configuration, "RemotionComponentTranslator",
             "Builds the Remotion project structure (TSX files) directly inside the sandbox environment.",
             AgentType.RemotionComponentTranslator, DefaultPrompt,
             toolProvider.GetTools(AgentType.RemotionComponentTranslator),
