@@ -109,7 +109,7 @@ public class WorkflowsController : ControllerBase
                         s.AgentInputContextMode.HasValue ? s.AgentInputContextMode.Value.ToString() : null,
                         s.SelectedPriorStepOrdersJson,
                         s.TrueBranchStepOrder, s.FalseBranchStepOrder, s.ParallelAgentIdsJson,
-                        s.ExtractConfigJson)
+                        s.ExtractConfigJson, s.VideoAnalyzeConfigJson, s.VideoCompileConfigJson)
                 ).ToList(),
                 w.RequiresUserInput))
             .ToListAsync(ct);
@@ -375,7 +375,9 @@ public class WorkflowsController : ControllerBase
             TrueBranchStepOrder = req.TrueBranchStepOrder,
             FalseBranchStepOrder = req.FalseBranchStepOrder,
             ParallelAgentIdsJson = req.ParallelAgentIdsJson,
-            ExtractConfigJson = req.ExtractConfigJson
+            ExtractConfigJson = req.ExtractConfigJson,
+            VideoAnalyzeConfigJson = req.VideoAnalyzeConfigJson,
+            VideoCompileConfigJson = req.VideoCompileConfigJson
         };
 
         if (req.StepType != null && Enum.TryParse<StepType>(req.StepType, out var stepType))
@@ -399,7 +401,7 @@ public class WorkflowsController : ControllerBase
                     s.LoopTargetStepOrder, s.MaxIterations, s.MinScore, s.InputMappingJson,
                     s.AgentInputContextMode?.ToString(), s.SelectedPriorStepOrdersJson,
                     s.TrueBranchStepOrder, s.FalseBranchStepOrder, s.ParallelAgentIdsJson,
-                    s.ExtractConfigJson)
+                    s.ExtractConfigJson, s.VideoAnalyzeConfigJson, s.VideoCompileConfigJson)
             ).ToList(),
             workflow.RequiresUserInput);
 
@@ -410,7 +412,7 @@ public class WorkflowsController : ControllerBase
             (execution.StepResults ?? Enumerable.Empty<WorkflowStepResult>()).OrderBy(r => r.ExecutedAt).Select(r =>
                 new StepResultResponse(r.Id, r.WorkflowStepId, r.Output, r.TokensUsed, r.DurationMs, r.ExecutedAt,
                     r.InputJson, r.OutputJson, r.Status.ToString(), r.ErrorDetails, r.IterationNumber, r.CompletedAt,
-                    r.OutputStorageKey)
+                    r.OutputStorageKey, r.ArtifactStorageKey)
             ).ToList(),
             (execution.ReviewScores ?? Enumerable.Empty<ReviewScore>()).OrderBy(rs => rs.IterationNumber).Select(rs =>
                 new ReviewScoreResponse(rs.Id, rs.IterationNumber, rs.Score, rs.Comments, rs.CreatedAt)

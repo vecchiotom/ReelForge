@@ -79,6 +79,7 @@ builder.Services.AddDataProtection()
 
 builder.Services.AddSingleton<ISecretProtector, DataProtectionSecretProtector>();
 builder.Services.AddSingleton<IChatClientFactory, ChatClientFactory>();
+builder.Services.AddSingleton<ITranscriptionClientFactory, TranscriptionClientFactory>();
 builder.Services.AddScoped<IInferenceProviderStore, InferenceApiProviderStore>();
 builder.Services.AddSingleton<IInferenceProviderResolver, InferenceProviderResolver>();
 builder.Services.AddSingleton<IAgentChatClientProvider, AgentChatClientProvider>();

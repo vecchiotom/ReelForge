@@ -93,7 +93,9 @@ public record WorkflowStepResponse(
     string? TrueBranchStepOrder = null,
     string? FalseBranchStepOrder = null,
     string? ParallelAgentIdsJson = null,
-    string? ExtractConfigJson = null);
+    string? ExtractConfigJson = null,
+    string? VideoAnalyzeConfigJson = null,
+    string? VideoCompileConfigJson = null);
 
 public record CreateWorkflowRequest(string Name, List<CreateWorkflowStepRequest> Steps, bool RequiresUserInput = false);
 
@@ -114,7 +116,9 @@ public record CreateWorkflowStepRequest(
     string? TrueBranchStepOrder = null,
     string? FalseBranchStepOrder = null,
     string? ParallelAgentIdsJson = null,
-    string? ExtractConfigJson = null);
+    string? ExtractConfigJson = null,
+    string? VideoAnalyzeConfigJson = null,
+    string? VideoCompileConfigJson = null);
 public record UpdateWorkflowRequest(string? Name, List<CreateWorkflowStepRequest> Steps, bool? RequiresUserInput = null);
 
 public record WorkflowTemplateSummaryResponse(
@@ -142,7 +146,8 @@ public record StepResultResponse(
     string? InputJson = null, string? OutputJson = null,
     string? Status = null, string? ErrorDetails = null,
     int? IterationNumber = null, DateTime? CompletedAt = null,
-    string? OutputStorageKey = null);
+    string? OutputStorageKey = null,
+    string? ArtifactStorageKey = null);
 
 public record ReviewScoreResponse(
     Guid Id, int IterationNumber, int Score, string Comments, DateTime CreatedAt);

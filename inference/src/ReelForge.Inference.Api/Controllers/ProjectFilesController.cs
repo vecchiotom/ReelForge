@@ -110,6 +110,11 @@ public class ProjectFilesController : ControllerBase
             category: "userFiles",
             originalPath: relativePath ?? file.FileName);
 
+        // R22: video/audio uploads (raw source footage for the video-editing workflow) must never
+        // be handed to the text summarizer or the vector/embedding chunker — both assume text
+        // content, and a large mp4/wav would otherwise be queued into them regardless of size.
+        bool isMediaUpload = IsVideoOrAudioMimeType(file.ContentType);
+
         ProjectFile projectFile = new()
         {
             Id = fileId,
@@ -125,23 +130,26 @@ public class ProjectFilesController : ControllerBase
             StorageMetadataJson = storedObject.StorageMetadataJson,
             MimeType = file.ContentType,
             SizeBytes = file.Length,
-            SummaryStatus = SummaryStatus.Pending,
-            IndexingStatus = FileIndexingStatus.Pending,
+            SummaryStatus = isMediaUpload ? SummaryStatus.Done : SummaryStatus.Pending,
+            IndexingStatus = isMediaUpload ? FileIndexingStatus.NotIndexed : FileIndexingStatus.Pending,
             UploadedAt = DateTime.UtcNow
         };
 
         _db.ProjectFiles.Add(projectFile);
         await _db.SaveChangesAsync(ct);
 
-        await _publishEndpoint.Publish(new ProjectFileIndexingRequested
+        if (!isMediaUpload)
         {
-            ProjectId = projectId,
-            FileId = projectFile.Id,
-            Operation = "Upsert",
-            RequestedAt = DateTime.UtcNow
-        }, ct);
+            await _publishEndpoint.Publish(new ProjectFileIndexingRequested
+            {
+                ProjectId = projectId,
+                FileId = projectFile.Id,
+                Operation = "Upsert",
+                RequestedAt = DateTime.UtcNow
+            }, ct);
 
-        await _summarizationQueue.QueueAsync(new FileSummarizationTask(projectFile.Id), ct);
+            await _summarizationQueue.QueueAsync(new FileSummarizationTask(projectFile.Id), ct);
+        }
 
         return StatusCode(201, new ProjectFileResponse(
             projectFile.Id,
@@ -639,6 +647,11 @@ public class ProjectFilesController : ControllerBase
             eligibleFiles,
             eligibleFiles > selectedFiles.Count));
     }
+
+    private static bool IsVideoOrAudioMimeType(string? mimeType) =>
+        !string.IsNullOrEmpty(mimeType) &&
+        (mimeType.StartsWith("video/", StringComparison.OrdinalIgnoreCase) ||
+         mimeType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase));
 
     private static bool IsLikelyText(string mimeType, string fileName)
     {
