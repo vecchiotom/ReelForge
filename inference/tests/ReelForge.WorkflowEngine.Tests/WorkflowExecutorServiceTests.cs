@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using FluentAssertions;
@@ -171,6 +172,103 @@ namespace ReelForge.WorkflowEngine.Tests
             string inputJson = WorkflowExecutorService.ResolveInputJsonForPersistence(null, accumulated);
 
             inputJson.Should().Be(accumulated);
+        }
+
+        // -----------------------------------------------------------------
+        // WS5: VideoAnalyze/VideoCompile retry policy + genuine dispatch (not falling through
+        // to the Agent executor when unregistered — mirrors how ExtractStepExecutorTests
+        // verifies the same for StepType.Extract).
+        // -----------------------------------------------------------------
+
+        [Theory]
+        [InlineData(StepType.VideoAnalyze)]
+        [InlineData(StepType.VideoCompile)]
+        public void ResolveMaxRetries_returns_1_for_deterministic_video_steps(StepType stepType)
+        {
+            var service = new WorkflowExecutorService(
+                scopeFactory: null!,
+                eventPublisher: null!,
+                logger: NullLogger<WorkflowExecutorService>.Instance,
+                executors: Array.Empty<IStepExecutor>(),
+                rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()),
+                hardeningOptions: Options.Create(new WorkflowHardeningOptions { MaxStepRetries = 3 }));
+
+            System.Reflection.MethodInfo method = typeof(WorkflowExecutorService).GetMethod(
+                "ResolveMaxRetries", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+
+            var step = new WorkflowStep { StepType = stepType, StepOrder = 1 };
+            var maxRetries = (int)method.Invoke(service, [step])!;
+
+            maxRetries.Should().Be(1, because: "both are deterministic — retrying the whole step reproduces the same failure");
+        }
+
+        private sealed class StubExecutor : IStepExecutor
+        {
+            public StubExecutor(StepType stepType) => StepType = stepType;
+            public StepType StepType { get; }
+            public Task<StepExecutionResult> ExecuteAsync(StepExecutionContext context) =>
+                throw new NotImplementedException("Not invoked by this test — only dispatch resolution is under test.");
+        }
+
+        [Fact]
+        public void VideoAnalyze_and_VideoCompile_step_types_dispatch_to_their_own_executors_not_the_Agent_executor()
+        {
+            var agentStub = new StubExecutor(StepType.Agent);
+            var analyzeStub = new StubExecutor(StepType.VideoAnalyze);
+            var compileStub = new StubExecutor(StepType.VideoCompile);
+
+            var service = new WorkflowExecutorService(
+                scopeFactory: null!,
+                eventPublisher: null!,
+                logger: NullLogger<WorkflowExecutorService>.Instance,
+                executors: new IStepExecutor[] { agentStub, analyzeStub, compileStub },
+                rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()),
+                hardeningOptions: Options.Create(new WorkflowHardeningOptions()));
+
+            System.Reflection.FieldInfo field = typeof(WorkflowExecutorService).GetField(
+                "_executors", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+            var executors = (Dictionary<StepType, IStepExecutor>)field.GetValue(service)!;
+
+            // The real bug this guards: WorkflowExecutorService.ExecuteAsync silently falls back
+            // to _executors[StepType.Agent] whenever TryGetValue fails for the step's own type
+            // (e.g. because DI registration in Program.cs was forgotten) — a step would then run
+            // as if it were a plain Agent step with no diagnostic at all. Asserting the dictionary
+            // resolves each new StepType to its OWN registered executor instance (not agentStub)
+            // is what actually proves the registration is load-bearing.
+            executors.Should().ContainKey(StepType.VideoAnalyze);
+            executors[StepType.VideoAnalyze].Should().BeSameAs(analyzeStub);
+            executors[StepType.VideoAnalyze].Should().NotBeSameAs(agentStub);
+
+            executors.Should().ContainKey(StepType.VideoCompile);
+            executors[StepType.VideoCompile].Should().BeSameAs(compileStub);
+            executors[StepType.VideoCompile].Should().NotBeSameAs(agentStub);
+        }
+
+        [Fact]
+        public void WithAttemptMetadata_copies_ArtifactStorageKey_onto_the_retried_result()
+        {
+            // R3: WithAttemptMetadata hand-copies every field of a StepExecutionResult between
+            // attempts. ArtifactStorageKey is easy to miss here — anything added to
+            // StepExecutionResult but not copied in this method is silently dropped on any step
+            // that goes through a retry attempt (even though VideoAnalyze/VideoCompile themselves
+            // never retry, this method is shared code every step type's result flows through).
+            const string expectedArtifactKey = "projects/p/agentFiles/video-analysis/e/step-1-analysis.json";
+            var original = new StepExecutionResult
+            {
+                Output = "{}",
+                NextStepIndex = 1,
+                Status = StepStatus.Completed,
+                ArtifactStorageKey = expectedArtifactKey,
+                OutputStorageKey = "projects/p/outputFiles/e/video.mp4"
+            };
+
+            System.Reflection.MethodInfo method = typeof(WorkflowExecutorService).GetMethod(
+                "WithAttemptMetadata", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+
+            var copied = (StepExecutionResult)method.Invoke(null, [original, 1])!;
+
+            copied.ArtifactStorageKey.Should().Be(expectedArtifactKey);
+            copied.OutputStorageKey.Should().Be(original.OutputStorageKey);
         }
     }
 

@@ -26,6 +26,7 @@ using ReelForge.WorkflowEngine.Services.Inference;
 using ReelForge.WorkflowEngine.Services.Storage;
 using ReelForge.WorkflowEngine.Services.Messaging;
 using ReelForge.WorkflowEngine.Services.RemotionSkills;
+using ReelForge.WorkflowEngine.Services.Video;
 using ReelForge.WorkflowEngine.Workers;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
@@ -72,6 +73,17 @@ builder.Services.AddSingleton<IChatClientFactory, ChatClientFactory>();
 builder.Services.AddScoped<IInferenceProviderStore, WorkflowEngineProviderStore>();
 builder.Services.AddSingleton<IInferenceProviderResolver, InferenceProviderResolver>();
 builder.Services.AddSingleton<IAgentChatClientProvider, AgentChatClientProvider>();
+builder.Services.AddSingleton<ITranscriptionClientFactory, TranscriptionClientFactory>();
+
+// --- Video editing (ffmpeg/ffprobe pipeline) ---
+builder.Services.Configure<VideoEditingOptions>(builder.Configuration.GetSection(VideoEditingOptions.SectionName));
+// IVideoToolRunner MUST be a singleton: its concurrency-limiting semaphore (R13) is only
+// process-wide if exactly one instance exists for the lifetime of the WorkflowEngine process.
+builder.Services.AddSingleton<IVideoToolRunner, FfmpegVideoToolRunner>();
+builder.Services.AddSingleton<IMediaProbe, FfprobeMediaProbe>();
+builder.Services.AddSingleton<ISilenceDetector, FfmpegSilenceDetector>();
+builder.Services.AddSingleton<IShotDetector, FfmpegShotDetector>();
+builder.Services.AddSingleton<IAudioExtractor, FfmpegAudioExtractor>();
 
 // --- MinIO / S3 ---
 builder.Services.AddSingleton<IAmazonS3>(sp =>
@@ -99,6 +111,7 @@ builder.Services.AddSingleton<IReelForgeAgent, DirectorAgentImpl>();
 builder.Services.AddSingleton<IReelForgeAgent, ScriptwriterAgentImpl>();
 builder.Services.AddSingleton<IReelForgeAgent, AuthorAgentImpl>();
 builder.Services.AddSingleton<IReelForgeAgent, ReviewAgentImpl>();
+builder.Services.AddSingleton<IReelForgeAgent, VideoStoryEditorAgent>();
 builder.Services.AddSingleton<IAgentRegistry, AgentRegistry>();
 builder.Services.AddSingleton<IAgentToolProvider, AgentToolProvider>();
 builder.Services.AddSingleton<IProjectFileWorkspace, ProjectFileWorkspace>();
@@ -120,6 +133,8 @@ builder.Services.AddSingleton<IStepExecutor, ForEachStepExecutor>();
 builder.Services.AddSingleton<IStepExecutor, ReviewLoopStepExecutor>();
 builder.Services.AddSingleton<IStepExecutor, ParallelStepExecutor>();
 builder.Services.AddSingleton<IStepExecutor, ExtractStepExecutor>();
+builder.Services.AddSingleton<IStepExecutor, VideoAnalyzeStepExecutor>();
+builder.Services.AddSingleton<IStepExecutor, VideoCompileStepExecutor>();
 
 // --- Workflow Executor ---
 builder.Services.AddScoped<WorkflowExecutorService>();

@@ -4,7 +4,21 @@ using ReelForge.WorkflowEngine.Agents;
 
 namespace ReelForge.WorkflowEngine.Execution;
 
-public record StepOutputHistoryEntry(int StepOrder, string StepLabel, string Output);
+/// <summary>
+/// <paramref name="OutputStorageKey"/>/<paramref name="ArtifactStorageKey"/> mirror the same
+/// fields on <see cref="WorkflowStepResult"/> for the step that produced this history entry —
+/// carried here so <c>VideoSourceKind.StepOutput</c>/<c>PreviousStepOutput</c> (a prior render or
+/// VideoCompile step) and cross-step artifact resolution (a prior VideoAnalyze step, referenced
+/// by <c>VideoCompileStepConfig.AnalysisStepOrder</c>) can resolve within the same execution
+/// without a DB round-trip. Both default to null so every pre-existing 3-arg call site
+/// (Extract/Agent/etc. history entries, which never set either) keeps compiling unchanged.
+/// </summary>
+public record StepOutputHistoryEntry(
+    int StepOrder,
+    string StepLabel,
+    string Output,
+    string? OutputStorageKey = null,
+    string? ArtifactStorageKey = null);
 
 /// <summary>
 /// Context passed to each step executor containing all needed state.
@@ -220,4 +234,14 @@ public class StepExecutionResult
     /// "outputs/" prefix.
     /// </summary>
     public string? OutputStorageKey { get; init; }
+
+    /// <summary>
+    /// S3/MinIO storage key for a large, non-playable JSON artifact produced during this step
+    /// (a VideoAnalyze step's full analysis document, or a VideoCompile step's EDL audit trail).
+    /// Mirrors <see cref="WorkflowStepResult.ArtifactStorageKey"/> — kept as a SEPARATE field
+    /// from <see cref="OutputStorageKey"/> for the same reason that column is separate: an
+    /// outputFiles-prefixed OutputStorageKey is treated as a playable video by OutputsController,
+    /// so a JSON artifact must never be confused with one.
+    /// </summary>
+    public string? ArtifactStorageKey { get; init; }
 }

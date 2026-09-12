@@ -203,6 +203,7 @@ public class WorkflowExecutorService
                     stepResult.IterationNumber = result.IterationNumber;
                     stepResult.CompletedAt = DateTime.UtcNow;
                     stepResult.OutputStorageKey = result.OutputStorageKey;
+                    stepResult.ArtifactStorageKey = result.ArtifactStorageKey;
 
                     await db.SaveChangesAsync(ct);
                     await _eventPublisher.PublishStepCompletedAsync(execution, step, stepResult, result, ct);
@@ -244,6 +245,7 @@ public class WorkflowExecutorService
                 stepResult.IterationNumber = result.IterationNumber;
                 stepResult.CompletedAt = DateTime.UtcNow;
                 stepResult.OutputStorageKey = result.OutputStorageKey;
+                stepResult.ArtifactStorageKey = result.ArtifactStorageKey;
 
                 // Handle review scores for ReviewLoop steps
                 if (step.StepType == StepType.ReviewLoop && result.IterationNumber.HasValue)
@@ -291,7 +293,8 @@ public class WorkflowExecutorService
                     string stepLabel = string.IsNullOrWhiteSpace(step.Label)
                         ? step.AgentDefinition.Name
                         : step.Label;
-                    stepOutputHistory.Add(new StepOutputHistoryEntry(step.StepOrder, stepLabel, result.Output));
+                    stepOutputHistory.Add(new StepOutputHistoryEntry(
+                        step.StepOrder, stepLabel, result.Output, result.OutputStorageKey, result.ArtifactStorageKey));
                 }
                 iterationCount = result.NewIterationCount;
                 currentStepIndex = result.NextStepIndex;
@@ -532,8 +535,17 @@ public class WorkflowExecutorService
 
     private int ResolveMaxRetries(WorkflowStep step)
     {
-        if (step.StepType == StepType.Extract)
-            return 1; // deterministic: retrying reproduces the same failure
+        if (step.StepType == StepType.Extract
+            || step.StepType == StepType.VideoAnalyze
+            || step.StepType == StepType.VideoCompile)
+        {
+            // Deterministic, non-LLM steps: retrying the whole step reproduces the same failure
+            // (Extract) or re-burns minutes of ffmpeg decode/encode to reproduce a deterministic
+            // failure (VideoAnalyze/VideoCompile). ASR's own network call inside
+            // VideoAnalyzeStepExecutor has its own small bounded retry around just that call —
+            // it does not go through this outer step-level retry mechanism.
+            return 1;
+        }
 
         int configuredDefault = Math.Clamp(_hardeningOptions.MaxStepRetries, 1, 6);
         AgentType? agentType = step.AgentDefinition?.AgentType;
@@ -579,7 +591,11 @@ public class WorkflowExecutorService
             Status = result.Status,
             ErrorDetails = result.ErrorDetails,
             IterationNumber = result.IterationNumber,
-            OutputStorageKey = result.OutputStorageKey
+            OutputStorageKey = result.OutputStorageKey,
+            // Easy to miss (plan R3): this method hand-copies every field of the attempt's
+            // result — anything added to StepExecutionResult but not copied here is silently
+            // dropped on any step that goes through a retry attempt.
+            ArtifactStorageKey = result.ArtifactStorageKey
         };
     }
 
