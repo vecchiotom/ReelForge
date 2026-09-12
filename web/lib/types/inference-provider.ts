@@ -1,9 +1,18 @@
 export type InferenceProviderKind = 'AzureOpenAI' | 'OpenAICompatible';
 
+/**
+ * What an InferenceProvider row can be used for. Optional/TODO: the backend `Capability` column
+ * and DTO field are WS4 (Inference API) work landing alongside this video-editing initiative;
+ * this field is added here so the transcription-provider picker (VideoAnalyzeStepConfig) can
+ * filter by it once WS4 ships. Until then it will simply be undefined on every row.
+ */
+export type InferenceProviderCapability = 'Chat' | 'Transcription';
+
 export interface InferenceProvider {
   id: string;
   name: string;
   kind: InferenceProviderKind;
+  capability?: InferenceProviderCapability;
   endpoint: string;
   modelName: string;
   hasApiKey: boolean;

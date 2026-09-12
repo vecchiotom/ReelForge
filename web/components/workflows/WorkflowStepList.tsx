@@ -6,7 +6,13 @@ import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, us
 import type { DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
 import { StepCard } from './StepCard';
-import type { AgentInputContextMode, ExtractStepConfig as ExtractStepConfigValue, StepType } from '@/lib/types/workflow';
+import type {
+  AgentInputContextMode,
+  ExtractStepConfig as ExtractStepConfigValue,
+  StepType,
+  VideoAnalyzeStepConfig as VideoAnalyzeStepConfigValue,
+  VideoCompileStepConfig as VideoCompileStepConfigValue,
+} from '@/lib/types/workflow';
 
 export interface StepData {
   id: string;
@@ -27,6 +33,10 @@ export interface StepData {
   parallelAgentIds: string[];
   /** Extract step configuration (Extract step type only). */
   extractConfig: ExtractStepConfigValue | null;
+  /** VideoAnalyze step configuration (VideoAnalyze step type only). */
+  videoAnalyzeConfig: VideoAnalyzeStepConfigValue | null;
+  /** VideoCompile step configuration (VideoCompile step type only). */
+  videoCompileConfig: VideoCompileStepConfigValue | null;
 }
 
 interface WorkflowStepListProps {
@@ -71,6 +81,8 @@ export function WorkflowStepList({ steps, onChange }: WorkflowStepListProps) {
         falseBranchStepOrder: null,
         parallelAgentIds: [],
         extractConfig: null,
+        videoAnalyzeConfig: null,
+        videoCompileConfig: null,
       },
     ]);
   };

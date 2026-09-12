@@ -1,7 +1,7 @@
 'use client';
 
 import { Modal, Stack, Button, Text } from '@mantine/core';
-import { IconRobot, IconGitBranch, IconRepeat, IconStarFilled, IconLayoutColumns, IconFilterCog } from '@tabler/icons-react';
+import { IconRobot, IconGitBranch, IconRepeat, IconStarFilled, IconLayoutColumns, IconFilterCog, IconWaveSine, IconScissors } from '@tabler/icons-react';
 import type { StepType } from '@/lib/types/workflow';
 
 interface AddStepModalProps {
@@ -53,6 +53,20 @@ export function AddStepModal({ opened, onClose, onAdd }: AddStepModalProps) {
       icon: <IconFilterCog size={24} />,
       color: 'grape',
       description: 'Deterministically reduce data before an AI step — no model call',
+    },
+    {
+      type: 'VideoAnalyze',
+      label: 'Analyze Video',
+      icon: <IconWaveSine size={24} />,
+      color: 'blue',
+      description: 'Deterministic ffmpeg-based derushing — silence, shot, and transcript analysis',
+    },
+    {
+      type: 'VideoCompile',
+      label: 'Compile Video',
+      icon: <IconScissors size={24} />,
+      color: 'indigo',
+      description: 'Deterministic ffmpeg-based cutting from an editorial decision',
     },
   ];
 

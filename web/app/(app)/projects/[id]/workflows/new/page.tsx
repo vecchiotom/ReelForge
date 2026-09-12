@@ -73,6 +73,8 @@ export default function NewWorkflowPage({ params }: { params: Promise<{ id: stri
           falseBranchStepOrder: s.falseBranchStepOrder,
           parallelAgentIdsJson: s.parallelAgentIds.length > 0 ? JSON.stringify(s.parallelAgentIds) : null,
           extractConfigJson: s.extractConfig ? JSON.stringify(s.extractConfig) : null,
+          videoAnalyzeConfigJson: s.videoAnalyzeConfig ? JSON.stringify(s.videoAnalyzeConfig) : null,
+          videoCompileConfigJson: s.videoCompileConfig ? JSON.stringify(s.videoCompileConfig) : null,
         })),
       });
       notifications.show({ title: 'Created', message: 'Workflow created', color: 'green' });
@@ -158,7 +160,7 @@ export default function NewWorkflowPage({ params }: { params: Promise<{ id: stri
             size="lg"
             {...form.getInputProps('name')}
           />
-          <FlowchartBuilderWrapper steps={steps} onChange={setSteps} />
+          <FlowchartBuilderWrapper steps={steps} onChange={setSteps} projectId={projectId} />
           <Button type="submit" loading={loading} size="lg" variant="gradient" gradient={{ from: 'violet', to: 'purple' }}>
             Create Workflow
           </Button>

@@ -75,17 +75,23 @@ interface InputRefPickerProps {
   value: ExtractInputRef | undefined;
   onChange: (ref: ExtractInputRef) => void;
   priorStepOptions: { value: string; label: string }[];
+  /** Restricts the offered sources, e.g. VideoCompileStepConfig's `decision` only accepts Previous|Step. */
+  allowedSources?: ExtractInputSource[];
 }
 
-function InputRefPicker({ label, value, onChange, priorStepOptions }: InputRefPickerProps) {
+/** Exported so other step-config forms (e.g. VideoCompileStepConfig's `decision` field) can reuse it verbatim. */
+export function InputRefPicker({ label, value, onChange, priorStepOptions, allowedSources }: InputRefPickerProps) {
   const from = value?.from ?? 'Previous';
+  const sourceOptions = allowedSources
+    ? INPUT_SOURCE_OPTIONS.filter((o) => allowedSources.includes(o.value))
+    : INPUT_SOURCE_OPTIONS;
   return (
     <Group gap="xs" align="flex-end" grow onClick={(e) => e.stopPropagation()}>
       <Select
         label={label}
         size="xs"
         value={from}
-        data={INPUT_SOURCE_OPTIONS}
+        data={sourceOptions}
         onChange={(v) => {
           if (!v) return;
           const nextFrom = v as ExtractInputSource;
