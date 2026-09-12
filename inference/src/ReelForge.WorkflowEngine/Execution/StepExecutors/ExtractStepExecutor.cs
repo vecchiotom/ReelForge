@@ -23,9 +23,13 @@ namespace ReelForge.WorkflowEngine.Execution.StepExecutors;
 /// </summary>
 public class ExtractStepExecutor : IStepExecutor
 {
+    // Enum values in ExtractConfigJson use the exact C# member name (e.g. "Project", "Step"),
+    // matching the rest of the app's convention where StepType/AgentType are exposed to the
+    // frontend as PascalCase strings — the frontend's ExtractOperation/ExtractInputSource TS
+    // unions mirror that. Property names still follow JsonSerializerDefaults.Web (camelCase).
     private static readonly JsonSerializerOptions ConfigJsonOptions = new(JsonSerializerDefaults.Web)
     {
-        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
+        Converters = { new JsonStringEnumConverter() }
     };
 
     private static readonly JsonSerializerOptions EnvelopeJsonOptions = new(JsonSerializerDefaults.Web);

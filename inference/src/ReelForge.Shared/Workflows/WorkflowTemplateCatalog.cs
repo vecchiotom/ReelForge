@@ -74,7 +74,7 @@ public static class WorkflowTemplateCatalog
                     "Reduce component inventory to a lean view",
                     StepType.Extract,
                     ExtractConfigJson: """
-                        {"version":1,"operation":"project","inputs":{"source":{"from":"step","stepOrder":3}},"path":"$.components","fields":["name","filePath","responsibility"],"take":40,"maxOutputChars":8000,"expect":{"minItems":1}}
+                        {"version":1,"operation":"Project","inputs":{"source":{"from":"Step","stepOrder":3}},"path":"$.components","fields":["name","filePath","responsibility"],"take":40,"maxOutputChars":8000,"expect":{"minItems":1}}
                         """),
                 new(AgentType.RemotionComponentTranslator, "Translate to Remotion scenes (lean context)", AgentInputContextMode: AgentInputContextMode.SelectedPriorSteps, SelectedPriorStepOrders: [1, 2, 4, 5, 6]),
                 new(AgentType.AnimationStrategyAgent, "Create animation strategy (lean context)", AgentInputContextMode: AgentInputContextMode.SelectedPriorSteps, SelectedPriorStepOrders: [5, 6, 7]),

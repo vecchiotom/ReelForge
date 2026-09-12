@@ -69,7 +69,7 @@ public class ExtractStepExecutorTests
         string sourceJson = JsonSerializer.Serialize(new { components = items });
 
         const string config = """
-            {"version":1,"operation":"project","inputs":{"source":{"from":"previous"}},"path":"$.components","fields":["name","filePath"],"take":10}
+            {"version":1,"operation":"Project","inputs":{"source":{"from":"Previous"}},"path":"$.components","fields":["name","filePath"],"take":10}
             """;
 
         StepExecutionContext context = CreateContext(
@@ -97,7 +97,7 @@ public class ExtractStepExecutorTests
 
         // No take/skip — the cap alone must force items to be dropped.
         const string config = """
-            {"version":1,"operation":"project","inputs":{"source":{"from":"previous"}},"path":"$.components","maxOutputChars":1000}
+            {"version":1,"operation":"Project","inputs":{"source":{"from":"Previous"}},"path":"$.components","maxOutputChars":1000}
             """;
 
         StepExecutionContext context = CreateContext(
@@ -127,7 +127,7 @@ public class ExtractStepExecutorTests
         string sourceJson = JsonSerializer.Serialize(new { components = Array.Empty<object>() });
 
         const string config = """
-            {"version":1,"operation":"project","inputs":{"source":{"from":"previous"}},"path":"$.components","expect":{"minItems":1}}
+            {"version":1,"operation":"Project","inputs":{"source":{"from":"Previous"}},"path":"$.components","expect":{"minItems":1}}
             """;
 
         StepExecutionContext context = CreateContext(
@@ -156,7 +156,7 @@ public class ExtractStepExecutorTests
         });
 
         const string config = """
-            {"version":1,"operation":"resolve","inputs":{"ids":{"from":"step","stepOrder":1},"records":{"from":"step","stepOrder":2}},"idsPath":"$.selectedIds","recordsPath":"$.view.items","onUnknownId":"fail"}
+            {"version":1,"operation":"Resolve","inputs":{"ids":{"from":"Step","stepOrder":1},"records":{"from":"Step","stepOrder":2}},"idsPath":"$.selectedIds","recordsPath":"$.view.items","onUnknownId":"Fail"}
             """;
 
         StepExecutionContext context = CreateContext(
@@ -191,7 +191,7 @@ public class ExtractStepExecutorTests
         });
 
         const string config = """
-            {"version":1,"operation":"resolve","inputs":{"ids":{"from":"step","stepOrder":1},"records":{"from":"step","stepOrder":2}},"idsPath":"$.selectedIds","recordsPath":"$.view.items","onUnknownId":"skip"}
+            {"version":1,"operation":"Resolve","inputs":{"ids":{"from":"Step","stepOrder":1},"records":{"from":"Step","stepOrder":2}},"idsPath":"$.selectedIds","recordsPath":"$.view.items","onUnknownId":"Skip"}
             """;
 
         StepExecutionContext context = CreateContext(
@@ -240,7 +240,7 @@ public class ExtractStepExecutorTests
             .ReturnsAsync(files);
 
         const string config = """
-            {"version":1,"operation":"files","inputs":{},"maxOutputChars":800}
+            {"version":1,"operation":"Files","inputs":{},"maxOutputChars":800}
             """;
 
         StepExecutionContext context = CreateContext(config, projectId: projectId);
