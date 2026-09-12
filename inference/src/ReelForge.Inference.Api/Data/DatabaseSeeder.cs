@@ -490,6 +490,13 @@ public static class DatabaseSeeder
              "#F59E0B")
         },
         {
+            AgentType.ExtractTransform,
+            ("ExtractTransform",
+             "Deterministic, non-LLM data extraction and projection. Runs code, never a model.",
+             "",
+             "#64748B")
+        },
+        {
             AgentType.FileSummarizerAgent,
             ("FileSummarizer",
              "Produces concise summaries of uploaded files.",

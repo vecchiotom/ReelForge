@@ -80,6 +80,14 @@ public class StepExecutionContext
         return composedInput;
     }
 
+    /// <summary>
+    /// Records what a deterministic (non-agent) step, such as an Extract step, actually
+    /// consumed as its input — a compact descriptor, not the raw upstream blob — so
+    /// <c>ResolveInputJsonForPersistence</c> persists something meaningful instead of falling
+    /// back to the full accumulated output.
+    /// </summary>
+    public void RecordResolvedInput(string? value) => LastResolvedAgentInput = value;
+
     public void RecordRetryFeedback(int attemptNumber, string? reason)
     {
         if (string.IsNullOrWhiteSpace(reason))

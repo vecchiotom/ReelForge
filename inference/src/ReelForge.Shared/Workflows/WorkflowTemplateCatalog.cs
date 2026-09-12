@@ -16,7 +16,8 @@ public sealed record WorkflowTemplateStepDefinition(
     IReadOnlyList<int>? SelectedPriorStepOrders = null,
     string? TrueBranchStepOrder = null,
     string? FalseBranchStepOrder = null,
-    IReadOnlyList<AgentType>? ParallelAgentTypes = null);
+    IReadOnlyList<AgentType>? ParallelAgentTypes = null,
+    string? ExtractConfigJson = null);
 
 public sealed record WorkflowTemplateDefinition(
     string Key,
@@ -53,6 +54,34 @@ public static class WorkflowTemplateCatalog
                 new(AgentType.DirectorAgent, "Build shot direction", AgentInputContextMode: AgentInputContextMode.FullWorkflow),
                 new(AgentType.AuthorAgent, "Assemble and render master composition", AgentInputContextMode: AgentInputContextMode.FullWorkflow),
                 new(AgentType.ReviewAgent, "Review quality and compliance", StepType.ReviewLoop, LoopTargetStepOrder: 10, MaxIterations: 2, MinScore: 8, AgentInputContextMode: AgentInputContextMode.FullWorkflow)
+            ]),
+        new(
+            Key: "lean-context-promo",
+            Name: "Lean Context Promo",
+            Description: "Opt-in variant of the starter workflow that inserts a deterministic Extract step to reduce the component inventory before it reaches downstream agents, cutting token usage. Demonstrates the Extract (op=project) pattern.",
+            Version: 1,
+            AutoCreateOnProject: false,
+            RequiresUserInput: false,
+            Steps:
+            [
+                new(AgentType.CodeStructureAnalyzer, "Analyze code structure", AgentInputContextMode: AgentInputContextMode.FullWorkflow),
+                new(AgentType.DependencyAnalyzer, "Analyze UI dependencies", AgentInputContextMode: AgentInputContextMode.PreviousStepOnly),
+                new(AgentType.ComponentInventoryAnalyzer, "Inventory components", AgentInputContextMode: AgentInputContextMode.PreviousStepOnly),
+                new(AgentType.RouteAndApiAnalyzer, "Map routes and API", AgentInputContextMode: AgentInputContextMode.PreviousStepOnly),
+                new(AgentType.StyleAndThemeExtractor, "Extract style tokens", AgentInputContextMode: AgentInputContextMode.PreviousStepOnly),
+                new(
+                    AgentType.ExtractTransform,
+                    "Reduce component inventory to a lean view",
+                    StepType.Extract,
+                    ExtractConfigJson: """
+                        {"version":1,"operation":"project","inputs":{"source":{"from":"step","stepOrder":3}},"path":"$.components","fields":["name","filePath","responsibility"],"take":40,"maxOutputChars":8000,"expect":{"minItems":1}}
+                        """),
+                new(AgentType.RemotionComponentTranslator, "Translate to Remotion scenes (lean context)", AgentInputContextMode: AgentInputContextMode.SelectedPriorSteps, SelectedPriorStepOrders: [1, 2, 4, 5, 6]),
+                new(AgentType.AnimationStrategyAgent, "Create animation strategy (lean context)", AgentInputContextMode: AgentInputContextMode.SelectedPriorSteps, SelectedPriorStepOrders: [5, 6, 7]),
+                new(AgentType.ScriptwriterAgent, "Draft narration and captions", AgentInputContextMode: AgentInputContextMode.PreviousStepOnly),
+                new(AgentType.DirectorAgent, "Build shot direction (lean context)", AgentInputContextMode: AgentInputContextMode.SelectedPriorSteps, SelectedPriorStepOrders: [1, 4, 5, 6, 7, 8, 9]),
+                new(AgentType.AuthorAgent, "Assemble and render master composition (lean context)", AgentInputContextMode: AgentInputContextMode.SelectedPriorSteps, SelectedPriorStepOrders: [6, 7, 8, 9, 10]),
+                new(AgentType.ReviewAgent, "Review quality and compliance", StepType.ReviewLoop, LoopTargetStepOrder: 11, MaxIterations: 2, MinScore: 8, AgentInputContextMode: AgentInputContextMode.FullWorkflow)
             ]),
         new(
             Key: "cinematic-feature-spotlight",

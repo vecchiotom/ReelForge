@@ -120,6 +120,7 @@ builder.Services.AddSingleton<IStepExecutor, ConditionalStepExecutor>();
 builder.Services.AddSingleton<IStepExecutor, ForEachStepExecutor>();
 builder.Services.AddSingleton<IStepExecutor, ReviewLoopStepExecutor>();
 builder.Services.AddSingleton<IStepExecutor, ParallelStepExecutor>();
+builder.Services.AddSingleton<IStepExecutor, ExtractStepExecutor>();
 
 // --- Workflow Executor ---
 builder.Services.AddScoped<WorkflowExecutorService>();

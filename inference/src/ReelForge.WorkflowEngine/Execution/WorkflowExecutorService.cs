@@ -532,6 +532,9 @@ public class WorkflowExecutorService
 
     private int ResolveMaxRetries(WorkflowStep step)
     {
+        if (step.StepType == StepType.Extract)
+            return 1; // deterministic: retrying reproduces the same failure
+
         int configuredDefault = Math.Clamp(_hardeningOptions.MaxStepRetries, 1, 6);
         AgentType? agentType = step.AgentDefinition?.AgentType;
 

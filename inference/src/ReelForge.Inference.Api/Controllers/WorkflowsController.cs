@@ -108,7 +108,8 @@ public class WorkflowsController : ControllerBase
                         s.LoopTargetStepOrder, s.MaxIterations, s.MinScore, s.InputMappingJson,
                         s.AgentInputContextMode.HasValue ? s.AgentInputContextMode.Value.ToString() : null,
                         s.SelectedPriorStepOrdersJson,
-                        s.TrueBranchStepOrder, s.FalseBranchStepOrder, s.ParallelAgentIdsJson)
+                        s.TrueBranchStepOrder, s.FalseBranchStepOrder, s.ParallelAgentIdsJson,
+                        s.ExtractConfigJson)
                 ).ToList(),
                 w.RequiresUserInput))
             .ToListAsync(ct);
@@ -373,7 +374,8 @@ public class WorkflowsController : ControllerBase
             SelectedPriorStepOrdersJson = req.SelectedPriorStepOrdersJson,
             TrueBranchStepOrder = req.TrueBranchStepOrder,
             FalseBranchStepOrder = req.FalseBranchStepOrder,
-            ParallelAgentIdsJson = req.ParallelAgentIdsJson
+            ParallelAgentIdsJson = req.ParallelAgentIdsJson,
+            ExtractConfigJson = req.ExtractConfigJson
         };
 
         if (req.StepType != null && Enum.TryParse<StepType>(req.StepType, out var stepType))
@@ -396,7 +398,8 @@ public class WorkflowsController : ControllerBase
                     s.StepType.ToString(), s.ConditionExpression, s.LoopSourceExpression,
                     s.LoopTargetStepOrder, s.MaxIterations, s.MinScore, s.InputMappingJson,
                     s.AgentInputContextMode?.ToString(), s.SelectedPriorStepOrdersJson,
-                    s.TrueBranchStepOrder, s.FalseBranchStepOrder, s.ParallelAgentIdsJson)
+                    s.TrueBranchStepOrder, s.FalseBranchStepOrder, s.ParallelAgentIdsJson,
+                    s.ExtractConfigJson)
             ).ToList(),
             workflow.RequiresUserInput);
 

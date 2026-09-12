@@ -91,7 +91,8 @@ public record WorkflowStepResponse(
     string? SelectedPriorStepOrdersJson = null,
     string? TrueBranchStepOrder = null,
     string? FalseBranchStepOrder = null,
-    string? ParallelAgentIdsJson = null);
+    string? ParallelAgentIdsJson = null,
+    string? ExtractConfigJson = null);
 
 public record CreateWorkflowRequest(string Name, List<CreateWorkflowStepRequest> Steps, bool RequiresUserInput = false);
 
@@ -111,7 +112,8 @@ public record CreateWorkflowStepRequest(
     string? SelectedPriorStepOrdersJson = null,
     string? TrueBranchStepOrder = null,
     string? FalseBranchStepOrder = null,
-    string? ParallelAgentIdsJson = null);
+    string? ParallelAgentIdsJson = null,
+    string? ExtractConfigJson = null);
 public record UpdateWorkflowRequest(string? Name, List<CreateWorkflowStepRequest> Steps, bool? RequiresUserInput = null);
 
 public record WorkflowTemplateSummaryResponse(
