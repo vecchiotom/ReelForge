@@ -176,6 +176,11 @@ namespace ReelForge.WorkflowEngine.Migrations
                         .HasColumnType("text")
                         .HasColumnName("api_key_last_four");
 
+                    b.Property<string>("Capability")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("capability");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
@@ -613,6 +618,14 @@ namespace ReelForge.WorkflowEngine.Migrations
                         .HasColumnType("text")
                         .HasColumnName("true_branch_step_order");
 
+                    b.Property<string>("VideoAnalyzeConfigJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("video_analyze_config_json");
+
+                    b.Property<string>("VideoCompileConfigJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("video_compile_config_json");
+
                     b.Property<Guid>("WorkflowDefinitionId")
                         .HasColumnType("uuid")
                         .HasColumnName("workflow_definition_id");
@@ -635,6 +648,10 @@ namespace ReelForge.WorkflowEngine.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
                         .HasColumnName("id");
+
+                    b.Property<string>("ArtifactStorageKey")
+                        .HasColumnType("text")
+                        .HasColumnName("artifact_storage_key");
 
                     b.Property<DateTime?>("CompletedAt")
                         .HasColumnType("timestamp with time zone")

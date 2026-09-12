@@ -68,7 +68,19 @@ public enum AgentType
     /// Deterministic, non-LLM data extraction and projection built-in agent used by
     /// StepType.Extract steps. Never sent to a model.
     /// </summary>
-    ExtractTransform
+    ExtractTransform,
+    /// <summary>
+    /// LLM agent that decides which shots/silence gaps/transcript spans to KEEP from a bounded,
+    /// id-anchored view of a video analysis (StepType.VideoAnalyze output). Never emits a
+    /// timestamp — see ReelForge.Shared.Data.OutputSchemas.VideoEditDecisionOutput.
+    /// </summary>
+    VideoStoryEditor,
+    /// <summary>
+    /// Deterministic, non-LLM video derushing and cutting built-in agent used by
+    /// StepType.VideoAnalyze and StepType.VideoCompile steps. Runs ffmpeg, never a model.
+    /// Identical role to ExtractTransform, one row serving both new deterministic step types.
+    /// </summary>
+    VideoTransform
 }
 
 /// <summary>
@@ -88,7 +100,18 @@ public enum StepType
     /// <summary>
     /// Deterministic, non-LLM projection step. See ReelForge.Shared.Workflows.ExtractStepConfig.
     /// </summary>
-    Extract
+    Extract,
+    /// <summary>
+    /// Deterministic, non-LLM video derush/analysis step (ffmpeg + optional ASR).
+    /// See ReelForge.Shared.Workflows.VideoAnalyzeStepConfig.
+    /// </summary>
+    VideoAnalyze,
+    /// <summary>
+    /// Deterministic, non-LLM video cut/compile step (ffmpeg). Resolves an editorial
+    /// decision's opaque ids to frame-accurate times against a VideoAnalyze artifact.
+    /// See ReelForge.Shared.Workflows.VideoCompileStepConfig.
+    /// </summary>
+    VideoCompile
 }
 
 /// <summary>
@@ -141,4 +164,18 @@ public enum InferenceProviderKind
 {
     AzureOpenAI,
     OpenAICompatible
+}
+
+/// <summary>
+/// What an <see cref="InferenceProvider"/> row is used for. A single row's <c>ModelName</c>
+/// cannot serve both roles (a Whisper deployment is a different deployment from a chat
+/// deployment, and many OpenAI-compatible chat gateways have no <c>/audio/transcriptions</c>
+/// endpoint at all), so this discriminator is load-bearing, not cosmetic: it determines which
+/// resolution path (chat vs. transcription) a provider is eligible for, and which "one default
+/// row" uniqueness constraint it participates in.
+/// </summary>
+public enum InferenceProviderCapability
+{
+    Chat,
+    Transcription
 }

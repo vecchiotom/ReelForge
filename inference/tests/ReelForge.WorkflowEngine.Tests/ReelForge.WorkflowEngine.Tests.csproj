@@ -18,6 +18,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\ReelForge.WorkflowEngine\ReelForge.WorkflowEngine.csproj" />
     <ProjectReference Include="..\..\src\ReelForge.Shared\ReelForge.Shared.csproj" />
+    <ProjectReference Include="..\..\src\ReelForge.Inference.Api\ReelForge.Inference.Api.csproj" />
   </ItemGroup>
 
 </Project>

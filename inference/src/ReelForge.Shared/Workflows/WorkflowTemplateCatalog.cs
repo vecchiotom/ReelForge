@@ -17,7 +17,9 @@ public sealed record WorkflowTemplateStepDefinition(
     string? TrueBranchStepOrder = null,
     string? FalseBranchStepOrder = null,
     IReadOnlyList<AgentType>? ParallelAgentTypes = null,
-    string? ExtractConfigJson = null);
+    string? ExtractConfigJson = null,
+    string? VideoAnalyzeConfigJson = null,
+    string? VideoCompileConfigJson = null);
 
 public sealed record WorkflowTemplateDefinition(
     string Key,
@@ -120,6 +122,34 @@ public static class WorkflowTemplateCatalog
                 new(AgentType.AnimationStrategyAgent, "Plan suspense pacing", AgentInputContextMode: AgentInputContextMode.FullWorkflow),
                 new(AgentType.AuthorAgent, "Assemble and render trailer", AgentInputContextMode: AgentInputContextMode.FullWorkflow),
                 new(AgentType.ReviewAgent, "Trailer impact review", StepType.ReviewLoop, LoopTargetStepOrder: 8, MaxIterations: 3, MinScore: 9, AgentInputContextMode: AgentInputContextMode.FullWorkflow)
+            ]),
+        new(
+            Key: "video-derush-edit",
+            Name: "Video Derush & Edit",
+            Description: "Opt-in template that analyzes a real source video (silence, shots, optional ASR transcription), has a story-editor agent decide which spans to keep by referencing opaque ids only, then compiles the edit with ffmpeg. Demonstrates the VideoAnalyze/VideoCompile step types.",
+            Version: 1,
+            AutoCreateOnProject: false,
+            RequiresUserInput: false,
+            Steps:
+            [
+                new(
+                    AgentType.VideoTransform,
+                    "Analyze source video",
+                    StepType.VideoAnalyze,
+                    VideoAnalyzeConfigJson: """
+                        {"version":1,"source":{"kind":"PreviousStepOutput"}}
+                        """),
+                new(
+                    AgentType.VideoStoryEditor,
+                    "Decide which spans to keep",
+                    AgentInputContextMode: AgentInputContextMode.PreviousStepOnly),
+                new(
+                    AgentType.VideoTransform,
+                    "Compile edited video",
+                    StepType.VideoCompile,
+                    VideoCompileConfigJson: """
+                        {"version":1,"decision":{"from":"Previous"},"analysisStepOrder":1}
+                        """)
             ])
     ];
 

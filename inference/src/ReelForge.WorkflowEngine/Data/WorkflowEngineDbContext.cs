@@ -109,6 +109,9 @@ public class WorkflowEngineDbContext : DbContext
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Kind)
                 .HasConversion<string>();
+            entity.Property(e => e.Capability)
+                .HasConversion<string>()
+                .HasDefaultValue(InferenceProviderCapability.Chat);
             entity.Property(e => e.ExtraHeadersJson)
                 .HasColumnType("jsonb");
             entity.ToTable("inference_providers", t => t.ExcludeFromMigrations());
@@ -145,6 +148,10 @@ public class WorkflowEngineDbContext : DbContext
             entity.Property(e => e.ParallelAgentIdsJson)
                 .HasColumnType("jsonb");
             entity.Property(e => e.ExtractConfigJson)
+                .HasColumnType("jsonb");
+            entity.Property(e => e.VideoAnalyzeConfigJson)
+                .HasColumnType("jsonb");
+            entity.Property(e => e.VideoCompileConfigJson)
                 .HasColumnType("jsonb");
             entity.Property(e => e.StepType)
                 .HasConversion<string>();

@@ -14,6 +14,14 @@ public class InferenceProvider
 
     public InferenceProviderKind Kind { get; set; }
 
+    /// <summary>
+    /// What this provider is used for. Exactly one enabled row is expected to have
+    /// <see cref="IsDefault"/> set to true PER capability (see the composite
+    /// (capability, is_default) filtered unique index) — a Chat default and a Transcription
+    /// default coexist independently.
+    /// </summary>
+    public InferenceProviderCapability Capability { get; set; } = InferenceProviderCapability.Chat;
+
     /// <summary>Azure resource URL, or OpenAI-compatible base URL.</summary>
     public string Endpoint { get; set; } = string.Empty;
 

@@ -497,6 +497,57 @@ public static class DatabaseSeeder
              "#64748B")
         },
         {
+            AgentType.VideoTransform,
+            ("VideoTransform",
+             "Deterministic, non-LLM video derushing and cutting. Runs ffmpeg, never a model.",
+             "",
+             "#0EA5E9")
+        },
+        {
+            AgentType.VideoStoryEditor,
+            ("VideoStoryEditor",
+             "Decides which shots, silence gaps, and transcript spans to keep from a bounded, id-anchored view of a source video.",
+             """
+             You are a video story editor. You are given a bounded view of a source video's
+             shots, silence gaps, and (when available) transcript segments — each with a short
+             opaque id such as "s2", "g3", or "t7". Decide which spans of the video to KEEP, in
+             order, to produce a tight, well-paced edit that keeps the strongest moments and
+             removes dead air, false starts, and filler.
+
+             ## Rules — hard constraints, not suggestions
+
+             - You may reference ONLY ids that appear in the view you were given. Never invent
+               an id, never guess one, never reuse an id from a previous run or a different video.
+             - You must NEVER mention, estimate, or output a timestamp, duration, frame number,
+               or any other numeric time value, in your structured output or anywhere else. You
+               are not given frame-accurate timing and are not trusted with it — a separate
+               deterministic step resolves your chosen ids to exact times against the full
+               analysis artifact. Your only job is choosing which ids to keep.
+             - Express your decision only as an ordered list of Keep spans, each naming the
+               first and last id (inclusive) of a contiguous run to retain. Everything not
+               covered by a Keep span is cut — there is no separate "remove" list.
+             - Keep spans must stay in the same order the ids appear in the view (do not
+               reorder) and must not overlap.
+             - Prefer segments with clear, complete thoughts over fragments; prefer cutting
+               silence gaps and false starts; do not keep a shot solely because it is long.
+
+             ## Tools
+
+             Use `ListProjectFiles` and `ReadProjectFile` if you need to check other project
+             context (e.g. a brief or script) before deciding. You have no sandbox tools and no
+             ability to write files or render media — you only decide.
+
+             Output ONLY valid JSON matching the VideoEditDecisionOutput schema: a `keep` list
+             of {fromId, toId, reason} spans, an `editRationale` explaining your overall
+             approach, and a `suggestedTitle` for the edited video.
+
+             If the view given to you has too little material to make a meaningful edit (e.g.
+             no shots or segments at all), invoke the `FailWorkflow` tool with a clear
+             human-readable reason rather than fabricating a decision.
+             """,
+             "#0284C7")
+        },
+        {
             AgentType.FileSummarizerAgent,
             ("FileSummarizer",
              "Produces concise summaries of uploaded files.",
@@ -659,6 +710,7 @@ public static class DatabaseSeeder
         AgentType.AuthorAgent => "RenderManifestOutput",
         AgentType.ReviewAgent => "ReviewOutput",
         AgentType.FileSummarizerAgent => "FileSummaryOutput",
+        AgentType.VideoStoryEditor => "VideoEditDecisionOutput",
         _ => null
     };
 
@@ -678,6 +730,7 @@ public static class DatabaseSeeder
             AgentType.AuthorAgent => GenerateRenderManifestSchema(),
             AgentType.ReviewAgent => GenerateReviewSchema(),
             AgentType.FileSummarizerAgent => GenerateFileSummarySchema(),
+            AgentType.VideoStoryEditor => GenerateVideoEditDecisionSchema(),
             _ => null
         };
 
@@ -1152,5 +1205,32 @@ public static class DatabaseSeeder
             notablePatterns = new { type = "array", items = new { type = "string" } }
         },
         required = new[] { "fileType", "summary", "videoRelevance" }
+    };
+
+    private static object GenerateVideoEditDecisionSchema() => new
+    {
+        type = "object",
+        properties = new
+        {
+            keep = new
+            {
+                type = "array",
+                items = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        fromId = new { type = "string", description = "First offered id to keep, inclusive (e.g. \"t7\" or \"s2\"). Must be an id from the offered view — never invented." },
+                        toId = new { type = "string", description = "Last offered id to keep, inclusive. Must be >= fromId in the offered order." },
+                        reason = new { type = "string", description = "Why this span stays. Prose only — never a timestamp or duration." }
+                    },
+                    required = new[] { "fromId", "toId", "reason" }
+                },
+                description = "Ordered, strictly increasing, non-overlapping spans of offered ids to keep. Everything not covered is cut; there is no separate remove list."
+            },
+            editRationale = new { type = "string", description = "Overall explanation of the editorial approach. Prose only." },
+            suggestedTitle = new { type = "string", description = "A short suggested title for the edited video." }
+        },
+        required = new[] { "keep", "editRationale", "suggestedTitle" }
     };
 }

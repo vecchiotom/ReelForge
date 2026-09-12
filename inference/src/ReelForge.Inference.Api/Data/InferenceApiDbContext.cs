@@ -107,9 +107,17 @@ public class InferenceApiDbContext : DbContext
         {
             entity.HasKey(e => e.Id);
             entity.HasIndex(e => e.Name).IsUnique();
-            entity.HasIndex(e => e.IsDefault).IsUnique().HasFilter("is_default");
+            // One default row PER capability (a Chat default and a Transcription default
+            // coexist independently) — replaces the old UNIQUE(is_default) index, not a
+            // supplement to it (see R4: the old index would still admit two IsDefault rows,
+            // one per capability, which is exactly what we now want, but only via this
+            // composite shape).
+            entity.HasIndex(e => new { e.Capability, e.IsDefault }).IsUnique().HasFilter("is_default");
             entity.Property(e => e.Kind)
                 .HasConversion<string>();
+            entity.Property(e => e.Capability)
+                .HasConversion<string>()
+                .HasDefaultValue(InferenceProviderCapability.Chat);
             entity.Property(e => e.ExtraHeadersJson)
                 .HasColumnType("jsonb");
         });
