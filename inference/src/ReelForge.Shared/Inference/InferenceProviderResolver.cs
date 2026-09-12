@@ -58,9 +58,28 @@ public sealed class InferenceProviderResolver : IInferenceProviderResolver
             provider = overrideProvider;
         }
 
-        provider ??= snapshot.DefaultProvider;
+        provider ??= snapshot.DefaultChatProvider;
 
         return provider != null ? ResolveFromProvider(provider) : ResolveConfigFallback();
+    }
+
+    public async Task<ResolvedTranscriptionProvider?> ResolveTranscriptionAsync(Guid? explicitProviderId, CancellationToken ct)
+    {
+        Snapshot snapshot = await GetSnapshotAsync(ct);
+
+        InferenceProvider? provider = null;
+
+        if (explicitProviderId.HasValue &&
+            snapshot.ProvidersById.TryGetValue(explicitProviderId.Value, out InferenceProvider? explicitProvider))
+        {
+            // The store's LoadEnabledAsync only returns enabled providers, so a reference to a
+            // disabled (or deleted) provider simply misses here and falls through to the default.
+            provider = explicitProvider;
+        }
+
+        provider ??= snapshot.DefaultTranscriptionProvider;
+
+        return provider != null ? ResolveTranscriptionFromProvider(provider) : null;
     }
 
     private ResolvedInferenceProvider ResolveFromProvider(InferenceProvider provider)
@@ -83,6 +102,35 @@ public sealed class InferenceProviderResolver : IInferenceProviderResolver
         }
 
         return new ResolvedInferenceProvider(
+            provider.Id,
+            provider.Name,
+            provider.Kind,
+            provider.Endpoint,
+            provider.ModelName,
+            apiKey,
+            provider.TimeoutSeconds ?? DefaultTimeoutSeconds);
+    }
+
+    private ResolvedTranscriptionProvider ResolveTranscriptionFromProvider(InferenceProvider provider)
+    {
+        string apiKey = string.Empty;
+
+        if (!string.IsNullOrEmpty(provider.ApiKeyEncrypted))
+        {
+            if (_secretProtector.TryUnprotect(provider.ApiKeyEncrypted, out string plaintext))
+            {
+                apiKey = plaintext;
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "Could not decrypt the API key for inference provider '{ProviderName}' ({ProviderId}); proceeding without a key.",
+                    provider.Name,
+                    provider.Id);
+            }
+        }
+
+        return new ResolvedTranscriptionProvider(
             provider.Id,
             provider.Name,
             provider.Kind,
@@ -132,9 +180,17 @@ public sealed class InferenceProviderResolver : IInferenceProviderResolver
             IReadOnlyDictionary<Guid, Guid?> overrides = await store.LoadAgentOverridesAsync(ct);
 
             Dictionary<Guid, InferenceProvider> providersById = enabled.ToDictionary(p => p.Id);
-            InferenceProvider? defaultProvider = enabled.FirstOrDefault(p => p.IsDefault);
 
-            Snapshot snapshot = new(providersById, overrides, defaultProvider, DateTime.UtcNow);
+            // R4: the capability split means "the default row" is no longer a single concept.
+            // A Transcription-capability default must never be handed to the chat path (and vice
+            // versa), so both lookups filter on Capability explicitly rather than sharing one
+            // "the IsDefault row" default.
+            InferenceProvider? defaultChatProvider = enabled.FirstOrDefault(
+                p => p.IsDefault && p.Capability == InferenceProviderCapability.Chat);
+            InferenceProvider? defaultTranscriptionProvider = enabled.FirstOrDefault(
+                p => p.IsDefault && p.Capability == InferenceProviderCapability.Transcription);
+
+            Snapshot snapshot = new(providersById, overrides, defaultChatProvider, defaultTranscriptionProvider, DateTime.UtcNow);
             _snapshot = snapshot;
             return snapshot;
         }
@@ -147,6 +203,7 @@ public sealed class InferenceProviderResolver : IInferenceProviderResolver
     private sealed record Snapshot(
         IReadOnlyDictionary<Guid, InferenceProvider> ProvidersById,
         IReadOnlyDictionary<Guid, Guid?> AgentOverrides,
-        InferenceProvider? DefaultProvider,
+        InferenceProvider? DefaultChatProvider,
+        InferenceProvider? DefaultTranscriptionProvider,
         DateTime LoadedAt);
 }

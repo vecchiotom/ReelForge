@@ -89,7 +89,123 @@ public class InferenceProviderResolverTests
         resolved.ProviderId.Should().Be(defaultProvider.Id);
     }
 
-    private static InferenceProvider MakeProvider(bool isDefault, string name) => new()
+    // --- R4 regression: the (capability, is_default) split must never let a default row of
+    // one capability answer a resolution for the other capability, regardless of which row
+    // happens to appear first in the "enabled" list the store returns. ---
+
+    [Fact]
+    public async Task ResolveAsync_never_returns_the_transcription_default_when_a_chat_default_also_exists()
+    {
+        // Deliberately list the Transcription-capability default FIRST. The pre-fix resolver
+        // logic was `enabled.FirstOrDefault(p => p.IsDefault)`, which is order-dependent and
+        // would have returned this transcription row to the chat path - this ordering is what
+        // makes the test genuinely exercise the bug rather than passing either way.
+        InferenceProvider transcriptionDefault = MakeProvider(
+            isDefault: true, name: "whisper-default", capability: InferenceProviderCapability.Transcription);
+        InferenceProvider chatDefault = MakeProvider(
+            isDefault: true, name: "chat-default", capability: InferenceProviderCapability.Chat);
+
+        InferenceProviderResolver resolver = CreateResolver(
+            providers: new[] { transcriptionDefault, chatDefault },
+            overrides: new Dictionary<Guid, Guid?>());
+
+        ResolvedInferenceProvider resolved = await resolver.ResolveAsync(
+            AgentType.CodeStructureAnalyzer, agentDefinitionId: null, CancellationToken.None);
+
+        resolved.ProviderId.Should().Be(chatDefault.Id);
+        resolved.Name.Should().Be("chat-default");
+    }
+
+    [Fact]
+    public async Task ResolveTranscriptionAsync_never_returns_the_chat_default_when_a_transcription_default_also_exists()
+    {
+        // Reverse of the above: list the Chat-capability default FIRST, so a naive
+        // "first IsDefault row" lookup on the transcription path would wrongly return it.
+        InferenceProvider chatDefault = MakeProvider(
+            isDefault: true, name: "chat-default", capability: InferenceProviderCapability.Chat);
+        InferenceProvider transcriptionDefault = MakeProvider(
+            isDefault: true, name: "whisper-default", capability: InferenceProviderCapability.Transcription);
+
+        InferenceProviderResolver resolver = CreateResolver(
+            providers: new[] { chatDefault, transcriptionDefault },
+            overrides: new Dictionary<Guid, Guid?>());
+
+        ResolvedTranscriptionProvider? resolved = await resolver.ResolveTranscriptionAsync(
+            explicitProviderId: null, CancellationToken.None);
+
+        resolved.Should().NotBeNull();
+        resolved!.ProviderId.Should().Be(transcriptionDefault.Id);
+        resolved.Name.Should().Be("whisper-default");
+    }
+
+    [Fact]
+    public async Task ResolveTranscriptionAsync_prefers_the_explicit_provider_id_over_the_default()
+    {
+        InferenceProvider defaultProvider = MakeProvider(
+            isDefault: true, name: "whisper-default", capability: InferenceProviderCapability.Transcription);
+        InferenceProvider explicitProvider = MakeProvider(
+            isDefault: false, name: "whisper-explicit", capability: InferenceProviderCapability.Transcription);
+
+        InferenceProviderResolver resolver = CreateResolver(
+            providers: new[] { defaultProvider, explicitProvider },
+            overrides: new Dictionary<Guid, Guid?>());
+
+        ResolvedTranscriptionProvider? resolved = await resolver.ResolveTranscriptionAsync(
+            explicitProviderId: explicitProvider.Id, CancellationToken.None);
+
+        resolved.Should().NotBeNull();
+        resolved!.ProviderId.Should().Be(explicitProvider.Id);
+        resolved.Name.Should().Be("whisper-explicit");
+    }
+
+    [Fact]
+    public async Task ResolveTranscriptionAsync_falls_back_to_the_default_when_the_explicit_id_is_not_found()
+    {
+        InferenceProvider defaultProvider = MakeProvider(
+            isDefault: true, name: "whisper-default", capability: InferenceProviderCapability.Transcription);
+
+        InferenceProviderResolver resolver = CreateResolver(
+            providers: new[] { defaultProvider },
+            overrides: new Dictionary<Guid, Guid?>());
+
+        ResolvedTranscriptionProvider? resolved = await resolver.ResolveTranscriptionAsync(
+            explicitProviderId: Guid.NewGuid(), CancellationToken.None);
+
+        resolved.Should().NotBeNull();
+        resolved!.ProviderId.Should().Be(defaultProvider.Id);
+    }
+
+    [Fact]
+    public async Task ResolveTranscriptionAsync_returns_null_when_nothing_resolves_even_with_config_fallback_available()
+    {
+        // Unlike ResolveAsync (chat), there is deliberately NO fallback to the legacy
+        // AzureOpenAI:* configuration keys for transcription - those name a chat deployment, and
+        // silently sending audio there would 404 confusingly. Prove this even when the config
+        // keys ARE present and a chat default row exists, so a future "just reuse the chat
+        // fallback" regression would fail this test.
+        InferenceProvider chatDefault = MakeProvider(
+            isDefault: true, name: "chat-default", capability: InferenceProviderCapability.Chat);
+
+        InferenceProviderResolver resolver = CreateResolver(
+            providers: new[] { chatDefault },
+            overrides: new Dictionary<Guid, Guid?>(),
+            configOverrides: new Dictionary<string, string?>
+            {
+                ["AzureOpenAI:Endpoint"] = "https://config-fallback.example",
+                ["AzureOpenAI:ApiKey"] = "config-key",
+                ["AzureOpenAI:DeploymentName"] = "config-deployment"
+            });
+
+        ResolvedTranscriptionProvider? resolved = await resolver.ResolveTranscriptionAsync(
+            explicitProviderId: null, CancellationToken.None);
+
+        resolved.Should().BeNull();
+    }
+
+    private static InferenceProvider MakeProvider(
+        bool isDefault,
+        string name,
+        InferenceProviderCapability capability = InferenceProviderCapability.Chat) => new()
     {
         Id = Guid.NewGuid(),
         Name = name,
@@ -97,7 +213,8 @@ public class InferenceProviderResolverTests
         Endpoint = "https://provider.example",
         ModelName = "gpt-4o-mini",
         IsDefault = isDefault,
-        IsEnabled = true
+        IsEnabled = true,
+        Capability = capability
     };
 
     private static InferenceProviderResolver CreateResolver(
