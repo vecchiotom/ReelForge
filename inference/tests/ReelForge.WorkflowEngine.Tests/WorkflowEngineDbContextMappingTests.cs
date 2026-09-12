@@ -1,5 +1,7 @@
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
 using ReelForge.Shared.Data.Models;
 using ReelForge.WorkflowEngine.Data;
 using System;
@@ -39,5 +41,43 @@ public class WorkflowEngineDbContextMappingTests
 
         property.Should().NotBeNull();
         property!.GetProviderClrType().Should().Be(typeof(string));
+    }
+
+    [Fact]
+    public void WorkflowStep_ExtractConfigJson_is_mapped_as_jsonb()
+    {
+        // Relational metadata (GetColumnType) is not available on the InMemory provider's
+        // runtime model, so a relational provider (Sqlite, no connection ever opened) is used
+        // purely to build the model and read its annotations.
+        DbContextOptions<WorkflowEngineDbContext> options = new DbContextOptionsBuilder<WorkflowEngineDbContext>()
+            .UseSqlite("Data Source=:memory:")
+            .Options;
+
+        using var db = new WorkflowEngineDbContext(options);
+
+        var entityType = db.Model.FindEntityType(typeof(WorkflowStep));
+        var property = entityType?.FindProperty(nameof(WorkflowStep.ExtractConfigJson));
+
+        property.Should().NotBeNull();
+        property!.GetColumnType().Should().Be("jsonb");
+    }
+
+    [Fact]
+    public void InferenceProvider_is_excluded_from_engine_migrations()
+    {
+        DbContextOptions<WorkflowEngineDbContext> options = new DbContextOptionsBuilder<WorkflowEngineDbContext>()
+            .UseSqlite("Data Source=:memory:")
+            .Options;
+
+        using var db = new WorkflowEngineDbContext(options);
+
+        // IsTableExcludedFromMigrations is only populated on the design-time model.
+        var designTimeModel = db.GetService<IDesignTimeModel>().Model;
+        var entityType = designTimeModel.FindEntityType(typeof(InferenceProvider));
+
+        entityType.Should().NotBeNull();
+        entityType!.GetTableName().Should().Be("inference_providers");
+        entityType.IsTableExcludedFromMigrations().Should().BeTrue(
+            "InferenceProvider is owned by InferenceApiDbContext (Risk R2) - the WorkflowEngine must never try to create this table");
     }
 }

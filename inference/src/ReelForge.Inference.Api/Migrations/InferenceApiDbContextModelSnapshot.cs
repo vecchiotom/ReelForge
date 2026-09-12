@@ -70,6 +70,10 @@ namespace ReelForge.Inference.Api.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("generates_output");
 
+                    b.Property<Guid?>("InferenceProviderId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("inference_provider_id");
+
                     b.Property<bool>("IsBuiltIn")
                         .HasColumnType("boolean")
                         .HasColumnName("is_built_in");
@@ -98,6 +102,9 @@ namespace ReelForge.Inference.Api.Migrations
 
                     b.HasKey("Id")
                         .HasName("pk_agent_definitions");
+
+                    b.HasIndex("InferenceProviderId")
+                        .HasDatabaseName("ix_agent_definitions_inference_provider_id");
 
                     b.HasIndex("OwnerId")
                         .HasDatabaseName("ix_agent_definitions_owner_id");
@@ -146,6 +153,90 @@ namespace ReelForge.Inference.Api.Migrations
                         .IsUnique();
 
                     b.ToTable("application_users");
+                });
+
+            modelBuilder.Entity("ReelForge.Shared.Data.Models.InferenceProvider", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ApiKeyEncrypted")
+                        .HasColumnType("text")
+                        .HasColumnName("api_key_encrypted");
+
+                    b.Property<string>("ApiKeyLastFour")
+                        .HasColumnType("text")
+                        .HasColumnName("api_key_last_four");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Endpoint")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("endpoint");
+
+                    b.Property<string>("ExtraHeadersJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("extra_headers_json");
+
+                    b.Property<bool>("IsDefault")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_default");
+
+                    b.Property<bool>("IsEnabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_enabled");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("kind");
+
+                    b.Property<DateTime?>("LastTestAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_test_at");
+
+                    b.Property<string>("LastTestError")
+                        .HasColumnType("text")
+                        .HasColumnName("last_test_error");
+
+                    b.Property<bool?>("LastTestOk")
+                        .HasColumnType("boolean")
+                        .HasColumnName("last_test_ok");
+
+                    b.Property<string>("ModelName")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("model_name");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("name");
+
+                    b.Property<int?>("TimeoutSeconds")
+                        .HasColumnType("integer")
+                        .HasColumnName("timeout_seconds");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id")
+                        .HasName("pk_inference_providers");
+
+                    b.HasIndex("IsDefault")
+                        .IsUnique()
+                        .HasFilter("is_default");
+
+                    b.HasIndex("Name")
+                        .IsUnique();
+
+                    b.ToTable("inference_providers");
                 });
 
             modelBuilder.Entity("ReelForge.Shared.Data.Models.Project", b =>
@@ -470,6 +561,10 @@ namespace ReelForge.Inference.Api.Migrations
                         .HasColumnType("jsonb")
                         .HasColumnName("edge_condition_json");
 
+                    b.Property<string>("ExtractConfigJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("extract_config_json");
+
                     b.Property<string>("FalseBranchStepOrder")
                         .HasColumnType("text")
                         .HasColumnName("false_branch_step_order");
@@ -616,11 +711,19 @@ namespace ReelForge.Inference.Api.Migrations
 
             modelBuilder.Entity("ReelForge.Shared.Data.Models.AgentDefinition", b =>
                 {
+                    b.HasOne("ReelForge.Shared.Data.Models.InferenceProvider", "InferenceProvider")
+                        .WithMany("AgentDefinitions")
+                        .HasForeignKey("InferenceProviderId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_agent_definitions__inference_providers_inference_provider_id");
+
                     b.HasOne("ReelForge.Shared.Data.Models.ApplicationUser", "Owner")
                         .WithMany("AgentDefinitions")
                         .HasForeignKey("OwnerId")
                         .OnDelete(DeleteBehavior.SetNull)
                         .HasConstraintName("fk_agent_definitions__application_users_owner_id");
+
+                    b.Navigation("InferenceProvider");
 
                     b.Navigation("Owner");
                 });
@@ -754,6 +857,11 @@ namespace ReelForge.Inference.Api.Migrations
                     b.Navigation("AgentDefinitions");
 
                     b.Navigation("Projects");
+                });
+
+            modelBuilder.Entity("ReelForge.Shared.Data.Models.InferenceProvider", b =>
+                {
+                    b.Navigation("AgentDefinitions");
                 });
 
             modelBuilder.Entity("ReelForge.Shared.Data.Models.Project", b =>

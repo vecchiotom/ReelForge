@@ -18,6 +18,7 @@ public class InferenceApiDbContext : DbContext
     public DbSet<Project> Projects => Set<Project>();
     public DbSet<ProjectFile> ProjectFiles => Set<ProjectFile>();
     public DbSet<AgentDefinition> AgentDefinitions => Set<AgentDefinition>();
+    public DbSet<InferenceProvider> InferenceProviders => Set<InferenceProvider>();
 
     // Referenced tables (for navigation properties, not migrations)
     public DbSet<WorkflowDefinition> WorkflowDefinitions => Set<WorkflowDefinition>();
@@ -96,6 +97,21 @@ public class InferenceApiDbContext : DbContext
                 .HasColumnType("jsonb");
             entity.Property(e => e.OutputSchemaJson)
                 .HasColumnType("jsonb");
+            entity.HasOne(e => e.InferenceProvider)
+                .WithMany(p => p.AgentDefinitions)
+                .HasForeignKey(e => e.InferenceProviderId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<InferenceProvider>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.Name).IsUnique();
+            entity.HasIndex(e => e.IsDefault).IsUnique().HasFilter("is_default");
+            entity.Property(e => e.Kind)
+                .HasConversion<string>();
+            entity.Property(e => e.ExtraHeadersJson)
+                .HasColumnType("jsonb");
         });
 
         // --- Referenced tables (excluded from migrations) ---
@@ -128,6 +144,8 @@ public class InferenceApiDbContext : DbContext
             entity.Property(e => e.SelectedPriorStepOrdersJson)
                 .HasColumnType("jsonb");
             entity.Property(e => e.ParallelAgentIdsJson)
+                .HasColumnType("jsonb");
+            entity.Property(e => e.ExtractConfigJson)
                 .HasColumnType("jsonb");
             entity.Property(e => e.StepType)
                 .HasConversion<string>();

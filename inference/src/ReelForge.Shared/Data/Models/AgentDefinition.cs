@@ -26,6 +26,10 @@ public class AgentDefinition
     /// <summary>When ContextMode is LastN, specifies how many prior steps to include.</summary>
     public int? ContextWindowSize { get; set; }
 
+    /// <summary>Optional per-agent provider override. Null = use the global default provider.</summary>
+    public Guid? InferenceProviderId { get; set; }
+
     public ApplicationUser? Owner { get; set; }
+    public InferenceProvider? InferenceProvider { get; set; }
     public ICollection<WorkflowStep> WorkflowSteps { get; set; } = new List<WorkflowStep>();
 }

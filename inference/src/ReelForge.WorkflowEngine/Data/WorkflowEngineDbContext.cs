@@ -25,6 +25,7 @@ public class WorkflowEngineDbContext : DbContext
     public DbSet<Project> Projects => Set<Project>();
     public DbSet<ProjectFile> ProjectFiles => Set<ProjectFile>();
     public DbSet<AgentDefinition> AgentDefinitions => Set<AgentDefinition>();
+    public DbSet<InferenceProvider> InferenceProviders => Set<InferenceProvider>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -100,6 +101,19 @@ public class WorkflowEngineDbContext : DbContext
             entity.ToTable("agent_definitions", t => t.ExcludeFromMigrations());
         });
 
+        // NOTE (Risk R2): InferenceProvider is owned by InferenceApiDbContext. This DbSet is
+        // read-only and MUST stay excluded from this context's migrations, or EF will try to
+        // create a table the Inference API already owns.
+        modelBuilder.Entity<InferenceProvider>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Kind)
+                .HasConversion<string>();
+            entity.Property(e => e.ExtraHeadersJson)
+                .HasColumnType("jsonb");
+            entity.ToTable("inference_providers", t => t.ExcludeFromMigrations());
+        });
+
         // --- Owned tables ---
 
         modelBuilder.Entity<WorkflowDefinition>(entity =>
@@ -129,6 +143,8 @@ public class WorkflowEngineDbContext : DbContext
             entity.Property(e => e.SelectedPriorStepOrdersJson)
                 .HasColumnType("jsonb");
             entity.Property(e => e.ParallelAgentIdsJson)
+                .HasColumnType("jsonb");
+            entity.Property(e => e.ExtractConfigJson)
                 .HasColumnType("jsonb");
             entity.Property(e => e.StepType)
                 .HasConversion<string>();

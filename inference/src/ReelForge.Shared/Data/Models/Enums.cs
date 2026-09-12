@@ -63,7 +63,12 @@ public enum AgentType
     AuthorAgent,
     ReviewAgent,
     FileSummarizerAgent,
-    Custom
+    Custom,
+    /// <summary>
+    /// Deterministic, non-LLM data extraction and projection built-in agent used by
+    /// StepType.Extract steps. Never sent to a model.
+    /// </summary>
+    ExtractTransform
 }
 
 /// <summary>
@@ -79,7 +84,11 @@ public enum StepType
     /// Runs multiple agents in parallel and merges their outputs into a JSON array
     /// passed to the next step as: [{"agentName":"...","output":"{..."}}, ...]
     /// </summary>
-    Parallel
+    Parallel,
+    /// <summary>
+    /// Deterministic, non-LLM projection step. See ReelForge.Shared.Workflows.ExtractStepConfig.
+    /// </summary>
+    Extract
 }
 
 /// <summary>
@@ -123,4 +132,13 @@ public enum ContextMode
     AllSteps,
     /// <summary>The last N steps' outputs are concatenated (N = ContextWindowSize).</summary>
     LastN
+}
+
+/// <summary>
+/// The kind of backend an <see cref="InferenceProvider"/> talks to.
+/// </summary>
+public enum InferenceProviderKind
+{
+    AzureOpenAI,
+    OpenAICompatible
 }
