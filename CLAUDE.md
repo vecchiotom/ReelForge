@@ -122,8 +122,9 @@ The inference layer is split into two microservices sharing a common `ReelForge.
 **Communication:** MassTransit over RabbitMQ with automatic dead letter queues and retry policies.
 
 **Database:** Both services share the same PostgreSQL database. Each owns specific tables via `ExcludeFromMigrations()`:
-- **Inference API** owns: `application_users`, `projects`, `project_files`, `agent_definitions` (history: `__EFMigrationsHistory_Api`)
+- **Inference API** owns: `application_users`, `projects`, `project_files`, `agent_definitions`, `inference_providers` (history: `__EFMigrationsHistory_Api`)
 - **WorkflowEngine** owns: `workflow_definitions`, `workflow_steps`, `workflow_executions`, `workflow_step_results`, `review_scores` (history: `__EFMigrationsHistory_Workflow`)
+- **WorkflowEngine** also maps `inference_providers` **read-only** (`ExcludeFromMigrations()`), since agent chat-client resolution reads provider config directly from its own DbContext.
 - **Startup order:** API migrates first (depends on postgres), Engine migrates second (depends on API healthy)
 
 ## Inference Service Structure
@@ -136,16 +137,21 @@ inference/
 │   │   ├── Data/Models/                          # All EF Core entities + enums
 │   │   ├── IntegrationEvents/                    # MassTransit message contracts
 │   │   ├── Auth/ICurrentUser.cs                  # Interface only
+│   │   ├── Workflows/ExtractStepConfig.cs        # Typed config for StepType.Extract (+ WorkflowTemplateCatalog)
+│   │   ├── Inference/                            # Provider-agnostic chat-client abstraction (factory, resolver,
+│   │   │                                          # IAgentChatClientProvider, ISecretProtector) shared by both services
 │   │   └── SnakeCaseNamingHelper.cs              # Shared DB naming convention
 │   │
 │   ├── ReelForge.Inference.Api/                  # Service 1: REST API
-│   │   ├── Controllers/                          # Projects, Files, Agents, Workflows CRUD
+│   │   ├── Controllers/                          # Projects, Files, Agents, Workflows, InferenceProviders, Outputs CRUD
 │   │   ├── Controllers/Dto/                      # Request/response DTOs
-│   │   ├── Data/InferenceApiDbContext.cs          # Owns user/project/file/agent tables
+│   │   ├── Data/InferenceApiDbContext.cs          # Owns user/project/file/agent/inference-provider tables
 │   │   ├── Data/DatabaseSeeder.cs                # Auto-migrate + seed agents
 │   │   ├── Services/Auth/CurrentUser.cs          # JWT claims extraction
 │   │   ├── Services/Storage/                     # MinIO/S3 file storage
 │   │   ├── Services/Background/                  # File summarization queue
+│   │   ├── Services/VectorSearch/                # Qdrant chunking/embedding + semantic file search
+│   │   ├── Services/Inference/                   # InferenceApiProviderStore (IInferenceProviderStore impl)
 │   │   ├── Agents/                               # FileSummarizerAgent only
 │   │   ├── Dockerfile
 │   │   ├── Program.cs
@@ -163,7 +169,8 @@ inference/
 │       │   ├── WorkflowExecutorService.cs        # Step-executor strategy pattern
 │       │   ├── IStepExecutor.cs                  # Strategy interface
 │       │   ├── ExpressionEvaluator.cs            # NCalc condition evaluator
-│       │   └── StepExecutors/                    # Agent, Conditional, ForEach, ReviewLoop
+│       │   └── StepExecutors/                    # Agent, Conditional, ForEach, ReviewLoop, Parallel, Extract
+│       ├── Services/Inference/                   # WorkflowEngineProviderStore (IInferenceProviderStore impl)
 │       ├── Workers/WorkflowWorkerPool.cs         # Health monitoring service
 │       ├── Controllers/                          # Health + admin endpoints
 │       ├── Observability/ReelForgeDiagnostics.cs # OTel instrumentation
@@ -171,6 +178,9 @@ inference/
 │       ├── Dockerfile
 │       ├── Program.cs
 │       └── appsettings.json
+│
+├── tests/
+│   └── ReelForge.WorkflowEngine.Tests/           # xUnit + FluentAssertions + Moq + EFCore.InMemory
 ```
 
 ### Key Patterns
@@ -178,7 +188,8 @@ inference/
 - **Agents** inherit from `ReelForgeAgentBase`, which wraps `IChatClient.AsAIAgent()`. Tools are registered via `AIFunctionFactory.Create()` and cast to `IList<AITool>`.
 - **System prompts** are read from `appsettings.json` key `Agents:<AgentName>:SystemPrompt` with hardcoded fallback defaults.
 - **MassTransit** handles RabbitMQ messaging. Inference API publishes `WorkflowExecutionRequested`, WorkflowEngine consumes it.
-- **Step Executors** implement `IStepExecutor` strategy pattern: `AgentStepExecutor`, `ConditionalStepExecutor`, `ForEachStepExecutor`, `ReviewLoopStepExecutor`.
+- **Step Executors** implement `IStepExecutor` strategy pattern: `AgentStepExecutor`, `ConditionalStepExecutor`, `ForEachStepExecutor`, `ReviewLoopStepExecutor`, `ParallelStepExecutor`, `ExtractStepExecutor` (deterministic, non-LLM — no `IChatClient`/`IAgentRegistry` dependency, always retried at most once).
+- **Inference providers** are resolved per agent via `IAgentChatClientProvider` → `IInferenceProviderResolver` (60s TTL-cached, `Inference:ProviderCacheSeconds`) → `IChatClientFactory`. Precedence: per-agent `AgentDefinition.InferenceProviderId` override → the single `inference_providers` row with `IsDefault = true` → the legacy `AzureOpenAI:*` config keys as a final fallback. API keys are encrypted at rest with ASP.NET Core Data Protection (`ISecretProtector`), keyed on a shared `dpkeys` volume mounted at `/keys` in both services so either can decrypt what the other wrote.
 - **ExpressionEvaluator** uses NCalc for condition evaluation with JSON parameter extraction.
 - **OpenTelemetry** provides distributed tracing and metrics via `ActivitySource` and `Meter`.
 - **All controllers** require `[Authorize]` except `HealthController`. `ICurrentUser` extracts user identity from JWT claims.
@@ -186,13 +197,17 @@ inference/
 
 ### Enhanced Data Model
 
-**New enums:** `StepType` (Agent, Conditional, ForEach, ReviewLoop), `StepStatus` (Pending, Running, Completed, Failed, Skipped)
+**New enums:** `StepType` (Agent, Conditional, ForEach, ReviewLoop, Parallel, Extract), `StepStatus` (Pending, Running, Completed, Failed, Skipped), `InferenceProviderKind` (AzureOpenAI, OpenAICompatible)
 
-**WorkflowStep** enhanced with: `StepType`, `ConditionExpression`, `LoopSourceExpression`, `LoopTargetStepOrder`, `MaxIterations`, `MinScore`, `InputMappingJson`, `TrueBranchStepOrder`, `FalseBranchStepOrder`
+**WorkflowStep** enhanced with: `StepType`, `ConditionExpression`, `LoopSourceExpression`, `LoopTargetStepOrder`, `MaxIterations`, `MinScore`, `InputMappingJson`, `TrueBranchStepOrder`, `FalseBranchStepOrder`, `ParallelAgentIdsJson` (`StepType.Parallel` — JSON array of agent GUIDs run concurrently), `ExtractConfigJson` (`extract_config_json` column, `StepType.Extract` — JSON-serialized `ExtractStepConfig`: closed to three operations, `Project`/`Resolve`/`Files`, always emitting a `{view, meta}` envelope)
 
 **WorkflowStepResult** enhanced with: `InputJson`, `OutputJson`, `Status` (StepStatus), `ErrorDetails`, `IterationNumber`, `CompletedAt`
 
 **WorkflowExecution** enhanced with: `CorrelationId`, `InitiatedByUserId`, `ErrorMessage`
+
+**AgentDefinition** enhanced with: `InferenceProviderId` (nullable FK to `inference_providers`, `OnDelete(SetNull)`) + `InferenceProviderName` (denormalized on the response DTO only) — the per-agent inference-provider override.
+
+**InferenceProvider** (new entity, table `inference_providers`): `Id`, `Name` (unique), `Kind` (`InferenceProviderKind`), `Endpoint`, `ModelName`, `ApiKeyEncrypted`/`ApiKeyLastFour` (never returned in plaintext), `IsDefault` (unique partial index — at most one row), `IsEnabled`, `TimeoutSeconds`, `ExtraHeadersJson`, `LastTestAt`/`LastTestOk`/`LastTestError`.
 
 ### Integration Events (MassTransit)
 
@@ -203,6 +218,24 @@ inference/
 | `WorkflowStepCompleted` | WorkflowEngine | (available for consumers) |
 | `WorkflowExecutionFailed` | WorkflowEngine | (available for consumers) |
 
+### Inference Provider Endpoints (Inference API)
+
+Admin-only CRUD for configured chat-completion providers (Azure OpenAI or an OpenAI-compatible
+endpoint such as vLLM), plus the per-agent override. Deliberately routed under
+`/api/v1/inference-providers` rather than `/api/v1/admin/*`, since nginx routes `/api/v1/admin/*`
+to the Go API — see the Nginx table below.
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/api/v1/inference-providers` | Admin | List providers (secrets redacted: `hasApiKey`/`apiKeyLastFour` only) |
+| `GET` | `/api/v1/inference-providers/{id}` | Admin | Get a single provider |
+| `POST` | `/api/v1/inference-providers` | Admin | Create a provider; `isDefault: true` clears it on all others in the same transaction |
+| `PUT` | `/api/v1/inference-providers/{id}` | Admin | Update; `apiKey` omitted/null leaves the stored key unchanged, `""` clears it |
+| `DELETE` | `/api/v1/inference-providers/{id}` | Admin | `409 Conflict` if the provider `IsDefault`; referencing agents fall back to the default (`OnDelete(SetNull)`) |
+| `POST` | `/api/v1/inference-providers/{id}/test` | Admin | 1-token ping through a saved provider; persists `LastTestAt`/`LastTestOk`/`LastTestError` |
+| `POST` | `/api/v1/inference-providers/test` | Admin | Tests an unsaved config; reuses the stored key when `id` is supplied and `apiKey` is omitted |
+| `PUT` | `/api/v1/agents/{id}/inference-provider` | Admin | Set/clear the per-agent provider override (`{ "inferenceProviderId": "<guid>" \| null }`) — unlike `PUT /api/v1/agents/{id}`, this is allowed for built-in agents, since overriding a built-in's provider is the primary use case |
+
 ### Agent Types (enum)
 
 Analysis: `CodeStructureAnalyzer`, `DependencyAnalyzer`, `ComponentInventoryAnalyzer`, `RouteAndApiAnalyzer`, `StyleAndThemeExtractor`
@@ -210,6 +243,7 @@ Translation: `RemotionComponentTranslator`, `AnimationStrategyAgent`
 Production: `DirectorAgent`, `ScriptwriterAgent`, `AuthorAgent`
 Quality: `ReviewAgent`
 File Processing: `FileSummarizerAgent` (in Inference API only)
+Extract/Transform: `ExtractTransform` — built-in, non-LLM agent row seeded so `StepType.Extract` steps satisfy the non-nullable `WorkflowStep.AgentDefinitionId` FK; `SystemPrompt` is empty and `GeneratesOutput` is `false` since it is never sent to a model, only run as deterministic code by `ExtractStepExecutor`.
 User-defined: `Custom`
 
 ### Default Workflow Pipeline
@@ -221,6 +255,11 @@ AnimationStrategy → Scriptwriter → Director → Author → Review
                                                 ↑                    |
                                                 └── (if score < 9) ─┘
 ```
+
+The `quick-win-promo` template above (`AutoCreateOnProject: true`) is unmodified. A second,
+opt-in template — `lean-context-promo` (`AutoCreateOnProject: false`) — inserts a `StepType.Extract`
+step (op `Project`) after `ComponentInventoryAnalyzer` to reduce its output to a bounded
+`{view, meta}` view before it reaches the translation/production agents, cutting token usage.
 
 ### Frontend (Next.js)
 
@@ -359,8 +398,8 @@ All services have Dockerfiles and are orchestrated via `docker-compose.yml` at t
 | `nginx` | `nginx:alpine` | 80 (`APP_PORT`) | 80 | Single entry point, njs cookie↔header translation |
 | `web` | Built from `./web` | — (internal) | 3000 | Next.js frontend |
 | `go-api` | Built from `./api` | — (internal) | 8080 | Depends on postgres (healthy) |
-| `inference` | Built from `./inference` | — (internal) | 8080 | Inference API, depends on go-api + rabbitmq |
-| `workflow-engine` | Built from `./inference` | — (internal) | 8080 | Workflow engine, depends on inference + rabbitmq |
+| `inference` | Built from `./inference` | — (internal) | 8080 | Inference API, depends on go-api + rabbitmq; mounts `dpkeys` at `/keys` (Data Protection key ring) |
+| `workflow-engine` | Built from `./inference` | — (internal) | 8080 | Workflow engine, depends on inference + rabbitmq; mounts `dpkeys` at `/keys` (Data Protection key ring) |
 | `postgres` | `postgres:16-alpine` | 5432 | 5432 | Volume `pgdata`, healthcheck via `pg_isready` |
 | `minio` | `minio/minio:latest` | 9000/9001 | 9000/9001 | Volume `miniodata`, console on 9001 |
 | `minio-init` | `minio/mc:latest` | — | — | One-shot: creates the `reelforge` bucket, then exits |
@@ -402,9 +441,9 @@ All configuration is driven by `.env` at the repo root (copy `.env.example` to `
 | `JWT_SIGNING_KEY` | — | HMAC-SHA256 symmetric key (min 32 chars) |
 | `JWT_ISSUER` | `reelforge-api` | JWT issuer claim |
 | `JWT_AUDIENCE` | `reelforge-inference` | JWT audience claim |
-| `AZURE_OPENAI_ENDPOINT` | — | Azure OpenAI endpoint URL |
-| `AZURE_OPENAI_API_KEY` | — | Azure OpenAI API key |
-| `AZURE_OPENAI_DEPLOYMENT` | `gpt-4o-mini` | Azure OpenAI deployment/model name |
+| `AZURE_OPENAI_ENDPOINT` | — | Azure OpenAI endpoint URL. **Fallback only** — used for chat completions when no `inference_providers` row exists or none is marked default; configure providers at runtime via `/admin/inference-providers` instead. Embeddings for vector search always use this. |
+| `AZURE_OPENAI_API_KEY` | — | Azure OpenAI API key (see fallback note above) |
+| `AZURE_OPENAI_DEPLOYMENT` | `gpt-4o-mini` | Azure OpenAI deployment/model name (see fallback note above) |
 | `APP_PORT` | `80` | Nginx reverse proxy host port |
 | `ASPNETCORE_ENVIRONMENT` | `Development` | ASP.NET environment (`Development` / `Production`) |
 | `RABBITMQ_USER` | `guest` | RabbitMQ username |
@@ -429,7 +468,9 @@ Both services share these keys (overridden by Docker Compose env vars):
 | `ConnectionStrings:DefaultConnection` | PostgreSQL connection string |
 | `Jwt:Issuer` / `Jwt:Audience` / `Jwt:SigningKey` | JWT validation (HS256) |
 | `RabbitMQ:Host` / `RabbitMQ:Username` / `RabbitMQ:Password` | RabbitMQ connection |
-| `AzureOpenAI:Endpoint` / `AzureOpenAI:ApiKey` / `AzureOpenAI:DeploymentName` | AI model backend |
+| `AzureOpenAI:Endpoint` / `AzureOpenAI:ApiKey` / `AzureOpenAI:DeploymentName` | Fallback chat-completion backend, used only when no `inference_providers` row exists or none is default (also the only backend for embeddings) |
+| `DataProtection:KeysPath` | Directory for the Data Protection key ring used to encrypt/decrypt inference provider API keys; defaults to `/keys` in code if unset. Both services must share the same path (the `dpkeys` volume) or the engine cannot decrypt keys the API wrote |
+| `Inference:ProviderCacheSeconds` | TTL (seconds) for the in-memory cache of `inference_providers` rows read by `IInferenceProviderResolver`; defaults to `60` in code if unset — provider changes take effect within roughly this long, with no redeploy or event needed |
 | `MinIO:Endpoint` / `MinIO:AccessKey` / `MinIO:SecretKey` / `MinIO:BucketName` | S3-compatible storage (API only) |
 | `WorkflowEngine:MaxConcurrency` | Max parallel executions (Engine only) |
 | `Agents:<AgentName>:SystemPrompt` | Override any agent's system prompt |

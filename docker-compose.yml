@@ -118,6 +118,9 @@ services:
       VectorSearch__ChunkSizeTokens: ${VECTOR_CHUNK_SIZE_TOKENS:-512}
       VectorSearch__ChunkOverlapTokens: ${VECTOR_CHUNK_OVERLAP_TOKENS:-64}
       VectorSearch__SmallFileThresholdTokens: ${VECTOR_SMALL_FILE_THRESHOLD_TOKENS:-1500}
+      DataProtection__KeysPath: /keys
+    volumes:
+      - dpkeys:/keys
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -133,7 +136,7 @@ services:
       start_period: 20s
     networks:
       - reelforge
-      
+
 
   workflow-engine:
     build:
@@ -160,6 +163,9 @@ services:
       InferenceApi__BaseUrl: http://inference:8080
       Sandbox__BaseUrl: http://sandbox-executor:8080
       WorkflowEngine__MaxConcurrency: ${WORKFLOW_MAX_CONCURRENCY:-4}
+      DataProtection__KeysPath: /keys
+    volumes:
+      - dpkeys:/keys
     depends_on:
       postgres:
         condition: service_healthy
@@ -338,6 +344,7 @@ volumes:
   pgdata:
   miniodata:
   rabbitmqdata:
+  dpkeys:
 
 networks:
   reelforge:
