@@ -166,7 +166,7 @@ func EnsureAdminExists() {
 		CreatedAt:          time.Now().UTC(),
 		PasswordHash:       string(hash),
 		IsAdmin:            true,
-		MustChangePassword: config.Cfg.AdminPassword == "",
+		MustChangePassword: true,
 	}
 
 	if err := database.DB.Create(&admin).Error; err != nil {

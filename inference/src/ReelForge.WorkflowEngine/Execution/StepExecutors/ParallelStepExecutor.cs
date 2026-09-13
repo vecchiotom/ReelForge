@@ -20,17 +20,20 @@ public class ParallelStepExecutor : IStepExecutor
     private readonly IAgentRegistry _agentRegistry;
     private readonly IWorkflowExecutionContextAccessor _executionContextAccessor;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly int _maxParallelism;
     private readonly ILogger<ParallelStepExecutor> _logger;
 
     public ParallelStepExecutor(
         IAgentRegistry agentRegistry,
         IWorkflowExecutionContextAccessor executionContextAccessor,
         IServiceScopeFactory scopeFactory,
+        IConfiguration configuration,
         ILogger<ParallelStepExecutor> logger)
     {
         _agentRegistry = agentRegistry;
         _executionContextAccessor = executionContextAccessor;
         _scopeFactory = scopeFactory;
+        _maxParallelism = Math.Max(1, configuration.GetValue("WorkflowEngine:AgentParallelism", 4));
         _logger = logger;
     }
 
@@ -115,7 +118,11 @@ public class ParallelStepExecutor : IStepExecutor
 
         await Parallel.ForEachAsync(
             Enumerable.Range(0, resolved.Count),
-            new ParallelOptions { CancellationToken = context.CancellationToken },
+            new ParallelOptions
+            {
+                CancellationToken = context.CancellationToken,
+                MaxDegreeOfParallelism = _maxParallelism
+            },
             async (index, token) =>
             {
                 (string name, Guid agentDefinitionId, IReelForgeAgent agent) = resolved[index];

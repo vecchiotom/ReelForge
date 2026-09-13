@@ -109,8 +109,18 @@ public class WorkflowExecutorService
             int currentStepIndex = 0;
             var stepOutputHistory = new List<StepOutputHistoryEntry>();
 
+            int stepTransitionCount = 0;
+            const int MaxStepTransitions = 1000;
+
             while (currentStepIndex < steps.Count && !ct.IsCancellationRequested)
             {
+                stepTransitionCount++;
+                if (stepTransitionCount > MaxStepTransitions)
+                {
+                    throw new InvalidOperationException(
+                        "Workflow execution exceeded the maximum allowed step transitions (possible infinite loop).");
+                }
+
                 WorkflowStep step = steps[currentStepIndex];
 
                 using Activity? stepActivity = ReelForgeDiagnostics.ActivitySource.StartActivity("ExecuteStep");

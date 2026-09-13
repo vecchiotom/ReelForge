@@ -43,13 +43,22 @@ public class RabbitMqHelper
             };
 
             // use the async variant to avoid blocking threadpool threads
-            RabbitMQ.Client.IConnection connection = await factory.CreateConnectionAsync();
+            await using RabbitMQ.Client.IConnection connection = await factory.CreateConnectionAsync();
             // newer client exposes async channel creation; the returned IAsyncModel
             // still implements IModel so we can call BasicGet synchronously.
             using var channel = await connection.CreateChannelAsync();
             const string queueName = "workflow-execution";
 
-            while (true)
+            // Get message count at start to bound the scan and prevent infinite loops
+            var queueDeclare = await channel.QueueDeclarePassiveAsync(queueName);
+            uint messageCount = queueDeclare.MessageCount;
+            uint maxIterations = Math.Min(messageCount, 10000);
+
+            // Collect delivery tags of non-matching messages to requeue after scan
+            var toRequeue = new List<ulong>();
+
+            uint iterationCount = 0;
+            while (iterationCount < maxIterations)
             {
                 // get a single message without acknowledging it
                 var result = await channel.BasicGetAsync(queueName, autoAck: false);
@@ -59,6 +68,8 @@ public class RabbitMqHelper
                     break;
                 }
 
+                iterationCount++;
+
                 try
                 {
                     string json = Encoding.UTF8.GetString(result.Body.ToArray());
@@ -67,16 +78,28 @@ public class RabbitMqHelper
                     {
                         // found the matching message; ack and return
                         await channel.BasicAckAsync(result.DeliveryTag, multiple: false);
+
+                        // Requeue collected messages before returning
+                        foreach (var tag in toRequeue)
+                        {
+                            await channel.BasicNackAsync(tag, multiple: false, requeue: true);
+                        }
                         return true;
                     }
                 }
                 catch
                 {
-                    // if we can't deserialize just requeue the message
+                    // if we can't deserialize, still collect for requeueing
                 }
 
-                // not the one we were looking for - requeue it at end of queue
-                await channel.BasicNackAsync(result.DeliveryTag, multiple: false, requeue: true);
+                // not the one we were looking for - collect for requeueing at end of scan
+                toRequeue.Add(result.DeliveryTag);
+            }
+
+            // Requeue all collected messages in their original relative order
+            foreach (var tag in toRequeue)
+            {
+                await channel.BasicNackAsync(tag, multiple: false, requeue: true);
             }
 
             return false;

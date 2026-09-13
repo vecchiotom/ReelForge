@@ -117,11 +117,15 @@ public class WorkflowsController : ControllerBase
     }
 
     [HttpGet("{id:guid}")]
-    public async Task<ActionResult<WorkflowDefinitionResponse>> Get(Guid id, CancellationToken ct)
+    public async Task<ActionResult<WorkflowDefinitionResponse>> Get(Guid projectId, Guid id, CancellationToken ct)
     {
+        Project? project = await _db.Projects.FirstOrDefaultAsync(p => p.Id == projectId, ct);
+        if (project == null) return NotFound();
+        if (project.OwnerId != _currentUser.UserId) return Forbid();
+
         WorkflowDefinition? workflow = await _db.WorkflowDefinitions
             .Include(w => w.Steps)
-            .FirstOrDefaultAsync(w => w.Id == id, ct);
+            .FirstOrDefaultAsync(w => w.Id == id && w.ProjectId == projectId, ct);
         if (workflow == null) return NotFound();
         return Ok(MapWorkflowResponse(workflow));
     }
@@ -145,6 +149,10 @@ public class WorkflowsController : ControllerBase
 
         foreach (CreateWorkflowStepRequest stepReq in request.Steps)
         {
+            AgentDefinition? agent = await _db.AgentDefinitions.FirstOrDefaultAsync(a => a.Id == stepReq.AgentDefinitionId, ct);
+            if (agent == null || (!agent.IsBuiltIn && agent.OwnerId != _currentUser.UserId))
+                return BadRequest(new { message = "Invalid or unauthorized agent" });
+
             workflow.Steps.Add(CreateStep(workflow.Id, stepReq));
         }
 
@@ -180,6 +188,10 @@ public class WorkflowsController : ControllerBase
 
         foreach (CreateWorkflowStepRequest stepReq in request.Steps)
         {
+            AgentDefinition? agent = await _db.AgentDefinitions.FirstOrDefaultAsync(a => a.Id == stepReq.AgentDefinitionId, ct);
+            if (agent == null || (!agent.IsBuiltIn && agent.OwnerId != _currentUser.UserId))
+                return BadRequest(new { message = "Invalid or unauthorized agent" });
+
             _db.WorkflowSteps.Add(CreateStep(workflow.Id, stepReq));
         }
 

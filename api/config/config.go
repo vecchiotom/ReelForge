@@ -1,6 +1,9 @@
 package config
 
-import "os"
+import (
+	"log"
+	"os"
+)
 
 var Version = "dev"
 
@@ -51,6 +54,10 @@ func Load() {
 		RabbitMQPort:     getEnv("RABBITMQ_PORT", "5672"),
 		RabbitMQUsername: getEnv("RABBITMQ_USER", "guest"),
 		RabbitMQPassword: getEnv("RABBITMQ_PASSWORD", "guest"),
+	}
+
+	if len(Cfg.JWTSigningKey) < 32 {
+		log.Fatalf("JWT_SIGNING_KEY must be set to a random value of at least 32 characters (got %d); generate one with: openssl rand -hex 32", len(Cfg.JWTSigningKey))
 	}
 }
 

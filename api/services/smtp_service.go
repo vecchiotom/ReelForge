@@ -10,7 +10,7 @@ import (
 
 func SendWelcomeEmail(toEmail, displayName, otp string) {
 	if !config.SMTPConfigured() {
-		log.Printf("[SMTP not configured] Welcome email for %s — temporary password: %s", toEmail, otp)
+		log.Printf("[SMTP not configured] Welcome email skipped for %s; temporary password was returned in the admin API response", toEmail)
 		return
 	}
 
@@ -34,6 +34,5 @@ func SendWelcomeEmail(toEmail, displayName, otp string) {
 
 	if err := smtp.SendMail(addr, auth, config.Cfg.SMTPFrom, []string{toEmail}, []byte(msg)); err != nil {
 		log.Printf("Failed to send welcome email to %s: %v", toEmail, err)
-		log.Printf("Temporary password for %s: %s", toEmail, otp)
 	}
 }

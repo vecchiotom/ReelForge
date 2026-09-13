@@ -62,8 +62,21 @@ func handleWorkflowStats(w http.ResponseWriter, r *http.Request) {
 		Count  int64
 	}
 
+	uc, ok := middleware.GetUserContext(r)
+	if !ok {
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	query := database.DB.Model(&models.WorkflowExecution{})
+	if !uc.IsAdmin {
+		query = query.
+			Joins("JOIN projects ON projects.id = workflow_executions.project_id").
+			Where("workflow_executions.initiated_by_user_id = ? OR (workflow_executions.initiated_by_user_id IS NULL AND projects.owner_id = ?)", uc.UserID, uc.UserID)
+	}
+
 	var rows []statusCount
-	if err := database.DB.Model(&models.WorkflowExecution{}).
+	if err := query.
 		Select("status, count(*) as count").
 		Group("status").
 		Scan(&rows).Error; err != nil {

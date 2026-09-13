@@ -104,7 +104,7 @@ services:
       ConnectionStrings__DefaultConnection: Host=postgres;Port=5432;Database=${POSTGRES_DB:-reelforge};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
       Jwt__Issuer: ${JWT_ISSUER:-reelforge-api}
       Jwt__Audience: ${JWT_AUDIENCE:-reelforge-inference}
-      Jwt__SigningKey: ${JWT_SIGNING_KEY:-}
+      Jwt__SigningKey: ${JWT_SIGNING_KEY:?set JWT_SIGNING_KEY in .env to a random value of at least 32 characters (openssl rand -hex 32)}
       MinIO__Endpoint: http://minio:9000
       MinIO__AccessKey: ${MINIO_ACCESS_KEY:-minioadmin}
       MinIO__SecretKey: ${MINIO_SECRET_KEY:-minioadmin}
@@ -152,7 +152,7 @@ services:
       ConnectionStrings__DefaultConnection: Host=postgres;Port=5432;Database=${POSTGRES_DB:-reelforge};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres}
       Jwt__Issuer: ${JWT_ISSUER:-reelforge-api}
       Jwt__Audience: ${JWT_AUDIENCE:-reelforge-inference}
-      Jwt__SigningKey: ${JWT_SIGNING_KEY:-}
+      Jwt__SigningKey: ${JWT_SIGNING_KEY:?set JWT_SIGNING_KEY in .env to a random value of at least 32 characters (openssl rand -hex 32)}
       MinIO__Endpoint: http://minio:9000
       MinIO__AccessKey: ${MINIO_ACCESS_KEY:-minioadmin}
       MinIO__SecretKey: ${MINIO_SECRET_KEY:-minioadmin}
@@ -272,7 +272,7 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-reelforge}?sslmode=disable
       INFERENCE_URL: http://inference:8080
-      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:-}
+      JWT_SIGNING_KEY: ${JWT_SIGNING_KEY:?set JWT_SIGNING_KEY in .env to a random value of at least 32 characters (openssl rand -hex 32)}
       JWT_ISSUER: ${JWT_ISSUER:-reelforge-api}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-reelforge-inference}
       SMTP_HOST: ${SMTP_HOST:-}
@@ -322,8 +322,9 @@ services:
       # The Node inspector is unauthenticated arbitrary code execution for anyone
       # who can open the port. It must stay bound to loopback on the host (below)
       # and should be empty in any deployment that is not a developer's machine.
-      - NODE_OPTIONS=${WEB_NODE_OPTIONS:---inspect=0.0.0.0:9229}
+      - NODE_OPTIONS=${WEB_NODE_OPTIONS:---inspect=127.0.0.1:9229}
       - PORT=3000
+      - JWT_SIGNING_KEY=${JWT_SIGNING_KEY:?set JWT_SIGNING_KEY in .env to a random value of at least 32 characters (openssl rand -hex 32)}
     # Loopback-only: 3000 bypasses nginx and therefore every auth check nginx
     # performs, and 9229 is remote code execution in this container.
     ports:

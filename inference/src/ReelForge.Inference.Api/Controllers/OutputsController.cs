@@ -46,7 +46,10 @@ public class OutputsController : ControllerBase
         if (project == null) return NotFound();
         if (project.OwnerId != _currentUser.UserId) return Forbid();
 
-        string expectedPrefix = $"projects/{projectId}/outputFiles";
+        string expectedPrefix = $"projects/{projectId}/outputFiles/";
+        // Trailing slash makes this a true path-segment prefix — without it, a key like
+        // "projects/{id}/outputFiles-tmp/..." would also match, letting this endpoint reach
+        // objects outside its intended scope.
         // EF Core can't translate the overload of StartsWith that takes a StringComparison,
         // so switch to the simpler form which maps to SQL LIKE. Alternatively we could use
         // EF.Functions.Like(r.OutputStorageKey, expectedPrefix + "%").
@@ -87,7 +90,10 @@ public class OutputsController : ControllerBase
         if (stepResult.OutputStorageKey == null) return NotFound("This step result has no media output.");
 
         // Validate storage key scope: must live under the project outputFiles prefix
-        string expectedKeyPrefix = $"projects/{projectId}/outputFiles";
+        // Trailing slash makes this a true path-segment prefix — without it, a key like
+        // "projects/{id}/outputFiles-tmp/..." would also match, letting this endpoint reach
+        // objects outside its intended scope.
+        string expectedKeyPrefix = $"projects/{projectId}/outputFiles/";
         if (!stepResult.OutputStorageKey.StartsWith(expectedKeyPrefix, StringComparison.Ordinal))
             return Forbid();
 

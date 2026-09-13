@@ -10,7 +10,13 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/vecchiotom/reelforge/middleware"
 	"github.com/vecchiotom/reelforge/services"
+	"golang.org/x/crypto/bcrypt"
 )
+
+// dummyPasswordHash is a bcrypt hash (cost 10, matching services.ValidatePassword)
+// of a fixed, unused string. It is compared against on the "user not found" path
+// in handleToken so response timing does not reveal whether an email is registered.
+const dummyPasswordHash = "$2a$10$tcmcRV6q2Y9.pdr6kt44bOGqK6HzH4MRqhVGPVl322/WyrGWM7etC"
 
 func RegisterAuthRoutes(router *mux.Router) {
 	router.HandleFunc("/api/v1/auth/token", handleToken).Methods("POST")
@@ -34,6 +40,9 @@ func handleToken(w http.ResponseWriter, r *http.Request) {
 
 	user, err := services.GetUserByEmail(req.Email)
 	if err != nil {
+		// Perform a dummy bcrypt comparison so the response timing for an unknown
+		// email matches the timing for a known email with a wrong password.
+		bcrypt.CompareHashAndPassword([]byte(dummyPasswordHash), []byte(req.Password))
 		http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
 		return
 	}

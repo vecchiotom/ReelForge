@@ -44,12 +44,13 @@ type appConfig struct {
 	// APIToken is the shared secret every API caller must present. There is no
 	// default and an empty value is fatal at startup: this service can start
 	// containers and read and write files, so it must never run open.
-	APIToken    string
-	SandboxTTL  time.Duration
-	ExecTimeout time.Duration
-	MemoryLimit string
-	CPULimit    string
-	PIDsLimit   int
+	APIToken      string
+	MaxSandboxes  int
+	SandboxTTL    time.Duration
+	ExecTimeout   time.Duration
+	MemoryLimit   string
+	CPULimit      string
+	PIDsLimit     int
 }
 
 func loadConfig() appConfig {
@@ -60,6 +61,7 @@ func loadConfig() appConfig {
 		SandboxNetwork: getEnv("SANDBOX_NETWORK", "sandbox-net"),
 		NetworkEgress:  getBoolEnv("SANDBOX_NETWORK_EGRESS", false),
 		APIToken:       os.Getenv("SANDBOX_API_TOKEN"),
+		MaxSandboxes:   getIntEnv("MAX_SANDBOXES", 20),
 		SandboxTTL:     getDurationEnv("SANDBOX_TTL", time.Minute),
 		ExecTimeout:    getDurationEnv("SANDBOX_EXEC_TIMEOUT", 5*time.Minute),
 		MemoryLimit:    getEnv("SANDBOX_MEMORY_LIMIT", "2g"),
@@ -125,6 +127,7 @@ type sandboxManager struct {
 	mu             sync.RWMutex
 	sandboxes      map[string]*sandbox
 	executionIndex map[string]string
+	maxSandboxes   int
 }
 
 // sandboxUID/sandboxGID are the numeric ids of the `node` user in the sandbox
@@ -137,12 +140,13 @@ const (
 )
 
 var (
-	errNotFound      = errors.New("sandbox not found")
-	errInvalidPath   = errors.New("invalid path")
-	errBadExec       = errors.New("command not allowed")
-	errBadExecution  = errors.New("invalid workflowExecutionId")
-	errBadPackage    = errors.New("invalid package name")
-	allowedNPMScript = map[string]struct{}{
+	errNotFound       = errors.New("sandbox not found")
+	errInvalidPath    = errors.New("invalid path")
+	errBadExec        = errors.New("command not allowed")
+	errBadExecution   = errors.New("invalid workflowExecutionId")
+	errBadPackage     = errors.New("invalid package name")
+	errTooManySandbox = errors.New("sandbox limit reached")
+	allowedNPMScript  = map[string]struct{}{
 		"build":        {},
 		"render":       {},
 		"typecheck":    {},
@@ -161,6 +165,7 @@ var (
 func newSandboxManager(cfg appConfig) *sandboxManager {
 	return &sandboxManager{
 		cfg:            cfg,
+		maxSandboxes:   cfg.MaxSandboxes,
 		sandboxes:      make(map[string]*sandbox),
 		executionIndex: make(map[string]string),
 	}
@@ -179,6 +184,7 @@ func (m *sandboxManager) create(workflowExecutionID string) (*sandbox, bool, err
 	}
 
 	m.mu.Lock()
+	// Check if already exists
 	if existingID, ok := m.executionIndex[workflowExecutionID]; ok {
 		if existing, found := m.sandboxes[existingID]; found {
 			existing.LastActivity = time.Now().UTC()
@@ -187,10 +193,20 @@ func (m *sandboxManager) create(workflowExecutionID string) (*sandbox, bool, err
 			return &copy, false, nil
 		}
 	}
-	m.mu.Unlock()
 
+	// Check if we're at max capacity
+	if len(m.sandboxes) >= m.maxSandboxes {
+		m.mu.Unlock()
+		return nil, false, errTooManySandbox
+	}
+
+	// Generate ID and workspace path while still holding the lock
 	id := uuid.NewString()
 	workspace := filepath.Join(m.cfg.SandboxRoot, id)
+
+	// Release the lock before slow operations (container creation, directory setup)
+	m.mu.Unlock()
+
 	// 0770, not 0777: the sandbox container writes here as uid 1000 (node) and
 	// this service reads it back, but nothing else on the host has any business
 	// touching an in-flight workspace. The group bit is what the container needs;
@@ -272,7 +288,32 @@ func (m *sandboxManager) create(workflowExecutionID string) (*sandbox, bool, err
 		LastActivity:        now,
 	}
 
+	// Re-acquire lock to register the sandbox
 	m.mu.Lock()
+
+	// Double-check that we're still below capacity and that the execution ID wasn't claimed
+	// while we were creating the container
+	if len(m.sandboxes) >= m.maxSandboxes {
+		m.mu.Unlock()
+		log.Printf("sandbox capacity exceeded while creating container for workflow %s, cleaning up", workflowExecutionID)
+		_, _ = runDocker(context.Background(), "rm", "-f", containerName)
+		_ = os.RemoveAll(workspace)
+		return nil, false, errTooManySandbox
+	}
+
+	if existingID, ok := m.executionIndex[workflowExecutionID]; ok {
+		// Another goroutine created the sandbox for this execution while we were building
+		if existing, found := m.sandboxes[existingID]; found {
+			existing.LastActivity = time.Now().UTC()
+			copy := *existing
+			m.mu.Unlock()
+			log.Printf("sandbox already exists for workflow %s, cleaning up duplicate container %s", workflowExecutionID, containerName)
+			_, _ = runDocker(context.Background(), "rm", "-f", containerName)
+			_ = os.RemoveAll(workspace)
+			return &copy, false, nil
+		}
+	}
+
 	m.sandboxes[id] = sb
 	m.executionIndex[workflowExecutionID] = id
 	m.mu.Unlock()
@@ -341,7 +382,12 @@ func (m *sandboxManager) deleteInternal(id, workflowExecutionID, containerName, 
 
 	m.mu.Lock()
 	delete(m.sandboxes, id)
-	delete(m.executionIndex, workflowExecutionID)
+	// Only delete the execution index entry if it still points to this sandbox ID.
+	// This prevents a race condition where another goroutine created a new container
+	// for the same execution ID after this one was created but before cleanup completed.
+	if m.executionIndex[workflowExecutionID] == id {
+		delete(m.executionIndex, workflowExecutionID)
+	}
 	m.mu.Unlock()
 	return nil
 }
@@ -1022,6 +1068,8 @@ func statusFromErr(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, errInvalidPath), errors.Is(err, errBadExec), errors.Is(err, errBadExecution):
 		return http.StatusBadRequest
+	case errors.Is(err, errTooManySandbox):
+		return http.StatusTooManyRequests
 	default:
 		return http.StatusInternalServerError
 	}

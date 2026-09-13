@@ -249,7 +249,7 @@ public class VideoCompileStepExecutor : IStepExecutor
 
             int droppedOverCap = 0;
             List<(double Start, double End)> finalSpans = aboveMinLength;
-            int maxSegments = Math.Max(1, config.MaxSegments);
+            int maxSegments = Math.Clamp(config.MaxSegments, 1, 500);
             if (finalSpans.Count > maxSegments)
             {
                 droppedOverCap = finalSpans.Count - maxSegments;

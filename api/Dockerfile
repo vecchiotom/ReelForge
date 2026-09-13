@@ -22,10 +22,13 @@ ARG VERSION=docker
 RUN CGO_ENABLED=0 go build -mod=mod -ldflags="-s -w -X main.Version=${VERSION}" -o /app/reelforge .
 
 FROM alpine:3.21
-RUN apk add --no-cache wget
+RUN apk add --no-cache wget && \
+    addgroup -S reelforge && adduser -S reelforge -G reelforge
 
 WORKDIR /app
 COPY --from=build /app/reelforge .
+RUN chown reelforge:reelforge /app/reelforge
 
+USER reelforge
 EXPOSE 8080
 ENTRYPOINT ["./reelforge"]
