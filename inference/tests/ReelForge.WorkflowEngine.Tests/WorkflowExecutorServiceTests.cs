@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using FluentAssertions;
@@ -171,6 +172,231 @@ namespace ReelForge.WorkflowEngine.Tests
             string inputJson = WorkflowExecutorService.ResolveInputJsonForPersistence(null, accumulated);
 
             inputJson.Should().Be(accumulated);
+        }
+
+        // -----------------------------------------------------------------
+        // WS5: VideoAnalyze/VideoCompile retry policy + genuine dispatch (not falling through
+        // to the Agent executor when unregistered — mirrors how ExtractStepExecutorTests
+        // verifies the same for StepType.Extract).
+        // -----------------------------------------------------------------
+
+        [Theory]
+        [InlineData(StepType.VideoAnalyze)]
+        [InlineData(StepType.VideoCompile)]
+        public void ResolveMaxRetries_returns_1_for_deterministic_video_steps(StepType stepType)
+        {
+            var service = new WorkflowExecutorService(
+                scopeFactory: null!,
+                eventPublisher: null!,
+                logger: NullLogger<WorkflowExecutorService>.Instance,
+                executors: Array.Empty<IStepExecutor>(),
+                rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()),
+                hardeningOptions: Options.Create(new WorkflowHardeningOptions { MaxStepRetries = 3 }));
+
+            System.Reflection.MethodInfo method = typeof(WorkflowExecutorService).GetMethod(
+                "ResolveMaxRetries", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+
+            var step = new WorkflowStep { StepType = stepType, StepOrder = 1 };
+            var maxRetries = (int)method.Invoke(service, [step])!;
+
+            maxRetries.Should().Be(1, because: "both are deterministic — retrying the whole step reproduces the same failure");
+        }
+
+        private sealed class StubExecutor : IStepExecutor
+        {
+            public StubExecutor(StepType stepType) => StepType = stepType;
+            public StepType StepType { get; }
+            public Task<StepExecutionResult> ExecuteAsync(StepExecutionContext context) =>
+                throw new NotImplementedException("Not invoked by this test — only dispatch resolution is under test.");
+        }
+
+        private sealed class CleanFailureExecutor : IStepExecutor
+        {
+            public CleanFailureExecutor(StepType stepType) => StepType = stepType;
+            public StepType StepType { get; }
+
+            public Task<StepExecutionResult> ExecuteAsync(StepExecutionContext context) =>
+                Task.FromResult(new StepExecutionResult
+                {
+                    // Mirrors ExtractStepExecutor/VideoAnalyzeStepExecutor/VideoCompileStepExecutor's
+                    // own Failure() helpers: Status=Failed with an already-valid-JSON Output,
+                    // exactly as R15 requires of every deterministic executor.
+                    Output = "{\"status\":\"failed\",\"error\":{\"code\":\"TEST\",\"message\":\"boom\"}}",
+                    NextStepIndex = context.CurrentStepIndex + 1,
+                    NewIterationCount = context.IterationCount,
+                    Status = StepStatus.Failed,
+                    ErrorDetails = "boom"
+                });
+        }
+
+        /// <summary>
+        /// Regression test for a live-testing-only-discoverable bug: a deterministic step type
+        /// (Extract/VideoAnalyze/VideoCompile all have ResolveMaxRetries == 1, see the theory
+        /// above) that fails via its own clean, already-valid-JSON Failure() envelope was, on its
+        /// very FIRST attempt, thrown as an InvalidOperationException by ExecuteStepWithRetryAsync
+        /// (attemptNumber never being &lt; maxRetries==1) — discarding that valid JSON. The outer
+        /// catch in ExecuteAsync then persisted BuildFailureStepResult's Output (plain text from
+        /// BuildRetryDiagnosticMessage, not JSON) directly into WorkflowStepResult.OutputJson, a
+        /// jsonb column — crashing the whole execution's SaveChangesAsync with Postgres error
+        /// 22P02 and leaving the execution stuck in "Running" forever (observed live against a
+        /// real Postgres instance; EFCore.InMemory does not enforce column types so this was
+        /// invisible to every other test in this suite). BuildFailureStepResult must always
+        /// produce a valid JSON Output, regardless of what the underlying exception's message
+        /// looks like.
+        /// </summary>
+        [Fact]
+        public async Task BuildFailureStepResult_output_is_always_valid_json_even_from_a_deterministic_steps_own_clean_failure()
+        {
+            var executor = new CleanFailureExecutor(StepType.VideoCompile);
+            var service = new WorkflowExecutorService(
+                scopeFactory: null!,
+                eventPublisher: null!,
+                logger: NullLogger<WorkflowExecutorService>.Instance,
+                executors: new[] { (IStepExecutor)executor },
+                rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()),
+                hardeningOptions: Options.Create(new WorkflowHardeningOptions()));
+
+            var step = new WorkflowStep { StepOrder = 3, StepType = StepType.VideoCompile };
+            var context = new StepExecutionContext
+            {
+                Execution = new WorkflowExecution(),
+                Step = step,
+                AllSteps = new List<WorkflowStep> { step },
+                AccumulatedOutput = string.Empty,
+                StepOutputHistory = new List<StepOutputHistoryEntry>(),
+                CurrentStepIndex = 0,
+                IterationCount = 0,
+                CorrelationId = "",
+                CancellationToken = CancellationToken.None
+            };
+
+            InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => service.ExecuteStepWithRetryAsync(executor, context, step, CancellationToken.None));
+
+            System.Reflection.MethodInfo buildFailure = typeof(WorkflowExecutorService).GetMethod(
+                "BuildFailureStepResult", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+            var result = (StepExecutionResult)buildFailure.Invoke(null, [step, context, ex])!;
+
+            result.Status.Should().Be(StepStatus.Failed);
+            Action parse = () => System.Text.Json.JsonDocument.Parse(result.Output);
+            parse.Should().NotThrow(because: "this Output is written verbatim into a jsonb column");
+        }
+
+        [Fact]
+        public void VideoAnalyze_and_VideoCompile_step_types_dispatch_to_their_own_executors_not_the_Agent_executor()
+        {
+            var agentStub = new StubExecutor(StepType.Agent);
+            var analyzeStub = new StubExecutor(StepType.VideoAnalyze);
+            var compileStub = new StubExecutor(StepType.VideoCompile);
+
+            var service = new WorkflowExecutorService(
+                scopeFactory: null!,
+                eventPublisher: null!,
+                logger: NullLogger<WorkflowExecutorService>.Instance,
+                executors: new IStepExecutor[] { agentStub, analyzeStub, compileStub },
+                rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()),
+                hardeningOptions: Options.Create(new WorkflowHardeningOptions()));
+
+            System.Reflection.FieldInfo field = typeof(WorkflowExecutorService).GetField(
+                "_executors", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+            var executors = (Dictionary<StepType, IStepExecutor>)field.GetValue(service)!;
+
+            // The real bug this guards: WorkflowExecutorService.ExecuteAsync silently falls back
+            // to _executors[StepType.Agent] whenever TryGetValue fails for the step's own type
+            // (e.g. because DI registration in Program.cs was forgotten) — a step would then run
+            // as if it were a plain Agent step with no diagnostic at all. Asserting the dictionary
+            // resolves each new StepType to its OWN registered executor instance (not agentStub)
+            // is what actually proves the registration is load-bearing.
+            executors.Should().ContainKey(StepType.VideoAnalyze);
+            executors[StepType.VideoAnalyze].Should().BeSameAs(analyzeStub);
+            executors[StepType.VideoAnalyze].Should().NotBeSameAs(agentStub);
+
+            executors.Should().ContainKey(StepType.VideoCompile);
+            executors[StepType.VideoCompile].Should().BeSameAs(compileStub);
+            executors[StepType.VideoCompile].Should().NotBeSameAs(agentStub);
+        }
+
+        [Fact]
+        public void WithAttemptMetadata_copies_ArtifactStorageKey_onto_the_retried_result()
+        {
+            // R3: WithAttemptMetadata hand-copies every field of a StepExecutionResult between
+            // attempts. ArtifactStorageKey is easy to miss here — anything added to
+            // StepExecutionResult but not copied in this method is silently dropped on any step
+            // that goes through a retry attempt (even though VideoAnalyze/VideoCompile themselves
+            // never retry, this method is shared code every step type's result flows through).
+            const string expectedArtifactKey = "projects/p/agentFiles/video-analysis/e/step-1-analysis.json";
+            var original = new StepExecutionResult
+            {
+                Output = "{}",
+                NextStepIndex = 1,
+                Status = StepStatus.Completed,
+                ArtifactStorageKey = expectedArtifactKey,
+                OutputStorageKey = "projects/p/outputFiles/e/video.mp4"
+            };
+
+            System.Reflection.MethodInfo method = typeof(WorkflowExecutorService).GetMethod(
+                "WithAttemptMetadata", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+
+            var copied = (StepExecutionResult)method.Invoke(null, [original, 1])!;
+
+            copied.ArtifactStorageKey.Should().Be(expectedArtifactKey);
+            copied.OutputStorageKey.Should().Be(original.OutputStorageKey);
+        }
+
+        // Regression coverage for a bug found by e2e QA: writing arbitrary non-JSON text (e.g. a
+        // chat completion that didn't conform to its requested output schema) straight into
+        // WorkflowStepResult.OutputJson/WorkflowExecution.ResultJson (both jsonb columns) fails
+        // SaveChangesAsync with Postgres 22P02, discarding the step/execution's Status update
+        // along with it and leaving the execution stuck "Running" forever.
+        private static string? InvokeEnsureJsonForJsonbColumn(string? value)
+        {
+            var method = typeof(WorkflowExecutorService).GetMethod(
+                "EnsureJsonForJsonbColumn",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            method.Should().NotBeNull("WorkflowExecutorService must expose a jsonb-safety helper");
+            return (string?)method!.Invoke(null, [value]);
+        }
+
+        [Fact]
+        public void EnsureJsonForJsonbColumn_passes_through_valid_json_unchanged()
+        {
+            string valid = "{\"status\":\"ok\",\"items\":[1,2,3]}";
+            InvokeEnsureJsonForJsonbColumn(valid).Should().Be(valid);
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        public void EnsureJsonForJsonbColumn_maps_null_or_empty_to_null(string? input)
+        {
+            InvokeEnsureJsonForJsonbColumn(input).Should().BeNull();
+        }
+
+        [Fact]
+        public void EnsureJsonForJsonbColumn_wraps_non_json_text_as_a_json_string_instead_of_crashing()
+        {
+            // exactly the shape of a non-conforming chat completion: plain prose, not JSON
+            string raw = "I'm sorry, I cannot keep any segments because the request was unclear.";
+
+            string? result = InvokeEnsureJsonForJsonbColumn(raw);
+
+            result.Should().NotBeNull();
+            // must itself be valid JSON (a jsonb column would reject anything else)
+            System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(result!);
+            doc.RootElement.ValueKind.Should().Be(System.Text.Json.JsonValueKind.String);
+            doc.RootElement.GetString().Should().Be(raw);
+        }
+
+        [Fact]
+        public void EnsureJsonForJsonbColumn_wraps_whitespace_only_text_rather_than_passing_it_through()
+        {
+            // whitespace-only is not a valid standalone JSON token even though some callers'
+            // permissive IsValidJson helper treats it as "fine" for logging purposes
+            string? result = InvokeEnsureJsonForJsonbColumn("   ");
+
+            result.Should().NotBeNull();
+            System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(result!);
+            doc.RootElement.ValueKind.Should().Be(System.Text.Json.JsonValueKind.String);
         }
     }
 

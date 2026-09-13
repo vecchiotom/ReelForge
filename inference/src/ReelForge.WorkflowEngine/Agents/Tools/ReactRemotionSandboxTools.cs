@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.RegularExpressions;
 using System.Text;
@@ -38,6 +39,7 @@ public class ReactRemotionSandboxTools
     private readonly IProjectFileWorkspace _projectFileWorkspace;
     private readonly IAmazonS3 _s3Client;
     private readonly string _sandboxBaseUrl;
+    private readonly string _sandboxApiToken;
     private readonly string _bucketName;
     private readonly ILogger<ReactRemotionSandboxTools> _logger;
 
@@ -54,6 +56,7 @@ public class ReactRemotionSandboxTools
         _projectFileWorkspace = projectFileWorkspace;
         _s3Client = s3Client;
         _sandboxBaseUrl = configuration["Sandbox:BaseUrl"] ?? "http://sandbox-executor:8080";
+        _sandboxApiToken = configuration["Sandbox:ApiToken"] ?? string.Empty;
         _bucketName = configuration["MinIO:BucketName"] ?? "reelforge";
         _logger = logger;
     }
@@ -744,6 +747,11 @@ public class ReactRemotionSandboxTools
     {
         HttpClient client = _httpClientFactory.CreateClient();
         client.BaseAddress = new Uri(_sandboxBaseUrl, UriKind.Absolute);
+        // The sandbox API is unauthenticated apart from this shared secret, and it
+        // rejects every request without it. It is never proxied through nginx, so
+        // this header is the only credential involved.
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", _sandboxApiToken);
         return client;
     }
 

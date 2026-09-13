@@ -16,7 +16,10 @@ public sealed record WorkflowTemplateStepDefinition(
     IReadOnlyList<int>? SelectedPriorStepOrders = null,
     string? TrueBranchStepOrder = null,
     string? FalseBranchStepOrder = null,
-    IReadOnlyList<AgentType>? ParallelAgentTypes = null);
+    IReadOnlyList<AgentType>? ParallelAgentTypes = null,
+    string? ExtractConfigJson = null,
+    string? VideoAnalyzeConfigJson = null,
+    string? VideoCompileConfigJson = null);
 
 public sealed record WorkflowTemplateDefinition(
     string Key,
@@ -55,6 +58,34 @@ public static class WorkflowTemplateCatalog
                 new(AgentType.ReviewAgent, "Review quality and compliance", StepType.ReviewLoop, LoopTargetStepOrder: 10, MaxIterations: 2, MinScore: 8, AgentInputContextMode: AgentInputContextMode.FullWorkflow)
             ]),
         new(
+            Key: "lean-context-promo",
+            Name: "Lean Context Promo",
+            Description: "Opt-in variant of the starter workflow that inserts a deterministic Extract step to reduce the component inventory before it reaches downstream agents, cutting token usage. Demonstrates the Extract (op=project) pattern.",
+            Version: 1,
+            AutoCreateOnProject: false,
+            RequiresUserInput: false,
+            Steps:
+            [
+                new(AgentType.CodeStructureAnalyzer, "Analyze code structure", AgentInputContextMode: AgentInputContextMode.FullWorkflow),
+                new(AgentType.DependencyAnalyzer, "Analyze UI dependencies", AgentInputContextMode: AgentInputContextMode.PreviousStepOnly),
+                new(AgentType.ComponentInventoryAnalyzer, "Inventory components", AgentInputContextMode: AgentInputContextMode.PreviousStepOnly),
+                new(AgentType.RouteAndApiAnalyzer, "Map routes and API", AgentInputContextMode: AgentInputContextMode.PreviousStepOnly),
+                new(AgentType.StyleAndThemeExtractor, "Extract style tokens", AgentInputContextMode: AgentInputContextMode.PreviousStepOnly),
+                new(
+                    AgentType.ExtractTransform,
+                    "Reduce component inventory to a lean view",
+                    StepType.Extract,
+                    ExtractConfigJson: """
+                        {"version":1,"operation":"Project","inputs":{"source":{"from":"Step","stepOrder":3}},"path":"$.components","fields":["name","filePath","responsibility"],"take":40,"maxOutputChars":8000,"expect":{"minItems":1}}
+                        """),
+                new(AgentType.RemotionComponentTranslator, "Translate to Remotion scenes (lean context)", AgentInputContextMode: AgentInputContextMode.SelectedPriorSteps, SelectedPriorStepOrders: [1, 2, 4, 5, 6]),
+                new(AgentType.AnimationStrategyAgent, "Create animation strategy (lean context)", AgentInputContextMode: AgentInputContextMode.SelectedPriorSteps, SelectedPriorStepOrders: [5, 6, 7]),
+                new(AgentType.ScriptwriterAgent, "Draft narration and captions", AgentInputContextMode: AgentInputContextMode.PreviousStepOnly),
+                new(AgentType.DirectorAgent, "Build shot direction (lean context)", AgentInputContextMode: AgentInputContextMode.SelectedPriorSteps, SelectedPriorStepOrders: [1, 4, 5, 6, 7, 8, 9]),
+                new(AgentType.AuthorAgent, "Assemble and render master composition (lean context)", AgentInputContextMode: AgentInputContextMode.SelectedPriorSteps, SelectedPriorStepOrders: [6, 7, 8, 9, 10]),
+                new(AgentType.ReviewAgent, "Review quality and compliance", StepType.ReviewLoop, LoopTargetStepOrder: 11, MaxIterations: 2, MinScore: 8, AgentInputContextMode: AgentInputContextMode.FullWorkflow)
+            ]),
+        new(
             Key: "cinematic-feature-spotlight",
             Name: "Cinematic Feature Spotlight",
             Description: "High-energy feature showcase with cinematic pacing, reveal transitions, and strong CTA ending.",
@@ -91,6 +122,42 @@ public static class WorkflowTemplateCatalog
                 new(AgentType.AnimationStrategyAgent, "Plan suspense pacing", AgentInputContextMode: AgentInputContextMode.FullWorkflow),
                 new(AgentType.AuthorAgent, "Assemble and render trailer", AgentInputContextMode: AgentInputContextMode.FullWorkflow),
                 new(AgentType.ReviewAgent, "Trailer impact review", StepType.ReviewLoop, LoopTargetStepOrder: 8, MaxIterations: 3, MinScore: 9, AgentInputContextMode: AgentInputContextMode.FullWorkflow)
+            ]),
+        new(
+            Key: "video-derush-edit",
+            Name: "Video Derush & Edit",
+            Description: "Opt-in template that analyzes a real source video (silence, shots, optional ASR transcription), has a story-editor agent decide which spans to keep by referencing opaque ids only, then compiles the edit with ffmpeg. Demonstrates the VideoAnalyze/VideoCompile step types.",
+            Version: 1,
+            AutoCreateOnProject: false,
+            RequiresUserInput: false,
+            Steps:
+            [
+                new(
+                    AgentType.VideoTransform,
+                    "Analyze source video",
+                    StepType.VideoAnalyze,
+                    // Source.Kind=ProjectFile with no ProjectFileId, deliberately: this is the
+                    // first step in the workflow, so Source.Kind=PreviousStepOutput would fail
+                    // SOURCE_UNRESOLVED on every single execution (there is no prior step's
+                    // output to resolve — found by Copilot review). ProjectFile fails the same
+                    // way when unconfigured, but the workflow builder's source picker for
+                    // ProjectFile visibly shows "no file selected", making it obvious the user
+                    // needs to pick one before running — unlike PreviousStepOutput, which reads
+                    // as already-configured.
+                    VideoAnalyzeConfigJson: """
+                        {"version":1,"source":{"kind":"ProjectFile"}}
+                        """),
+                new(
+                    AgentType.VideoStoryEditor,
+                    "Decide which spans to keep",
+                    AgentInputContextMode: AgentInputContextMode.PreviousStepOnly),
+                new(
+                    AgentType.VideoTransform,
+                    "Compile edited video",
+                    StepType.VideoCompile,
+                    VideoCompileConfigJson: """
+                        {"version":1,"decision":{"from":"Previous"},"analysisStepOrder":1}
+                        """)
             ])
     ];
 

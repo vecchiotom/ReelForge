@@ -30,7 +30,9 @@ export interface ProjectFile {
   storageKey: string;
   storageFileName?: string;
   agentSummary: string | null;
-  summaryStatus: 'Pending' | 'Processing' | 'Completed' | 'Failed';
+  // Mirrors the backend SummaryStatus enum (ReelForge.Shared/Data/Models/Enums.cs) exactly —
+  // 'Done', not 'Completed' (that value belongs to the separate StepStatus enum).
+  summaryStatus: 'Pending' | 'Processing' | 'Done' | 'Failed';
   indexingStatus: 'NotIndexed' | 'Pending' | 'Processing' | 'Indexed' | 'Failed';
   indexedAt?: string;
   indexingError?: string | null;

@@ -72,7 +72,7 @@ public class AgentStepExecutor : IStepExecutor
             context.Execution.Id,
             context.Execution.ProjectId,
             context.CorrelationId);
-        AgentRunResult result = await agent.RunAsync(stepInput, context.CancellationToken);
+        AgentRunResult result = await agent.RunAsync(stepInput, context.Step.AgentDefinitionId, context.CancellationToken);
         sw.Stop();
 
         _logger.LogInformation(

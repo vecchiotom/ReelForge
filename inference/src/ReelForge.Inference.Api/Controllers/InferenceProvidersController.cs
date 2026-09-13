@@ -1,0 +1,581 @@
+using System.Diagnostics;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.AI;
+using Npgsql;
+using ReelForge.Inference.Api.Controllers.Dto;
+using ReelForge.Inference.Api.Data;
+using ReelForge.Shared.Auth;
+using ReelForge.Shared.Data.Models;
+using ReelForge.Shared.Inference;
+
+namespace ReelForge.Inference.Api.Controllers;
+
+/// <summary>
+/// Admin-only CRUD for configured chat-completion inference providers (Azure OpenAI or an
+/// OpenAI-compatible endpoint), plus connectivity testing. Deliberately routed under
+/// <c>api/v1/inference-providers</c> rather than <c>api/v1/admin/*</c> — nginx routes
+/// <c>/api/v1/admin/*</c> to the Go API, so this controller would 404 there.
+/// </summary>
+[ApiController]
+[Route("api/v1/inference-providers")]
+[Authorize]
+public class InferenceProvidersController : ControllerBase
+{
+    private readonly InferenceApiDbContext _db;
+    private readonly ICurrentUser _currentUser;
+    private readonly ISecretProtector _secretProtector;
+    private readonly IChatClientFactory _chatClientFactory;
+    private readonly ITranscriptionClientFactory _transcriptionClientFactory;
+
+    public InferenceProvidersController(
+        InferenceApiDbContext db,
+        ICurrentUser currentUser,
+        ISecretProtector secretProtector,
+        IChatClientFactory chatClientFactory,
+        ITranscriptionClientFactory transcriptionClientFactory)
+    {
+        _db = db;
+        _currentUser = currentUser;
+        _secretProtector = secretProtector;
+        _chatClientFactory = chatClientFactory;
+        _transcriptionClientFactory = transcriptionClientFactory;
+    }
+
+    [HttpGet]
+    public async Task<ActionResult<List<InferenceProviderResponse>>> List(CancellationToken ct)
+    {
+        if (!_currentUser.IsAdmin) return Forbid();
+
+        List<InferenceProvider> providers = await _db.InferenceProviders
+            .OrderBy(p => p.Name)
+            .ToListAsync(ct);
+
+        return Ok(providers.Select(MapToResponse));
+    }
+
+    [HttpGet("{id:guid}")]
+    public async Task<ActionResult<InferenceProviderResponse>> Get(Guid id, CancellationToken ct)
+    {
+        if (!_currentUser.IsAdmin) return Forbid();
+
+        InferenceProvider? entity = await _db.InferenceProviders.FirstOrDefaultAsync(p => p.Id == id, ct);
+        if (entity == null) return NotFound();
+
+        return Ok(MapToResponse(entity));
+    }
+
+    [HttpPost]
+    public async Task<ActionResult<InferenceProviderResponse>> Create(
+        [FromBody] CreateInferenceProviderRequest request, CancellationToken ct)
+    {
+        if (!_currentUser.IsAdmin) return Forbid();
+
+        if (string.IsNullOrWhiteSpace(request.Name))
+        {
+            return BadRequest(new { error = "Name is required." });
+        }
+
+        if (string.IsNullOrWhiteSpace(request.Endpoint))
+        {
+            return BadRequest(new { error = "Endpoint is required." });
+        }
+
+        if (string.IsNullOrWhiteSpace(request.ModelName))
+        {
+            return BadRequest(new { error = "ModelName is required." });
+        }
+
+        if (request.TimeoutSeconds.HasValue && request.TimeoutSeconds.Value <= 0)
+        {
+            return BadRequest(new { error = "TimeoutSeconds must be a positive number when provided." });
+        }
+
+        if (!TryParseKind(request.Kind, out InferenceProviderKind kind))
+        {
+            return BadRequest(new { error = $"Invalid kind '{request.Kind}'. Expected 'AzureOpenAI' or 'OpenAICompatible'." });
+        }
+
+        // Default to Chat when omitted, for backward compatibility with any existing frontend
+        // calls made before the Chat/Transcription capability split existed.
+        InferenceProviderCapability capability = InferenceProviderCapability.Chat;
+        if (!string.IsNullOrWhiteSpace(request.Capability) && !TryParseCapability(request.Capability, out capability))
+        {
+            return BadRequest(new { error = $"Invalid capability '{request.Capability}'. Expected 'Chat' or 'Transcription'." });
+        }
+
+        bool nameTaken = await _db.InferenceProviders.AnyAsync(p => p.Name == request.Name, ct);
+        if (nameTaken)
+        {
+            return Conflict(new { error = $"A provider named '{request.Name}' already exists." });
+        }
+
+        DateTime now = DateTime.UtcNow;
+        InferenceProvider entity = new()
+        {
+            Id = Guid.NewGuid(),
+            Name = request.Name,
+            Kind = kind,
+            Capability = capability,
+            Endpoint = request.Endpoint,
+            ModelName = request.ModelName,
+            IsDefault = request.IsDefault,
+            IsEnabled = request.IsEnabled,
+            TimeoutSeconds = request.TimeoutSeconds,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+        ApplyApiKey(entity, request.ApiKey);
+
+        await using IDbContextTransaction tx = await _db.Database.BeginTransactionAsync(ct);
+        try
+        {
+            if (entity.IsDefault)
+            {
+                // Clear IsDefault on every existing row of the SAME capability in the same
+                // transaction as the insert, so at most one row per capability is ever the
+                // default (also required by the composite (capability, is_default) partial
+                // unique index) — a new Transcription default must never clear a Chat default,
+                // and vice versa.
+                await ClearOtherDefaultsAsync(capability, exceptId: null, ct);
+            }
+
+            _db.InferenceProviders.Add(entity);
+            await _db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+        }
+        catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+        {
+            await tx.RollbackAsync(ct);
+            return Conflict(new { error = $"A provider named '{request.Name}' already exists." });
+        }
+
+        return CreatedAtAction(nameof(Get), new { id = entity.Id }, MapToResponse(entity));
+    }
+
+    [HttpPut("{id:guid}")]
+    public async Task<ActionResult<InferenceProviderResponse>> Update(
+        Guid id, [FromBody] UpdateInferenceProviderRequest request, CancellationToken ct)
+    {
+        if (!_currentUser.IsAdmin) return Forbid();
+
+        InferenceProvider? entity = await _db.InferenceProviders.FirstOrDefaultAsync(p => p.Id == id, ct);
+        if (entity == null) return NotFound();
+
+        if (request.Name != null)
+        {
+            if (string.IsNullOrWhiteSpace(request.Name))
+            {
+                return BadRequest(new { error = "Name cannot be empty." });
+            }
+
+            bool nameTaken = await _db.InferenceProviders.AnyAsync(p => p.Id != id && p.Name == request.Name, ct);
+            if (nameTaken)
+            {
+                return Conflict(new { error = $"A provider named '{request.Name}' already exists." });
+            }
+
+            entity.Name = request.Name;
+        }
+
+        if (request.Kind != null)
+        {
+            if (!TryParseKind(request.Kind, out InferenceProviderKind kind))
+            {
+                return BadRequest(new { error = $"Invalid kind '{request.Kind}'. Expected 'AzureOpenAI' or 'OpenAICompatible'." });
+            }
+
+            entity.Kind = kind;
+        }
+
+        if (request.Capability != null)
+        {
+            if (!TryParseCapability(request.Capability, out InferenceProviderCapability capability))
+            {
+                return BadRequest(new { error = $"Invalid capability '{request.Capability}'. Expected 'Chat' or 'Transcription'." });
+            }
+
+            // Changing capability on a row that is currently the default is ambiguous: it would
+            // silently move the "default" flag to a different capability bucket, either
+            // colliding with that capability's existing default (reported, confusingly, as a
+            // name conflict — it's actually the composite (capability, is_default) unique index)
+            // or leaving the OLD capability with no default at all. Require the request to
+            // explicitly say what should happen to IsDefault in the same call (found by Copilot
+            // review).
+            if (capability != entity.Capability && entity.IsDefault && !request.IsDefault.HasValue)
+            {
+                return BadRequest(new
+                {
+                    error = "This provider is currently the default. Explicitly set isDefault (true or false) " +
+                            "in the same request when changing its capability, so the default assignment for " +
+                            "both capabilities stays unambiguous."
+                });
+            }
+
+            entity.Capability = capability;
+        }
+
+        // string? fields follow the Go admin-user "omit = unchanged" convention: null/absent
+        // leaves the stored value untouched, a supplied (non-null) value replaces it.
+        if (request.Endpoint != null)
+        {
+            if (string.IsNullOrWhiteSpace(request.Endpoint))
+            {
+                return BadRequest(new { error = "Endpoint cannot be empty." });
+            }
+            entity.Endpoint = request.Endpoint;
+        }
+        if (request.ModelName != null)
+        {
+            if (string.IsNullOrWhiteSpace(request.ModelName))
+            {
+                return BadRequest(new { error = "ModelName cannot be empty." });
+            }
+            entity.ModelName = request.ModelName;
+        }
+        if (request.IsEnabled.HasValue) entity.IsEnabled = request.IsEnabled.Value;
+        if (request.TimeoutSeconds.HasValue)
+        {
+            if (request.TimeoutSeconds.Value <= 0)
+            {
+                return BadRequest(new { error = "TimeoutSeconds must be a positive number." });
+            }
+            entity.TimeoutSeconds = request.TimeoutSeconds.Value;
+        }
+
+        // ApiKey has one extra state beyond the usual convention: null/absent = unchanged,
+        // "" = explicitly clear the stored key, anything else = replace it (R3/B.5).
+        ApplyApiKey(entity, request.ApiKey);
+
+        entity.UpdatedAt = DateTime.UtcNow;
+
+        await using IDbContextTransaction tx = await _db.Database.BeginTransactionAsync(ct);
+        try
+        {
+            if (request.IsDefault == true)
+            {
+                entity.IsDefault = true;
+                // Scoped to entity.Capability (post any Capability change above) so a
+                // Transcription default is never cleared by a Chat default being set, and
+                // vice versa (see the composite (capability, is_default) unique index).
+                await ClearOtherDefaultsAsync(entity.Capability, exceptId: entity.Id, ct);
+            }
+            else if (request.IsDefault == false)
+            {
+                entity.IsDefault = false;
+            }
+
+            await _db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+        }
+        catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+        {
+            await tx.RollbackAsync(ct);
+            return Conflict(new { error = $"A provider named '{entity.Name}' already exists." });
+        }
+
+        return Ok(MapToResponse(entity));
+    }
+
+    [HttpDelete("{id:guid}")]
+    public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
+    {
+        if (!_currentUser.IsAdmin) return Forbid();
+
+        InferenceProvider? entity = await _db.InferenceProviders.FirstOrDefaultAsync(p => p.Id == id, ct);
+        if (entity == null) return NotFound();
+
+        if (entity.IsDefault)
+        {
+            return Conflict(new
+            {
+                error = "Cannot delete the default inference provider. Mark a different provider as default first."
+            });
+        }
+
+        // Agents referencing this provider via InferenceProviderId fall back to the global
+        // default (OnDelete(SetNull) on the FK), so no cascade cleanup is needed here.
+        _db.InferenceProviders.Remove(entity);
+        await _db.SaveChangesAsync(ct);
+        return NoContent();
+    }
+
+    [HttpPost("{id:guid}/test")]
+    public async Task<ActionResult<TestInferenceProviderResponse>> TestSaved(Guid id, CancellationToken ct)
+    {
+        if (!_currentUser.IsAdmin) return Forbid();
+
+        InferenceProvider? entity = await _db.InferenceProviders.FirstOrDefaultAsync(p => p.Id == id, ct);
+        if (entity == null) return NotFound();
+
+        string apiKey = string.Empty;
+        if (!string.IsNullOrEmpty(entity.ApiKeyEncrypted))
+        {
+            if (!_secretProtector.TryUnprotect(entity.ApiKeyEncrypted, out apiKey))
+            {
+                // R3 degradation path: a lost/mismatched Data Protection key ring must surface
+                // as a clean, readable failure — never an unhandled exception or a 500.
+                TestInferenceProviderResponse degraded = new(false, 0, "stored key could not be decrypted", null);
+                await PersistTestResultAsync(entity, degraded, ct);
+                return Ok(degraded);
+            }
+        }
+
+        TestInferenceProviderResponse result;
+        if (entity.Capability == InferenceProviderCapability.Transcription)
+        {
+            ResolvedTranscriptionProvider resolvedTranscription = new(
+                entity.Id, entity.Name, entity.Kind, entity.Endpoint, entity.ModelName,
+                apiKey, entity.TimeoutSeconds ?? DefaultTimeoutSeconds);
+            result = await RunTranscriptionTestAsync(resolvedTranscription, ct);
+        }
+        else
+        {
+            ResolvedInferenceProvider resolved = new(
+                entity.Id, entity.Name, entity.Kind, entity.Endpoint, entity.ModelName,
+                apiKey, entity.TimeoutSeconds ?? DefaultTimeoutSeconds);
+            result = await RunTestAsync(resolved, ct);
+        }
+
+        await PersistTestResultAsync(entity, result, ct);
+        return Ok(result);
+    }
+
+    [HttpPost("test")]
+    public async Task<ActionResult<TestInferenceProviderResponse>> TestUnsaved(
+        [FromBody] TestInferenceProviderRequest request, CancellationToken ct)
+    {
+        if (!_currentUser.IsAdmin) return Forbid();
+
+        string? kindStr = request.Kind;
+        string? capabilityStr = request.Capability;
+        string endpoint = request.Endpoint ?? string.Empty;
+        string modelName = request.ModelName ?? string.Empty;
+        string apiKey = request.ApiKey ?? string.Empty;
+        int timeoutSeconds = DefaultTimeoutSeconds;
+
+        if (request.Id.HasValue)
+        {
+            InferenceProvider? saved = await _db.InferenceProviders.FirstOrDefaultAsync(p => p.Id == request.Id.Value, ct);
+            if (saved == null)
+            {
+                return NotFound(new { error = "Referenced provider not found." });
+            }
+
+            kindStr ??= saved.Kind.ToString();
+            capabilityStr ??= saved.Capability.ToString();
+            if (request.Endpoint == null) endpoint = saved.Endpoint;
+            if (request.ModelName == null) modelName = saved.ModelName;
+            timeoutSeconds = saved.TimeoutSeconds ?? timeoutSeconds;
+
+            if (request.ApiKey == null)
+            {
+                // Reuse the stored, decrypted key instead of requiring the caller to resend it.
+                if (!string.IsNullOrEmpty(saved.ApiKeyEncrypted))
+                {
+                    if (!_secretProtector.TryUnprotect(saved.ApiKeyEncrypted, out string storedKey))
+                    {
+                        return Ok(new TestInferenceProviderResponse(false, 0, "stored key could not be decrypted", null));
+                    }
+
+                    apiKey = storedKey;
+                }
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(kindStr) || !TryParseKind(kindStr, out InferenceProviderKind kind))
+        {
+            return BadRequest(new { error = $"Invalid or missing kind '{kindStr}'. Expected 'AzureOpenAI' or 'OpenAICompatible'." });
+        }
+
+        InferenceProviderCapability capability = InferenceProviderCapability.Chat;
+        if (!string.IsNullOrWhiteSpace(capabilityStr) && !TryParseCapability(capabilityStr, out capability))
+        {
+            return BadRequest(new { error = $"Invalid capability '{capabilityStr}'. Expected 'Chat' or 'Transcription'." });
+        }
+
+        TestInferenceProviderResponse result;
+        if (capability == InferenceProviderCapability.Transcription)
+        {
+            ResolvedTranscriptionProvider resolvedTranscription = new(
+                request.Id, "test", kind, endpoint, modelName, apiKey, timeoutSeconds);
+            result = await RunTranscriptionTestAsync(resolvedTranscription, ct);
+        }
+        else
+        {
+            ResolvedInferenceProvider resolved = new(
+                request.Id, "test", kind, endpoint, modelName, apiKey, timeoutSeconds);
+            result = await RunTestAsync(resolved, ct);
+        }
+
+        return Ok(result);
+    }
+
+    private const int DefaultTimeoutSeconds = 300;
+
+    private async Task<TestInferenceProviderResponse> RunTestAsync(ResolvedInferenceProvider provider, CancellationToken ct)
+    {
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        try
+        {
+            IChatClient chatClient = _chatClientFactory.Get(provider);
+            List<ChatMessage> messages = new() { new ChatMessage(ChatRole.User, "ping") };
+            ChatOptions options = new() { MaxOutputTokens = 8 };
+
+            ChatResponse response = await chatClient.GetResponseAsync(messages, options, ct);
+            stopwatch.Stop();
+
+            string? preview = response.Text;
+            if (!string.IsNullOrEmpty(preview) && preview.Length > 200)
+            {
+                preview = preview[..200];
+            }
+
+            return new TestInferenceProviderResponse(true, stopwatch.ElapsedMilliseconds, null, preview);
+        }
+        catch (Exception ex)
+        {
+            // Never let a bad endpoint/model/key escape as a 500 — the whole point of this
+            // endpoint is to let an admin validate a config before (or after) saving it.
+            stopwatch.Stop();
+            return new TestInferenceProviderResponse(false, stopwatch.ElapsedMilliseconds, ex.Message, null);
+        }
+    }
+
+    /// <summary>
+    /// Transcribes a short, in-memory synthesized silent WAV as a 1-shot connectivity ping for a
+    /// Transcription-capability provider — mirrors <see cref="RunTestAsync"/>'s chat-side "ping"
+    /// message. Generated in pure C# (no ffmpeg/fixture file) since this API service has no
+    /// video-processing dependency and shouldn't gain one just for a health-check.
+    /// </summary>
+    private async Task<TestInferenceProviderResponse> RunTranscriptionTestAsync(ResolvedTranscriptionProvider provider, CancellationToken ct)
+    {
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        try
+        {
+            ITranscriptionClient client = _transcriptionClientFactory.Get(provider);
+            await using MemoryStream wav = BuildSilentWav();
+
+            TranscriptResult result = await client.TranscribeAsync(wav, "ping.wav", language: null, wordTimestamps: false, ct);
+            stopwatch.Stop();
+
+            string? preview = result.Text;
+            if (!string.IsNullOrEmpty(preview) && preview.Length > 200)
+            {
+                preview = preview[..200];
+            }
+
+            return new TestInferenceProviderResponse(true, stopwatch.ElapsedMilliseconds, null, preview);
+        }
+        catch (Exception ex)
+        {
+            // Same discipline as RunTestAsync: never let a bad endpoint/model/key escape as a 500.
+            stopwatch.Stop();
+            return new TestInferenceProviderResponse(false, stopwatch.ElapsedMilliseconds, ex.Message, null);
+        }
+    }
+
+    /// <summary>
+    /// Builds a ~0.3 second, 16 kHz mono 16-bit PCM WAV of all-zero (silent) samples, with a
+    /// correct 44-byte canonical WAV header, for use as a minimal ASR connectivity ping.
+    /// </summary>
+    private static MemoryStream BuildSilentWav()
+    {
+        const int sampleRateHz = 16_000;
+        const short channels = 1;
+        const short bitsPerSample = 16;
+        const double durationSeconds = 0.3;
+
+        int bytesPerSample = bitsPerSample / 8;
+        int sampleCount = (int)(sampleRateHz * durationSeconds);
+        int dataSize = sampleCount * channels * bytesPerSample;
+        int byteRate = sampleRateHz * channels * bytesPerSample;
+        short blockAlign = (short)(channels * bytesPerSample);
+
+        MemoryStream stream = new();
+        using (BinaryWriter writer = new(stream, System.Text.Encoding.ASCII, leaveOpen: true))
+        {
+            // RIFF header
+            writer.Write("RIFF"u8.ToArray());
+            writer.Write(36 + dataSize);
+            writer.Write("WAVE"u8.ToArray());
+
+            // fmt subchunk (PCM)
+            writer.Write("fmt "u8.ToArray());
+            writer.Write(16);
+            writer.Write((short)1); // PCM
+            writer.Write(channels);
+            writer.Write(sampleRateHz);
+            writer.Write(byteRate);
+            writer.Write(blockAlign);
+            writer.Write(bitsPerSample);
+
+            // data subchunk — all-zero samples, i.e. silence
+            writer.Write("data"u8.ToArray());
+            writer.Write(dataSize);
+            writer.Write(new byte[dataSize]);
+        }
+
+        stream.Position = 0;
+        return stream;
+    }
+
+    private async Task PersistTestResultAsync(InferenceProvider entity, TestInferenceProviderResponse result, CancellationToken ct)
+    {
+        entity.LastTestAt = DateTime.UtcNow;
+        entity.LastTestOk = result.Ok;
+        entity.LastTestError = result.Error;
+        await _db.SaveChangesAsync(ct);
+    }
+
+    private async Task ClearOtherDefaultsAsync(InferenceProviderCapability capability, Guid? exceptId, CancellationToken ct)
+    {
+        // R4/WS4: scoped to the SAME capability — a Chat default and a Transcription default
+        // coexist independently, per the composite (capability, is_default) filtered unique index.
+        IQueryable<InferenceProvider> query = _db.InferenceProviders
+            .Where(p => p.IsDefault && p.Capability == capability);
+        if (exceptId.HasValue)
+        {
+            query = query.Where(p => p.Id != exceptId.Value);
+        }
+
+        await query.ExecuteUpdateAsync(setters => setters.SetProperty(p => p.IsDefault, false), ct);
+    }
+
+    private void ApplyApiKey(InferenceProvider entity, string? apiKey)
+    {
+        if (apiKey == null)
+        {
+            // Omitted/null: leave the stored key untouched.
+            return;
+        }
+
+        if (apiKey.Length == 0)
+        {
+            // Explicit empty string: clear the key.
+            entity.ApiKeyEncrypted = null;
+            entity.ApiKeyLastFour = null;
+            return;
+        }
+
+        entity.ApiKeyEncrypted = _secretProtector.Protect(apiKey);
+        entity.ApiKeyLastFour = apiKey.Length <= 4 ? apiKey : apiKey[^4..];
+    }
+
+    private static bool TryParseKind(string? value, out InferenceProviderKind kind) =>
+        Enum.TryParse(value, ignoreCase: true, out kind);
+
+    private static bool TryParseCapability(string? value, out InferenceProviderCapability capability) =>
+        Enum.TryParse(value, ignoreCase: true, out capability);
+
+    private static bool IsUniqueViolation(DbUpdateException ex) =>
+        ex.InnerException is PostgresException { SqlState: "23505" };
+
+    private static InferenceProviderResponse MapToResponse(InferenceProvider p) => new(
+        p.Id, p.Name, p.Kind.ToString(), p.Capability.ToString(), p.Endpoint, p.ModelName,
+        !string.IsNullOrEmpty(p.ApiKeyEncrypted), p.ApiKeyLastFour,
+        p.IsDefault, p.IsEnabled, p.TimeoutSeconds, p.CreatedAt, p.UpdatedAt,
+        p.LastTestAt, p.LastTestOk, p.LastTestError);
+}

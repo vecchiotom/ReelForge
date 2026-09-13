@@ -18,6 +18,7 @@ public class InferenceApiDbContext : DbContext
     public DbSet<Project> Projects => Set<Project>();
     public DbSet<ProjectFile> ProjectFiles => Set<ProjectFile>();
     public DbSet<AgentDefinition> AgentDefinitions => Set<AgentDefinition>();
+    public DbSet<InferenceProvider> InferenceProviders => Set<InferenceProvider>();
 
     // Referenced tables (for navigation properties, not migrations)
     public DbSet<WorkflowDefinition> WorkflowDefinitions => Set<WorkflowDefinition>();
@@ -96,6 +97,29 @@ public class InferenceApiDbContext : DbContext
                 .HasColumnType("jsonb");
             entity.Property(e => e.OutputSchemaJson)
                 .HasColumnType("jsonb");
+            entity.HasOne(e => e.InferenceProvider)
+                .WithMany(p => p.AgentDefinitions)
+                .HasForeignKey(e => e.InferenceProviderId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<InferenceProvider>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.Name).IsUnique();
+            // One default row PER capability (a Chat default and a Transcription default
+            // coexist independently) — replaces the old UNIQUE(is_default) index, not a
+            // supplement to it (see R4: the old index would still admit two IsDefault rows,
+            // one per capability, which is exactly what we now want, but only via this
+            // composite shape).
+            entity.HasIndex(e => new { e.Capability, e.IsDefault }).IsUnique().HasFilter("is_default");
+            entity.Property(e => e.Kind)
+                .HasConversion<string>();
+            entity.Property(e => e.Capability)
+                .HasConversion<string>()
+                .HasDefaultValue(InferenceProviderCapability.Chat);
+            entity.Property(e => e.ExtraHeadersJson)
+                .HasColumnType("jsonb");
         });
 
         // --- Referenced tables (excluded from migrations) ---
@@ -128,6 +152,12 @@ public class InferenceApiDbContext : DbContext
             entity.Property(e => e.SelectedPriorStepOrdersJson)
                 .HasColumnType("jsonb");
             entity.Property(e => e.ParallelAgentIdsJson)
+                .HasColumnType("jsonb");
+            entity.Property(e => e.ExtractConfigJson)
+                .HasColumnType("jsonb");
+            entity.Property(e => e.VideoAnalyzeConfigJson)
+                .HasColumnType("jsonb");
+            entity.Property(e => e.VideoCompileConfigJson)
                 .HasColumnType("jsonb");
             entity.Property(e => e.StepType)
                 .HasConversion<string>();

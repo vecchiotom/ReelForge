@@ -110,6 +110,14 @@ public class ProjectFilesController : ControllerBase
             category: "userFiles",
             originalPath: relativePath ?? file.FileName);
 
+        // R22: video/audio uploads (raw source footage for the video-editing workflow) must never
+        // be handed to the text summarizer or the vector/embedding chunker — both assume text
+        // content, and a large mp4/wav would otherwise be queued into them regardless of size.
+        // The stored MimeType is resolved (not the raw client Content-Type) so a client that sends
+        // a generic "application/octet-stream" for a known media extension doesn't defeat R22.
+        string? resolvedMimeType = ResolveUploadMimeType(file.ContentType, file.FileName);
+        bool isMediaUpload = IsVideoOrAudioMimeType(resolvedMimeType);
+
         ProjectFile projectFile = new()
         {
             Id = fileId,
@@ -123,25 +131,28 @@ public class ProjectFilesController : ControllerBase
             StorageBucket = storedObject.BucketName,
             StoragePrefix = storedObject.StoragePrefix,
             StorageMetadataJson = storedObject.StorageMetadataJson,
-            MimeType = file.ContentType,
+            MimeType = resolvedMimeType,
             SizeBytes = file.Length,
-            SummaryStatus = SummaryStatus.Pending,
-            IndexingStatus = FileIndexingStatus.Pending,
+            SummaryStatus = isMediaUpload ? SummaryStatus.Done : SummaryStatus.Pending,
+            IndexingStatus = isMediaUpload ? FileIndexingStatus.NotIndexed : FileIndexingStatus.Pending,
             UploadedAt = DateTime.UtcNow
         };
 
         _db.ProjectFiles.Add(projectFile);
         await _db.SaveChangesAsync(ct);
 
-        await _publishEndpoint.Publish(new ProjectFileIndexingRequested
+        if (!isMediaUpload)
         {
-            ProjectId = projectId,
-            FileId = projectFile.Id,
-            Operation = "Upsert",
-            RequestedAt = DateTime.UtcNow
-        }, ct);
+            await _publishEndpoint.Publish(new ProjectFileIndexingRequested
+            {
+                ProjectId = projectId,
+                FileId = projectFile.Id,
+                Operation = "Upsert",
+                RequestedAt = DateTime.UtcNow
+            }, ct);
 
-        await _summarizationQueue.QueueAsync(new FileSummarizationTask(projectFile.Id), ct);
+            await _summarizationQueue.QueueAsync(new FileSummarizationTask(projectFile.Id), ct);
+        }
 
         return StatusCode(201, new ProjectFileResponse(
             projectFile.Id,
@@ -425,9 +436,16 @@ public class ProjectFilesController : ControllerBase
             file.StorageFileName = storageFileName;
             file.StorageKey = nextStorageKey;
             file.StoragePrefix = ProjectFilePath.BuildStoragePrefix(projectId, file.Category);
-            file.IndexingStatus = FileIndexingStatus.Pending;
-            file.IndexedAt = null;
-            file.IndexingError = null;
+            // R22: a moved video/audio file must not be re-queued for vector indexing —
+            // ProjectFileIndexingConsumer reads the object as UTF8 text before chunking it,
+            // which is exactly the "binary handed to the text pipeline" failure mode R22 exists
+            // to prevent, just reached via Move instead of Upload.
+            if (!IsVideoOrAudioMimeType(file.MimeType))
+            {
+                file.IndexingStatus = FileIndexingStatus.Pending;
+                file.IndexedAt = null;
+                file.IndexingError = null;
+            }
             file.UploadedAt = DateTime.UtcNow;
         }
 
@@ -435,6 +453,9 @@ public class ProjectFilesController : ControllerBase
 
         foreach (ProjectFile file in files)
         {
+            if (IsVideoOrAudioMimeType(file.MimeType))
+                continue;
+
             await _publishEndpoint.Publish(new ProjectFileIndexingRequested
             {
                 ProjectId = projectId,
@@ -598,7 +619,11 @@ public class ProjectFilesController : ControllerBase
 
         IQueryable<ProjectFile> eligibleQuery = _db.ProjectFiles
             .Where(f => f.ProjectId == projectId)
-            .Where(f => f.IndexingStatus != FileIndexingStatus.Pending && f.IndexingStatus != FileIndexingStatus.Processing);
+            .Where(f => f.IndexingStatus != FileIndexingStatus.Pending && f.IndexingStatus != FileIndexingStatus.Processing)
+            // R22: video/audio uploads sit at IndexingStatus.NotIndexed by design (see Upload) —
+            // without this filter a bulk reindex would sweep them right back into the text
+            // chunker/embedder, the exact failure mode R22 exists to prevent.
+            .Where(f => !(f.MimeType.StartsWith("video/") || f.MimeType.StartsWith("audio/")));
 
         if (!includeIndexed)
             eligibleQuery = eligibleQuery.Where(f => f.IndexingStatus != FileIndexingStatus.Indexed);
@@ -638,6 +663,46 @@ public class ProjectFilesController : ControllerBase
             selectedFiles.Count,
             eligibleFiles,
             eligibleFiles > selectedFiles.Count));
+    }
+
+    private static bool IsVideoOrAudioMimeType(string? mimeType) =>
+        !string.IsNullOrEmpty(mimeType) &&
+        (mimeType.StartsWith("video/", StringComparison.OrdinalIgnoreCase) ||
+         mimeType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase));
+
+    private static readonly Dictionary<string, string> MediaExtensionMimeTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        [".mp4"] = "video/mp4",
+        [".m4v"] = "video/mp4",
+        [".mov"] = "video/quicktime",
+        [".webm"] = "video/webm",
+        [".mkv"] = "video/x-matroska",
+        [".avi"] = "video/x-msvideo",
+        [".mp3"] = "audio/mpeg",
+        [".wav"] = "audio/wav",
+        [".m4a"] = "audio/mp4",
+        [".aac"] = "audio/aac",
+        [".flac"] = "audio/flac",
+        [".ogg"] = "audio/ogg",
+    };
+
+    /// R22 relies on the client-supplied Content-Type to detect video/audio uploads, but a real
+    /// client (especially a non-browser one) can send a generic "application/octet-stream" for a
+    /// media file, which would otherwise defeat R22 and hand the raw binary to the text
+    /// summarizer/chunker. When the content type is missing or generic, fall back to the file
+    /// extension for well-known media formats; any other specific content type is trusted as-is.
+    private static string? ResolveUploadMimeType(string? contentType, string? fileName)
+    {
+        if (!string.IsNullOrEmpty(contentType) &&
+            !contentType.Equals("application/octet-stream", StringComparison.OrdinalIgnoreCase))
+        {
+            return contentType;
+        }
+
+        string ext = Path.GetExtension(fileName ?? string.Empty);
+        return !string.IsNullOrEmpty(ext) && MediaExtensionMimeTypes.TryGetValue(ext, out string? resolved)
+            ? resolved
+            : contentType;
     }
 
     private static bool IsLikelyText(string mimeType, string fileName)

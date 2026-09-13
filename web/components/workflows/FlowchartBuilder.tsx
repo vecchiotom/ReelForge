@@ -25,7 +25,14 @@ import { ConditionalNode } from './nodes/ConditionalNode';
 import { ForEachNode } from './nodes/ForEachNode';
 import { ReviewLoopNode } from './nodes/ReviewLoopNode';
 import { ParallelNode } from './nodes/ParallelNode';
+import { ExtractNode } from './nodes/ExtractNode';
+import { VideoAnalyzeNode } from './nodes/VideoAnalyzeNode';
+import { VideoCompileNode } from './nodes/VideoCompileNode';
 import { AddStepModal } from './AddStepModal';
+import { createDefaultExtractStepConfig } from './ExtractStepConfig';
+import { createDefaultVideoAnalyzeStepConfig } from './VideoAnalyzeStepConfig';
+import { createDefaultVideoCompileStepConfig } from './VideoCompileStepConfig';
+import { useAgents } from '@/lib/hooks/use-agents';
 import type { StepData } from './WorkflowStepList';
 import type { StepType } from '@/lib/types/workflow';
 
@@ -35,17 +42,35 @@ const nodeTypes = {
   forEach: ForEachNode,
   reviewLoop: ReviewLoopNode,
   parallel: ParallelNode,
+  extract: ExtractNode,
+  videoAnalyze: VideoAnalyzeNode,
+  videoCompile: VideoCompileNode,
 } satisfies NodeTypes;
+
+/** Maps a workflow StepType to its React Flow node type key. */
+const STEP_TYPE_TO_NODE_TYPE: Record<StepType, keyof typeof nodeTypes> = {
+  Agent: 'agent',
+  Conditional: 'conditional',
+  ForEach: 'forEach',
+  ReviewLoop: 'reviewLoop',
+  Parallel: 'parallel',
+  Extract: 'extract',
+  VideoAnalyze: 'videoAnalyze',
+  VideoCompile: 'videoCompile',
+};
 
 interface FlowchartBuilderProps {
   steps: StepData[];
   onChange: (steps: StepData[]) => void;
+  /** Threaded into VideoAnalyzeNode's data so its VideoSourceRef picker can list this project's video files. */
+  projectId?: string;
 }
 
-export function FlowchartBuilder({ steps, onChange }: FlowchartBuilderProps) {
+export function FlowchartBuilder({ steps, onChange, projectId }: FlowchartBuilderProps) {
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const { data: agents, isLoading: agentsLoading } = useAgents();
 
   // Convert steps to nodes and edges
   useMemo(() => {
@@ -53,11 +78,7 @@ export function FlowchartBuilder({ steps, onChange }: FlowchartBuilderProps) {
     const newEdges: Edge[] = [];
 
     steps.forEach((step, index) => {
-      const nodeType = step.stepType === 'Agent' ? 'agent'
-        : step.stepType === 'Conditional' ? 'conditional'
-        : step.stepType === 'ForEach' ? 'forEach'
-            : step.stepType === 'Parallel' ? 'parallel'
-        : 'reviewLoop';
+      const nodeType = STEP_TYPE_TO_NODE_TYPE[step.stepType] ?? 'agent';
 
       newNodes.push({
         id: step.id,
@@ -68,6 +89,7 @@ export function FlowchartBuilder({ steps, onChange }: FlowchartBuilderProps) {
           stepNumber: index + 1,
           allSteps: steps,
           currentStepIndex: index,
+          projectId,
           onChange: (updates: Partial<StepData>) => {
             const newSteps = [...steps];
             newSteps[index] = { ...newSteps[index], ...updates };
@@ -101,7 +123,7 @@ export function FlowchartBuilder({ steps, onChange }: FlowchartBuilderProps) {
 
     setNodes(newNodes);
     setEdges(newEdges);
-  }, [steps, onChange, setNodes, setEdges]);
+  }, [steps, onChange, setNodes, setEdges, projectId]);
 
   const onConnect = useCallback(
     (params: Connection) => setEdges((existingEdges) => addEdge(params, existingEdges)),
@@ -109,10 +131,21 @@ export function FlowchartBuilder({ steps, onChange }: FlowchartBuilderProps) {
   );
 
   const handleAddStep = (stepType: StepType) => {
+    // Extract, VideoAnalyze and VideoCompile steps run no model — auto-assign the appropriate
+    // built-in, non-LLM agent so the non-nullable AgentDefinitionId FK is always satisfied
+    // without user action. VideoTransform is a single deterministic-placeholder row that serves
+    // both new video step types, exactly as ExtractTransform serves Extract.
+    const extractTransformAgentId = agents?.find((a) => a.agentType === 'ExtractTransform')?.id ?? '';
+    const videoTransformAgentId = agents?.find((a) => a.agentType === 'VideoTransform')?.id ?? '';
+
+    let agentDefinitionId = '';
+    if (stepType === 'Extract') agentDefinitionId = extractTransformAgentId;
+    if (stepType === 'VideoAnalyze' || stepType === 'VideoCompile') agentDefinitionId = videoTransformAgentId;
+
     const newStep: StepData = {
       id: `step-${Date.now()}`,
       label: '',
-      agentDefinitionId: '',
+      agentDefinitionId,
       stepType,
       conditionExpression: null,
       loopSourceExpression: null,
@@ -125,6 +158,9 @@ export function FlowchartBuilder({ steps, onChange }: FlowchartBuilderProps) {
       trueBranchStepOrder: null,
       falseBranchStepOrder: null,
       parallelAgentIds: [],
+      extractConfig: stepType === 'Extract' ? createDefaultExtractStepConfig() : null,
+      videoAnalyzeConfig: stepType === 'VideoAnalyze' ? createDefaultVideoAnalyzeStepConfig() : null,
+      videoCompileConfig: stepType === 'VideoCompile' ? createDefaultVideoCompileStepConfig() : null,
     };
     onChange([...steps, newStep]);
     setAddModalOpen(false);
@@ -187,6 +223,7 @@ export function FlowchartBuilder({ steps, onChange }: FlowchartBuilderProps) {
         opened={addModalOpen}
         onClose={() => setAddModalOpen(false)}
         onAdd={handleAddStep}
+        nonLlmStepsDisabled={agentsLoading}
       />
     </>
   );

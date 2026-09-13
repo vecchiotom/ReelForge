@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using ReelForge.Shared.Inference;
 using ReelForge.Shared.Data.Models;
 using ReelForge.Shared.Data.OutputSchemas;
 using ReelForge.WorkflowEngine.Agents.Tools;
@@ -52,10 +53,10 @@ public class ScriptwriterAgentImpl : ReelForgeAgentBase
         """;
 
     public ScriptwriterAgentImpl(
-        IChatClient chatClient,
+        IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         IAgentToolProvider toolProvider)
-        : base(chatClient, configuration, "Scriptwriter",
+        : base(chatClients, configuration, "Scriptwriter",
             "Writes the voiceover/caption script for each scene.",
             AgentType.ScriptwriterAgent, DefaultPrompt,
             toolProvider.GetTools(AgentType.ScriptwriterAgent),

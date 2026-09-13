@@ -28,6 +28,16 @@ public class WorkflowStepResult
     /// </summary>
     public string? OutputStorageKey { get; set; }
 
+    /// <summary>
+    /// S3/MinIO storage key for a large, non-playable JSON artifact produced by this step (e.g.
+    /// a full video analysis document, or a compile step's edit-decision-list audit trail).
+    /// Deliberately a SEPARATE column from <see cref="OutputStorageKey"/>: OutputsController
+    /// treats any outputFiles-prefixed OutputStorageKey as a playable video, so a JSON artifact
+    /// must never land there. Null when the step produces no such artifact.
+    /// Key format: projects/{projectId}/agentFiles/video-analysis/{executionId}/...
+    /// </summary>
+    public string? ArtifactStorageKey { get; set; }
+
     public WorkflowExecution WorkflowExecution { get; set; } = null!;
     public WorkflowStep WorkflowStep { get; set; } = null!;
 }

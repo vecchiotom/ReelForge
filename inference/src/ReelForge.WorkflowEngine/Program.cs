@@ -1,16 +1,16 @@
 using System.Text;
 using Amazon.S3;
-using Azure.AI.OpenAI;
 using MassTransit;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
+using ReelForge.Shared.Inference;
 using ReelForge.WorkflowEngine.Agents;
 using ReelForge.WorkflowEngine.Agents.Analysis;
 using ReelForge.WorkflowEngine.Agents.Production;
@@ -22,9 +22,11 @@ using ReelForge.WorkflowEngine.Data;
 using ReelForge.WorkflowEngine.Execution;
 using ReelForge.WorkflowEngine.Execution.StepExecutors;
 using ReelForge.WorkflowEngine.Observability;
+using ReelForge.WorkflowEngine.Services.Inference;
 using ReelForge.WorkflowEngine.Services.Storage;
 using ReelForge.WorkflowEngine.Services.Messaging;
 using ReelForge.WorkflowEngine.Services.RemotionSkills;
+using ReelForge.WorkflowEngine.Services.Video;
 using ReelForge.WorkflowEngine.Workers;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
@@ -60,19 +62,28 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     });
 builder.Services.AddAuthorization();
 
-// --- AI Chat Client ---
-builder.Services.AddSingleton<IChatClient>(sp =>
-{
-    string endpoint = builder.Configuration["AzureOpenAI:Endpoint"] ?? string.Empty;
-    string apiKey = builder.Configuration["AzureOpenAI:ApiKey"] ?? string.Empty;
-    string deploymentName = builder.Configuration["AzureOpenAI:DeploymentName"] ?? "gpt-4o-mini";
+// --- Inference provider abstraction ---
+builder.Services.AddDataProtection()
+    .SetApplicationName("ReelForge")
+    .PersistKeysToFileSystem(new DirectoryInfo(
+        builder.Configuration["DataProtection:KeysPath"] ?? "/keys"));
 
-    AzureOpenAIClient client = new(
-        new Uri(endpoint),
-        new System.ClientModel.ApiKeyCredential(apiKey));
+builder.Services.AddSingleton<ISecretProtector, DataProtectionSecretProtector>();
+builder.Services.AddSingleton<IChatClientFactory, ChatClientFactory>();
+builder.Services.AddScoped<IInferenceProviderStore, WorkflowEngineProviderStore>();
+builder.Services.AddSingleton<IInferenceProviderResolver, InferenceProviderResolver>();
+builder.Services.AddSingleton<IAgentChatClientProvider, AgentChatClientProvider>();
+builder.Services.AddSingleton<ITranscriptionClientFactory, TranscriptionClientFactory>();
 
-    return client.GetChatClient(deploymentName).AsIChatClient();
-});
+// --- Video editing (ffmpeg/ffprobe pipeline) ---
+builder.Services.Configure<VideoEditingOptions>(builder.Configuration.GetSection(VideoEditingOptions.SectionName));
+// IVideoToolRunner MUST be a singleton: its concurrency-limiting semaphore (R13) is only
+// process-wide if exactly one instance exists for the lifetime of the WorkflowEngine process.
+builder.Services.AddSingleton<IVideoToolRunner, FfmpegVideoToolRunner>();
+builder.Services.AddSingleton<IMediaProbe, FfprobeMediaProbe>();
+builder.Services.AddSingleton<ISilenceDetector, FfmpegSilenceDetector>();
+builder.Services.AddSingleton<IShotDetector, FfmpegShotDetector>();
+builder.Services.AddSingleton<IAudioExtractor, FfmpegAudioExtractor>();
 
 // --- MinIO / S3 ---
 builder.Services.AddSingleton<IAmazonS3>(sp =>
@@ -100,6 +111,7 @@ builder.Services.AddSingleton<IReelForgeAgent, DirectorAgentImpl>();
 builder.Services.AddSingleton<IReelForgeAgent, ScriptwriterAgentImpl>();
 builder.Services.AddSingleton<IReelForgeAgent, AuthorAgentImpl>();
 builder.Services.AddSingleton<IReelForgeAgent, ReviewAgentImpl>();
+builder.Services.AddSingleton<IReelForgeAgent, VideoStoryEditorAgent>();
 builder.Services.AddSingleton<IAgentRegistry, AgentRegistry>();
 builder.Services.AddSingleton<IAgentToolProvider, AgentToolProvider>();
 builder.Services.AddSingleton<IProjectFileWorkspace, ProjectFileWorkspace>();
@@ -120,6 +132,9 @@ builder.Services.AddSingleton<IStepExecutor, ConditionalStepExecutor>();
 builder.Services.AddSingleton<IStepExecutor, ForEachStepExecutor>();
 builder.Services.AddSingleton<IStepExecutor, ReviewLoopStepExecutor>();
 builder.Services.AddSingleton<IStepExecutor, ParallelStepExecutor>();
+builder.Services.AddSingleton<IStepExecutor, ExtractStepExecutor>();
+builder.Services.AddSingleton<IStepExecutor, VideoAnalyzeStepExecutor>();
+builder.Services.AddSingleton<IStepExecutor, VideoCompileStepExecutor>();
 
 // --- Workflow Executor ---
 builder.Services.AddScoped<WorkflowExecutorService>();

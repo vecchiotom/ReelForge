@@ -349,3 +349,49 @@ public class FileSummaryOutput
     public string VideoRelevance { get; set; } = string.Empty;
     public List<string> NotablePatterns { get; set; } = new();
 }
+
+// ============================================================================
+// VIDEO EDITING AGENT OUTPUT SCHEMAS
+// ============================================================================
+
+/// <summary>
+/// A single contiguous run of offered ids to keep, inclusive on both ends.
+/// </summary>
+/// <remarks>
+/// THE RUSHCUT INVARIANT: this class, and <see cref="VideoEditDecisionOutput"/> as a whole,
+/// must never gain a numeric or time-bearing property (no double/int-as-seconds-or-frames, no
+/// TimeSpan, no DateTime). The model is never trusted with a timestamp — its only contribution
+/// to the cut list is a set of opaque string ids drawn from the set it was actually shown
+/// (VideoAnalysisArtifact.OfferedIds). Resolving ids to frame-accurate times is
+/// VideoCompileStepExecutor's job, done entirely from the full analysis artifact. A future
+/// "helpful" addition of e.g. StartSec here would defeat the entire point of this contract —
+/// see the reflection test asserting this type is structurally incapable of expressing a time.
+/// </remarks>
+public class VideoEditKeepSpan
+{
+    /// <summary>First offered id to keep, inclusive. e.g. "t7" or "s2".</summary>
+    public string FromId { get; set; } = string.Empty;
+
+    /// <summary>Last offered id to keep, inclusive. Must be >= FromId in the offered order.</summary>
+    public string ToId { get; set; } = string.Empty;
+
+    /// <summary>Why this span stays. Prose only.</summary>
+    public string Reason { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Structured output for VideoStoryEditorAgent. Single representation only (<see cref="Keep"/>)
+/// — there is deliberately no "remove" list, since two ways to express the same edit would
+/// create a resolution order to get wrong. Everything not covered by a kept span is cut.
+/// </summary>
+public class VideoEditDecisionOutput
+{
+    /// <summary>
+    /// Ordered, strictly increasing, non-overlapping spans of offered ids to keep.
+    /// </summary>
+    public List<VideoEditKeepSpan> Keep { get; set; } = new();
+
+    public string EditRationale { get; set; } = string.Empty;
+
+    public string SuggestedTitle { get; set; } = string.Empty;
+}

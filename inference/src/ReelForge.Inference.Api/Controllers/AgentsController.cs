@@ -26,6 +26,7 @@ public class AgentsController : ControllerBase
     public async Task<ActionResult<List<AgentDefinitionResponse>>> List(CancellationToken ct)
     {
         List<AgentDefinition> agents = await _db.AgentDefinitions
+            .Include(a => a.InferenceProvider)
             .Where(a => a.IsBuiltIn || a.OwnerId == _currentUser.UserId)
             .OrderBy(a => a.Name)
             .ToListAsync(ct);
@@ -35,7 +36,9 @@ public class AgentsController : ControllerBase
     [HttpGet("{id:guid}")]
     public async Task<ActionResult<AgentDefinitionResponse>> Get(Guid id, CancellationToken ct)
     {
-        AgentDefinition? agent = await _db.AgentDefinitions.FirstOrDefaultAsync(a => a.Id == id, ct);
+        AgentDefinition? agent = await _db.AgentDefinitions
+            .Include(a => a.InferenceProvider)
+            .FirstOrDefaultAsync(a => a.Id == id, ct);
         if (agent == null) return NotFound();
         if (!agent.IsBuiltIn && agent.OwnerId != _currentUser.UserId) return Forbid();
         return Ok(MapToResponse(agent));
@@ -95,6 +98,53 @@ public class AgentsController : ControllerBase
         return NoContent();
     }
 
+    /// <summary>
+    /// Sets (or clears) the per-agent inference provider override. Admin-only, and — unlike
+    /// <see cref="Update"/> — explicitly allowed for built-in agents, since overriding a
+    /// built-in's provider (e.g. routing a chatty analysis agent to a cheaper local model) is
+    /// the primary use case for this feature.
+    /// </summary>
+    [HttpPut("{id:guid}/inference-provider")]
+    public async Task<ActionResult<AgentDefinitionResponse>> SetInferenceProvider(
+        Guid id, [FromBody] SetAgentInferenceProviderRequest request, CancellationToken ct)
+    {
+        if (!_currentUser.IsAdmin) return Forbid();
+
+        AgentDefinition? agent = await _db.AgentDefinitions
+            .Include(a => a.InferenceProvider)
+            .FirstOrDefaultAsync(a => a.Id == id, ct);
+        if (agent == null) return NotFound();
+
+        if (request.InferenceProviderId.HasValue)
+        {
+            // This override feeds chat-completion resolution only (InferenceProviderResolver.
+            // ResolveAsync) — a Transcription-capability provider would build an IChatClient
+            // against an ASR endpoint. Reject it here rather than relying on the resolver's own
+            // defense-in-depth check or the UI's picker filter, neither of which is a server
+            // boundary (found by Copilot review).
+            InferenceProviderCapability? providerCapability = await _db.InferenceProviders
+                .Where(p => p.Id == request.InferenceProviderId.Value)
+                .Select(p => (InferenceProviderCapability?)p.Capability)
+                .FirstOrDefaultAsync(ct);
+            if (providerCapability == null)
+            {
+                return BadRequest(new { error = "Referenced inference provider not found." });
+            }
+            if (providerCapability != InferenceProviderCapability.Chat)
+            {
+                return BadRequest(new { error = "Only a Chat-capability provider can be assigned as an agent's inference provider override." });
+            }
+        }
+
+        agent.InferenceProviderId = request.InferenceProviderId;
+        await _db.SaveChangesAsync(ct);
+
+        // Reload the navigation property so the response reflects the new (or cleared) provider.
+        await _db.Entry(agent).Reference(a => a.InferenceProvider).LoadAsync(ct);
+
+        return Ok(MapToResponse(agent));
+    }
+
     private static AgentDefinitionResponse MapToResponse(AgentDefinition a)
     {
         string[]? tools = a.AvailableToolsJson != null
@@ -104,6 +154,7 @@ public class AgentsController : ControllerBase
             a.Id, a.Name, a.Description, a.SystemPrompt,
             a.AgentType.ToString(), a.IsBuiltIn, a.OwnerId, a.ConfigJson,
             a.CreatedAt, a.Color, a.OutputSchemaJson,
-            tools, a.GeneratesOutput, a.OutputSchemaName);
+            tools, a.GeneratesOutput, a.OutputSchemaName,
+            a.InferenceProviderId, a.InferenceProvider?.Name);
     }
 }

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using ReelForge.Shared.Inference;
 using ReelForge.Shared.Data.Models;
 using ReelForge.Shared.Data.OutputSchemas;
 using ReelForge.WorkflowEngine.Agents.Tools;
@@ -56,10 +57,10 @@ public class StyleAndThemeExtractorAgent : ReelForgeAgentBase
         """;
 
     public StyleAndThemeExtractorAgent(
-        IChatClient chatClient,
+        IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         IAgentToolProvider toolProvider)
-        : base(chatClient, configuration, "StyleAndThemeExtractor",
+        : base(chatClients, configuration, "StyleAndThemeExtractor",
             "Extracts color palette, typography, spacing, and branding tokens.",
             AgentType.StyleAndThemeExtractor, DefaultPrompt,
             toolProvider.GetTools(AgentType.StyleAndThemeExtractor),

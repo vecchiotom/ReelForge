@@ -188,6 +188,23 @@ public class AgentToolProvider : IAgentToolProvider
             ],
 
             // ──────────────────────────────────────────────────────────────────
+            // VideoStoryEditor: read-only project context + FailWorkflow only. It decides
+            // which offered ids to keep; it never produces or touches media directly.
+            // Explicitly NO sandbox tools, no WriteProjectFile, no render tool — unlike the
+            // default/unknown case below, this is spelled out on purpose so a future widening
+            // of the default case does not silently hand this agent write/render access.
+            // ──────────────────────────────────────────────────────────────────
+
+            AgentType.VideoStoryEditor =>
+            [
+                AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
+                AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
+                AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
+                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
+                AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
+            ],
+
+            // ──────────────────────────────────────────────────────────────────
             // Custom / unknown: minimal project read access only.
             // ──────────────────────────────────────────────────────────────────
 

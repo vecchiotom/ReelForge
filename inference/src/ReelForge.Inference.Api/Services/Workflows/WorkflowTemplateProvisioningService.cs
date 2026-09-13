@@ -118,7 +118,10 @@ public sealed class WorkflowTemplateProvisioningService
                     : null,
                 TrueBranchStepOrder = stepDefinition.TrueBranchStepOrder,
                 FalseBranchStepOrder = stepDefinition.FalseBranchStepOrder,
-                ParallelAgentIdsJson = BuildParallelAgentIdsJson(stepDefinition, agentsByType)
+                ParallelAgentIdsJson = BuildParallelAgentIdsJson(stepDefinition, agentsByType),
+                ExtractConfigJson = stepDefinition.ExtractConfigJson,
+                VideoAnalyzeConfigJson = stepDefinition.VideoAnalyzeConfigJson,
+                VideoCompileConfigJson = stepDefinition.VideoCompileConfigJson
             };
 
             workflow.Steps.Add(step);

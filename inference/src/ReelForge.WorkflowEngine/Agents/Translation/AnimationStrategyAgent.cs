@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using ReelForge.Shared.Inference;
 using ReelForge.Shared.Data.Models;
 using ReelForge.Shared.Data.OutputSchemas;
 using ReelForge.WorkflowEngine.Agents.Tools;
@@ -85,10 +86,10 @@ public class AnimationStrategyAgentImpl : ReelForgeAgentBase
         """;
 
     public AnimationStrategyAgentImpl(
-        IChatClient chatClient,
+        IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         IAgentToolProvider toolProvider)
-        : base(chatClient, configuration, "AnimationStrategy",
+        : base(chatClients, configuration, "AnimationStrategy",
             "Defines transition timing, animation sequencing, and scene ordering.",
             AgentType.AnimationStrategyAgent, DefaultPrompt,
             toolProvider.GetTools(AgentType.AnimationStrategyAgent),

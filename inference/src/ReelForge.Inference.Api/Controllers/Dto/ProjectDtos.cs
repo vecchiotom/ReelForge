@@ -67,7 +67,8 @@ public record AgentDefinitionResponse(
     Guid Id, string Name, string Description, string SystemPrompt,
     string AgentType, bool IsBuiltIn, Guid? OwnerId, string? ConfigJson,
     DateTime CreatedAt, string? Color, string? OutputSchemaJson,
-    string[]? AvailableTools, bool GeneratesOutput, string? OutputSchemaName);
+    string[]? AvailableTools, bool GeneratesOutput, string? OutputSchemaName,
+    Guid? InferenceProviderId = null, string? InferenceProviderName = null);
 
 public record CreateAgentRequest(string Name, string Description, string SystemPrompt, string? ConfigJson, string? Color);
 public record UpdateAgentRequest(string Name, string Description, string SystemPrompt, string? ConfigJson, string? Color);
@@ -91,7 +92,10 @@ public record WorkflowStepResponse(
     string? SelectedPriorStepOrdersJson = null,
     string? TrueBranchStepOrder = null,
     string? FalseBranchStepOrder = null,
-    string? ParallelAgentIdsJson = null);
+    string? ParallelAgentIdsJson = null,
+    string? ExtractConfigJson = null,
+    string? VideoAnalyzeConfigJson = null,
+    string? VideoCompileConfigJson = null);
 
 public record CreateWorkflowRequest(string Name, List<CreateWorkflowStepRequest> Steps, bool RequiresUserInput = false);
 
@@ -111,7 +115,10 @@ public record CreateWorkflowStepRequest(
     string? SelectedPriorStepOrdersJson = null,
     string? TrueBranchStepOrder = null,
     string? FalseBranchStepOrder = null,
-    string? ParallelAgentIdsJson = null);
+    string? ParallelAgentIdsJson = null,
+    string? ExtractConfigJson = null,
+    string? VideoAnalyzeConfigJson = null,
+    string? VideoCompileConfigJson = null);
 public record UpdateWorkflowRequest(string? Name, List<CreateWorkflowStepRequest> Steps, bool? RequiresUserInput = null);
 
 public record WorkflowTemplateSummaryResponse(
@@ -139,7 +146,8 @@ public record StepResultResponse(
     string? InputJson = null, string? OutputJson = null,
     string? Status = null, string? ErrorDetails = null,
     int? IterationNumber = null, DateTime? CompletedAt = null,
-    string? OutputStorageKey = null);
+    string? OutputStorageKey = null,
+    string? ArtifactStorageKey = null);
 
 public record ReviewScoreResponse(
     Guid Id, int IterationNumber, int Score, string Comments, DateTime CreatedAt);

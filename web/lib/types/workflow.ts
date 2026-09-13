@@ -7,7 +7,7 @@ export interface WorkflowDefinition {
   requiresUserInput: boolean;
 }
 
-export type StepType = 'Agent' | 'Conditional' | 'ForEach' | 'ReviewLoop' | 'Parallel';
+export type StepType = 'Agent' | 'Conditional' | 'ForEach' | 'ReviewLoop' | 'Parallel' | 'Extract' | 'VideoAnalyze' | 'VideoCompile';
 export type StepStatus = 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Skipped';
 export type AgentInputContextMode =
   | 'FullWorkflow'
@@ -34,6 +34,12 @@ export interface WorkflowStep {
   falseBranchStepOrder?: string | null;
   /** JSON array of AgentDefinition GUIDs to run in parallel (Parallel step type only). */
   parallelAgentIdsJson?: string | null;
+  /** JSON-serialized ExtractStepConfig (Extract step type only). Deserialize with JSON.parse. */
+  extractConfigJson?: string | null;
+  /** JSON-serialized VideoAnalyzeStepConfig (VideoAnalyze step type only). Deserialize with JSON.parse. */
+  videoAnalyzeConfigJson?: string | null;
+  /** JSON-serialized VideoCompileStepConfig (VideoCompile step type only). Deserialize with JSON.parse. */
+  videoCompileConfigJson?: string | null;
 }
 
 export interface CreateWorkflowRequest {
@@ -59,6 +65,12 @@ export interface CreateWorkflowStepRequest {
   falseBranchStepOrder?: string | null;
   /** JSON array of AgentDefinition GUIDs to run in parallel (Parallel step type only). */
   parallelAgentIdsJson?: string | null;
+  /** JSON-serialized ExtractStepConfig (Extract step type only). */
+  extractConfigJson?: string | null;
+  /** JSON-serialized VideoAnalyzeStepConfig (VideoAnalyze step type only). */
+  videoAnalyzeConfigJson?: string | null;
+  /** JSON-serialized VideoCompileStepConfig (VideoCompile step type only). */
+  videoCompileConfigJson?: string | null;
 }
 
 export interface UpdateWorkflowRequest {
@@ -106,6 +118,8 @@ export interface WorkflowStepResult {
   iterationNumber?: number | null;
   completedAt?: string | null;
   outputStorageKey?: string | null;
+  /** Storage key of a large step artifact (e.g. a VideoAnalyze full analysis JSON or a VideoCompile EDL), separate from outputStorageKey so the execution UI never tries to play it as a video. */
+  artifactStorageKey?: string | null;
 }
 
 export interface ReviewScore {
@@ -114,6 +128,157 @@ export interface ReviewScore {
   score: number;
   comments: string;
   createdAt: string;
+}
+
+/**
+ * Extract step configuration. Mirrors the backend `ExtractStepConfig` record
+ * (ReelForge.Shared/Workflows/ExtractStepConfig.cs) field-for-field in camelCase.
+ * Serialized to `WorkflowStep.extractConfigJson` / `CreateWorkflowStepRequest.extractConfigJson`.
+ */
+export type ExtractOperation = 'Project' | 'Resolve' | 'Files';
+export type ExtractInputSource = 'Previous' | 'Step' | 'Accumulated' | 'ProjectFiles';
+export type ExtractUnknownIdBehaviour = 'Fail' | 'Skip';
+
+export interface ExtractInputRef {
+  from: ExtractInputSource;
+  stepOrder?: number | null;
+}
+
+export interface ExtractExpectation {
+  requiredPaths?: string[] | null;
+  minItems?: number | null;
+  maxItems?: number | null;
+  nonEmptyStringPaths?: string[] | null;
+}
+
+export interface ExtractStepConfig {
+  version: number;
+  operation: ExtractOperation;
+  inputs: Record<string, ExtractInputRef>;
+  // -- project --
+  path?: string | null;
+  fields?: string[] | null;
+  idField?: string | null;
+  idPrefix: string;
+  sortBy?: string | null;
+  take?: number | null;
+  skip: number;
+  // -- resolve --
+  idsPath?: string | null;
+  recordsPath?: string | null;
+  onUnknownId: ExtractUnknownIdBehaviour;
+  // -- files --
+  categories?: string[] | null;
+  includeExtensions?: string[] | null;
+  excludePathContains?: string[] | null;
+  includeSummaries: boolean;
+  includeContent: boolean;
+  maxCharsPerFile: number;
+  // -- universal --
+  maxOutputChars: number;
+  expect?: ExtractExpectation | null;
+}
+
+/**
+ * Video editing step configuration. Mirrors the backend `VideoSource.cs`, `VideoAnalyzeStepConfig.cs`,
+ * `VideoCompileStepConfig.cs` (ReelForge.Shared/Workflows/) and the `VideoEditDecisionOutput` schema
+ * (ReelForge.Shared/Data/OutputSchemas.cs) field-for-field in camelCase. Enum values are PascalCase
+ * string literals matching the C# member names exactly (see `ExtractOperation` above for precedent —
+ * commit 8e4b6a5a fixed exactly this casing mismatch for Extract).
+ */
+export type VideoSourceKind = 'ProjectFile' | 'StepOutput' | 'PreviousStepOutput';
+
+export interface VideoSourceRef {
+  kind: VideoSourceKind;
+  /** Kind=ProjectFile -> project_files id. */
+  projectFileId?: string | null;
+  /** Kind=StepOutput -> that step's stepOrder. Ignored for PreviousStepOutput. */
+  stepOrder?: number | null;
+}
+
+export type VideoTranscriptionMode = 'Off' | 'Optional' | 'Required';
+
+export interface VideoAnalyzeExpectation {
+  minShots?: number | null;
+  minTranscriptSegments?: number | null;
+  maxSilenceRatio?: number | null;
+}
+
+export interface VideoAnalyzeStepConfig {
+  version: number;
+  source: VideoSourceRef;
+  // -- silence detection --
+  detectSilence: boolean;
+  silenceThresholdDb: number;
+  minSilenceMs: number;
+  // -- shot/scene detection --
+  detectShots: boolean;
+  sceneThreshold: number;
+  // -- transcription --
+  transcription: VideoTranscriptionMode;
+  transcriptionProviderId?: string | null;
+  language?: string | null;
+  wordTimestamps: boolean;
+  maxAsrChunkBytes: number;
+  // -- guardrails, checked before any decode --
+  maxDurationSeconds: number;
+  maxInputBytes: number;
+  // -- prompt-view budget --
+  maxOutputChars: number;
+  maxViewSegments: number;
+  maxSegmentTextChars: number;
+  expect?: VideoAnalyzeExpectation | null;
+}
+
+export type VideoCompileMode = 'Reencode' | 'StreamCopy';
+
+export interface VideoCompileExpectation {
+  minOutputSeconds?: number | null;
+  maxOutputSeconds?: number | null;
+  minRetainedRatio?: number | null;
+  maxRetainedRatio?: number | null;
+}
+
+export interface VideoCompileStepConfig {
+  version: number;
+  /** Only `from: 'Previous'` or `from: 'Step'` are valid here (validated server-side). Reuses ExtractInputRef verbatim. */
+  decision: ExtractInputRef;
+  /** Which VideoAnalyze step's full artifact to resolve ids against. */
+  analysisStepOrder: number;
+  /** Cross-execution override: resolve a prior run's artifact instead of this execution's. */
+  analysisStepResultId?: string | null;
+  mode: VideoCompileMode;
+  prePaddingMs: number;
+  postPaddingMs: number;
+  minSegmentMs: number;
+  maxSegments: number;
+  /** Required=true whenever mode is StreamCopy. */
+  allowKeyframeSnapping: boolean;
+  outputFileName: string;
+  // Allowlisted at execution time (argv-injection surface) — constrain to selects in the UI, never free text.
+  videoCodec: string;
+  audioCodec: string;
+  crf: number;
+  preset: string;
+  registerProjectFile: boolean;
+  expect?: VideoCompileExpectation | null;
+}
+
+/**
+ * Structured output produced by the VideoStoryEditor agent. Mainly useful for typing the
+ * execution-page decision viewer — the model produces this, there is no form for it.
+ * THE RUSHCUT INVARIANT: no numeric/time-bearing field anywhere here — ids only.
+ */
+export interface VideoEditKeepSpan {
+  fromId: string;
+  toId: string;
+  reason: string;
+}
+
+export interface VideoEditDecisionOutput {
+  keep: VideoEditKeepSpan[];
+  editRationale: string;
+  suggestedTitle: string;
 }
 
 export function getDefaultAgentInputContextMode(agentType: string | null | undefined): AgentInputContextMode {

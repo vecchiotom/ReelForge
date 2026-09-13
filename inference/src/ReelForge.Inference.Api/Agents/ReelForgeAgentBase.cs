@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using ReelForge.Shared.Data.Models;
+using ReelForge.Shared.Inference;
 
 namespace ReelForge.Inference.Api.Agents;
 
@@ -11,12 +12,12 @@ namespace ReelForge.Inference.Api.Agents;
 /// </summary>
 public abstract class ReelForgeAgentBase : IReelForgeAgent
 {
-    private readonly IChatClient _chatClient;
+    private readonly IAgentChatClientProvider _chatClients;
     private readonly List<AIFunction> _tools;
     private readonly Type? _outputSchemaType;
 
     protected ReelForgeAgentBase(
-        IChatClient chatClient,
+        IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         string name,
         string description,
@@ -25,7 +26,7 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
         IEnumerable<AIFunction>? tools = null,
         Type? outputSchemaType = null)
     {
-        _chatClient = chatClient;
+        _chatClients = chatClients;
         _outputSchemaType = outputSchemaType;
         Name = name;
         Description = description;
@@ -48,13 +49,12 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
     public string SystemPrompt { get; }
     public AgentType AgentType { get; }
     public IReadOnlyList<AIFunction> Tools => _tools.AsReadOnly();
-    public AIAgent AIAgent => CreateAgent();
     public string? OutputSchemaJson { get; }
     public Type? OutputSchemaType => _outputSchemaType;
 
-    public async Task<AgentRunResult> RunAsync(string prompt, CancellationToken ct = default)
+    public async Task<AgentRunResult> RunAsync(string prompt, Guid? agentDefinitionId = null, CancellationToken ct = default)
     {
-        AIAgent agent = CreateAgent();
+        AIAgent agent = await CreateAgentAsync(agentDefinitionId, ct);
 
         AgentResponse agentResponse;
         if (_outputSchemaType != null)
@@ -115,9 +115,10 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
         };
     }
 
-    private AIAgent CreateAgent()
+    private async ValueTask<AIAgent> CreateAgentAsync(Guid? agentDefinitionId, CancellationToken ct)
     {
-        return _chatClient.AsAIAgent(
+        IChatClient chatClient = await _chatClients.GetAsync(AgentType, agentDefinitionId, ct);
+        return chatClient.AsAIAgent(
             instructions: SystemPrompt,
             name: Name,
             tools: _tools.Cast<AITool>().ToList());

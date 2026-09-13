@@ -3,6 +3,7 @@ using Amazon.S3;
 using Azure.AI.OpenAI;
 using MassTransit;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -14,10 +15,12 @@ using ReelForge.Inference.Api.Consumers;
 using ReelForge.Inference.Api.Data;
 using ReelForge.Inference.Api.Services.Auth;
 using ReelForge.Inference.Api.Services.Background;
+using ReelForge.Inference.Api.Services.Inference;
 using ReelForge.Inference.Api.Services.Storage;
 using ReelForge.Inference.Api.Services.VectorSearch;
 using ReelForge.Inference.Api.Services.Workflows;
 using ReelForge.Shared.Auth;
+using ReelForge.Shared.Inference;
 
 WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
@@ -68,33 +71,39 @@ builder.Services.AddSingleton<IFileStorageService, S3FileStorageService>();
 // --- Vector Search options ---
 builder.Services.Configure<VectorSearchOptions>(builder.Configuration.GetSection(VectorSearchOptions.SectionName));
 
-// --- AI Chat Client (for file summarization) ---
-builder.Services.AddSingleton<IChatClient>(sp =>
-{
-    string endpoint = builder.Configuration["AzureOpenAI:Endpoint"] ?? string.Empty;
-    string apiKey = builder.Configuration["AzureOpenAI:ApiKey"] ?? string.Empty;
-    string deploymentName = builder.Configuration["AzureOpenAI:DeploymentName"] ?? "gpt-4o-mini";
+// --- Inference provider abstraction (chat clients for agents, e.g. file summarization) ---
+builder.Services.AddDataProtection()
+    .SetApplicationName("ReelForge")
+    .PersistKeysToFileSystem(new DirectoryInfo(
+        builder.Configuration["DataProtection:KeysPath"] ?? "/keys"));
 
-    AzureOpenAIClient client = new(
-        new Uri(endpoint),
-        new System.ClientModel.ApiKeyCredential(apiKey));
+builder.Services.AddSingleton<ISecretProtector, DataProtectionSecretProtector>();
+builder.Services.AddSingleton<IChatClientFactory, ChatClientFactory>();
+builder.Services.AddSingleton<ITranscriptionClientFactory, TranscriptionClientFactory>();
+builder.Services.AddScoped<IInferenceProviderStore, InferenceApiProviderStore>();
+builder.Services.AddSingleton<IInferenceProviderResolver, InferenceProviderResolver>();
+builder.Services.AddSingleton<IAgentChatClientProvider, AgentChatClientProvider>();
 
-    return client.GetChatClient(deploymentName).AsIChatClient();
-});
-
+// --- Embeddings (Qdrant) — left on AzureOpenAI:* config directly, out of scope for the
+// configurable-inference-provider work (see plan's Open Questions resolution).
+//
+// Wrapped in LazyEmbeddingGenerator so a missing/invalid AzureOpenAI:Endpoint only fails when
+// vector search is actually used, not the instant anything resolves this singleton — which,
+// via VectorSearchQueryService, is every ProjectFilesController action (found by e2e QA). ---
 builder.Services.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(sp =>
-{
-    string endpoint = builder.Configuration["AzureOpenAI:Endpoint"] ?? string.Empty;
-    string apiKey = builder.Configuration["AzureOpenAI:ApiKey"] ?? string.Empty;
-    string embeddingDeployment = builder.Configuration["VectorSearch:EmbeddingDeployment"]
-        ?? sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<VectorSearchOptions>>().Value.EmbeddingDeployment;
+    new ReelForge.Inference.Api.Services.VectorSearch.LazyEmbeddingGenerator(() =>
+    {
+        string endpoint = builder.Configuration["AzureOpenAI:Endpoint"] ?? string.Empty;
+        string apiKey = builder.Configuration["AzureOpenAI:ApiKey"] ?? string.Empty;
+        string embeddingDeployment = builder.Configuration["VectorSearch:EmbeddingDeployment"]
+            ?? sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<VectorSearchOptions>>().Value.EmbeddingDeployment;
 
-    AzureOpenAIClient client = new(
-        new Uri(endpoint),
-        new System.ClientModel.ApiKeyCredential(apiKey));
+        AzureOpenAIClient client = new(
+            new Uri(endpoint),
+            new System.ClientModel.ApiKeyCredential(apiKey));
 
-    return client.GetEmbeddingClient(embeddingDeployment).AsIEmbeddingGenerator();
-});
+        return client.GetEmbeddingClient(embeddingDeployment).AsIEmbeddingGenerator();
+    }));
 
 builder.Services.AddSingleton<IFileChunker, SimpleTokenChunker>();
 builder.Services.AddSingleton<IVectorIndexService, QdrantVectorIndexService>();

@@ -11,6 +11,9 @@ import { StepTypeBadge } from './StepTypeBadge';
 import { ConditionalStepConfig } from './ConditionalStepConfig';
 import { ForEachStepConfig } from './ForEachStepConfig';
 import { ReviewLoopStepConfig } from './ReviewLoopStepConfig';
+import { ExtractStepConfig, createDefaultExtractStepConfig } from './ExtractStepConfig';
+import { VideoAnalyzeStepConfig, createDefaultVideoAnalyzeStepConfig } from './VideoAnalyzeStepConfig';
+import { VideoCompileStepConfig, createDefaultVideoCompileStepConfig } from './VideoCompileStepConfig';
 import type { StepData } from './WorkflowStepList';
 
 interface StepCardProps {
@@ -30,7 +33,11 @@ export function StepCard({ step, stepNumber, onChange, onRemove }: StepCardProps
     opacity: isDragging ? 0.5 : 1,
   };
 
-  const showAgentPicker = step.stepType !== 'Conditional';
+  const showAgentPicker =
+    step.stepType !== 'Conditional' &&
+    step.stepType !== 'Extract' &&
+    step.stepType !== 'VideoAnalyze' &&
+    step.stepType !== 'VideoCompile';
 
   return (
     <Card ref={setNodeRef} style={style} withBorder padding="sm" radius="md">
@@ -83,6 +90,27 @@ export function StepCard({ step, stepNumber, onChange, onRemove }: StepCardProps
             maxIterations={step.maxIterations}
             loopTargetStepOrder={step.loopTargetStepOrder}
             onChange={onChange}
+          />
+        )}
+
+        {step.stepType === 'Extract' && (
+          <ExtractStepConfig
+            config={step.extractConfig ?? createDefaultExtractStepConfig()}
+            onChange={(extractConfig) => onChange({ extractConfig })}
+          />
+        )}
+
+        {step.stepType === 'VideoAnalyze' && (
+          <VideoAnalyzeStepConfig
+            config={step.videoAnalyzeConfig ?? createDefaultVideoAnalyzeStepConfig()}
+            onChange={(videoAnalyzeConfig) => onChange({ videoAnalyzeConfig })}
+          />
+        )}
+
+        {step.stepType === 'VideoCompile' && (
+          <VideoCompileStepConfig
+            config={step.videoCompileConfig ?? createDefaultVideoCompileStepConfig()}
+            onChange={(videoCompileConfig) => onChange({ videoCompileConfig })}
           />
         )}
 

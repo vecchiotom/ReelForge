@@ -1,4 +1,15 @@
 FROM mcr.microsoft.com/dotnet/aspnet:9.0-alpine AS base
+USER root
+# ffmpeg/ffprobe run in-process for the video-editing pipeline (plan §2) — never in the sandbox
+# service, which is untrusted-code territory this feature deliberately does not touch. Both the
+# video scratch directory and the shared Data Protection key ring (/keys — encrypts/decrypts
+# inference-provider API keys, mounted here and in the Inference API) are created and chowned to
+# $APP_UID here, in the image, because Docker seeds a fresh named volume's ownership from the
+# image directory at first mount (R12); creating them only at container runtime would leave the
+# volumes root-owned and unwritable by the non-root user.
+RUN apk add --no-cache ffmpeg \
+ && mkdir -p /var/tmp/reelforge-video /keys \
+ && chown -R $APP_UID:$APP_UID /var/tmp/reelforge-video /keys
 USER $APP_UID
 WORKDIR /app
 EXPOSE 8080

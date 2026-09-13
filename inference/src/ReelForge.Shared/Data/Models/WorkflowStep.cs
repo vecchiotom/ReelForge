@@ -33,6 +33,24 @@ public class WorkflowStep
     /// </summary>
     public string? ParallelAgentIdsJson { get; set; }
 
+    /// <summary>
+    /// JSON configuration for StepType.Extract. Deserialised to ExtractStepConfig.
+    /// Null for every other step type.
+    /// </summary>
+    public string? ExtractConfigJson { get; set; }
+
+    /// <summary>
+    /// JSON configuration for StepType.VideoAnalyze. Deserialised to VideoAnalyzeStepConfig.
+    /// Null for every other step type.
+    /// </summary>
+    public string? VideoAnalyzeConfigJson { get; set; }
+
+    /// <summary>
+    /// JSON configuration for StepType.VideoCompile. Deserialised to VideoCompileStepConfig.
+    /// Null for every other step type.
+    /// </summary>
+    public string? VideoCompileConfigJson { get; set; }
+
     public WorkflowDefinition WorkflowDefinition { get; set; } = null!;
     public AgentDefinition AgentDefinition { get; set; } = null!;
     public ICollection<WorkflowStepResult> Results { get; set; } = new List<WorkflowStepResult>();

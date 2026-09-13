@@ -2,14 +2,18 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -24,23 +28,38 @@ import (
 var Version = "dev"
 
 type appConfig struct {
-	Port         string
-	SandboxImage string
-	SandboxRoot  string
-	SandboxNetwork string   // docker network used for sandbox containers
-	SandboxTTL   time.Duration
-	ExecTimeout  time.Duration
-	MemoryLimit  string
-	CPULimit     string
-	PIDsLimit    int
+	Port           string
+	SandboxImage   string
+	SandboxRoot    string
+	SandboxNetwork string // docker network used for sandbox containers
+	// NetworkEgress reports whether sandbox containers are allowed to reach
+	// anything outside their own network. When false (the default) the docker
+	// network is created with --internal, which removes the container's default
+	// route entirely: no internet, no other docker network, and — critically —
+	// no route to the host gateway, which is what otherwise exposes every
+	// host-published port (Postgres, RabbitMQ, MinIO, nginx) to code running
+	// inside the sandbox. Enabling egress trades that guarantee for the ability
+	// to npm-install at runtime; see docs/sandbox-service.md.
+	NetworkEgress bool
+	// APIToken is the shared secret every API caller must present. There is no
+	// default and an empty value is fatal at startup: this service can start
+	// containers and read and write files, so it must never run open.
+	APIToken    string
+	SandboxTTL  time.Duration
+	ExecTimeout time.Duration
+	MemoryLimit string
+	CPULimit    string
+	PIDsLimit   int
 }
 
 func loadConfig() appConfig {
 	return appConfig{
-		Port:         getEnv("PORT", "8080"),
-		SandboxImage:   getEnv("SANDBOX_IMAGE", "reelforge-sandbox-executor:local"),
+		Port:           getEnv("PORT", "8080"),
+		SandboxImage:   getEnv("SANDBOX_IMAGE", "reelforge-sandbox-runtime:local"),
 		SandboxRoot:    getEnv("SANDBOX_ROOT", "/var/lib/reelforge/sandboxes"),
 		SandboxNetwork: getEnv("SANDBOX_NETWORK", "sandbox-net"),
+		NetworkEgress:  getBoolEnv("SANDBOX_NETWORK_EGRESS", false),
+		APIToken:       os.Getenv("SANDBOX_API_TOKEN"),
 		SandboxTTL:     getDurationEnv("SANDBOX_TTL", time.Minute),
 		ExecTimeout:    getDurationEnv("SANDBOX_EXEC_TIMEOUT", 5*time.Minute),
 		MemoryLimit:    getEnv("SANDBOX_MEMORY_LIMIT", "2g"),
@@ -66,6 +85,18 @@ func getIntEnv(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func getBoolEnv(key string, fallback bool) bool {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return fallback
+	}
+	return b
 }
 
 func getDurationEnv(key string, fallback time.Duration) time.Duration {
@@ -96,6 +127,15 @@ type sandboxManager struct {
 	executionIndex map[string]string
 }
 
+// sandboxUID/sandboxGID are the numeric ids of the `node` user in the sandbox
+// runtime image, which is what each container runs as (`--user node`). The
+// workspace is chowned to them so the container can write it without the
+// directory being world-writable on the host.
+const (
+	sandboxUID = 1000
+	sandboxGID = 1000
+)
+
 var (
 	errNotFound      = errors.New("sandbox not found")
 	errInvalidPath   = errors.New("invalid path")
@@ -110,7 +150,12 @@ var (
 		"lint":         {},
 	}
 	// npmPackageNameRe matches valid npm package names including scoped packages.
-	npmPackageNameRe = regexp.MustCompile(`^(@[a-z0-9\-_]+/)?[a-z0-9\-_.]+(@[a-zA-Z0-9.\-_]+)?$`)
+	// The first character of an unscoped name is deliberately restricted to
+	// [a-z0-9]: the previous pattern allowed the whole name to come from
+	// [a-z0-9\-_.]+, which matches a leading dash, so a "package" of "--foo" passed
+	// validation and was spliced into `npm install --save …` as a flag rather than
+	// a package. Names may also not start with "." for the same reason.
+	npmPackageNameRe = regexp.MustCompile(`^(@[a-z0-9][a-z0-9\-_.]*/)?[a-z0-9][a-z0-9\-_.]*(@[a-zA-Z0-9.\-_]+)?$`)
 )
 
 func newSandboxManager(cfg appConfig) *sandboxManager {
@@ -146,10 +191,16 @@ func (m *sandboxManager) create(workflowExecutionID string) (*sandbox, bool, err
 
 	id := uuid.NewString()
 	workspace := filepath.Join(m.cfg.SandboxRoot, id)
-	if err := os.MkdirAll(workspace, 0o777); err != nil {
+	// 0770, not 0777: the sandbox container writes here as uid 1000 (node) and
+	// this service reads it back, but nothing else on the host has any business
+	// touching an in-flight workspace. The group bit is what the container needs;
+	// world-writable was never required.
+	if err := os.MkdirAll(workspace, 0o770); err != nil {
 		return nil, false, err
 	}
-	_ = os.Chmod(workspace, 0o777)
+	if err := os.Chown(workspace, sandboxUID, sandboxGID); err != nil {
+		log.Printf("warning: could not chown workspace %s to %d:%d: %v", workspace, sandboxUID, sandboxGID, err)
+	}
 
 	containerName := "rf-sbx-" + id
 	initCommand := `if [ ! -f /workspace/package.json ]; then \
@@ -178,7 +229,7 @@ func (m *sandboxManager) create(workflowExecutionID string) (*sandbox, bool, err
 		"--security-opt", "no-new-privileges",
 		"--cap-drop", "ALL",
 		"--user", "node",
-		"-v", workspace + ":/workspace",
+		"-v", workspace+":/workspace",
 		"-w", "/workspace",
 		"--entrypoint", "sh",
 		m.cfg.SandboxImage,
@@ -408,19 +459,104 @@ func validateExec(req execRequest) error {
 	}
 }
 
-func (m *sandboxManager) resolveSandboxPath(sb *sandbox, userPath string) (string, error) {
-	clean := filepath.Clean("/" + strings.TrimSpace(userPath))
-	if clean == "/" {
-		clean = "."
-	} else {
-		clean = strings.TrimPrefix(clean, "/")
+// maxReadFileBytes caps a single /files/content read. The workspace is written
+// by code running inside the sandbox, so its file sizes are attacker-chosen and
+// the whole body is buffered in memory and base64-encoded before it is sent.
+const maxReadFileBytes = 64 << 20 // 64 MiB
+
+// normalizeSandboxPath turns a caller-supplied path into a path relative to the
+// workspace root. Lexical cleaning here only neutralizes the easy cases; real
+// containment is enforced by os.Root in openWorkspace, which is what makes
+// symlinks safe.
+func normalizeSandboxPath(userPath string) string {
+	clean := path.Clean("/" + strings.TrimSpace(strings.ReplaceAll(userPath, `\`, "/")))
+	rel := strings.TrimPrefix(clean, "/")
+	if rel == "" {
+		return "."
 	}
-	full := filepath.Clean(filepath.Join(sb.WorkspacePath, clean))
-	root := filepath.Clean(sb.WorkspacePath)
-	if full != root && !strings.HasPrefix(full, root+string(os.PathSeparator)) {
-		return "", errInvalidPath
+	return rel
+}
+
+// openWorkspace opens the sandbox workspace as an os.Root. Every file operation
+// this service performs must go through the returned root.
+//
+// This is a security boundary, not a convenience. The previous implementation
+// resolved paths lexically (filepath.Clean + a HasPrefix check), which cannot
+// see symlinks: code running inside the sandbox container — which is fully
+// attacker-controlled, see validateExec — could create /workspace/esc -> / and
+// this service would then follow it while reading, writing, or deleting. Those
+// operations run in *this* container's mount namespace, which has the Docker
+// socket bind-mounted, so a write through such a link escalates from "arbitrary
+// code in the sandbox" to "arbitrary code in the control plane" and from there
+// to root on the host. os.Root refuses any traversal that leaves the root,
+// including via symlink, and re-checks on every path component.
+func openWorkspace(sb *sandbox) (*os.Root, error) {
+	return os.OpenRoot(sb.WorkspacePath)
+}
+
+// mkdirAllIn is os.MkdirAll confined to root. os.Root gained MkdirAll in Go
+// 1.25; this walks the components by hand so the service still builds on 1.24.
+func mkdirAllIn(root *os.Root, dir string) error {
+	if dir == "." || dir == "" {
+		return nil
 	}
-	return full, nil
+	current := ""
+	for _, part := range strings.Split(dir, "/") {
+		if part == "" || part == "." {
+			continue
+		}
+		if current == "" {
+			current = part
+		} else {
+			current += "/" + part
+		}
+		if err := root.Mkdir(current, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+// removeAllIn is os.RemoveAll confined to root (os.Root gained RemoveAll in Go
+// 1.25). It uses Lstat so a symlink is unlinked rather than followed — deleting
+// a link must never delete what it points at.
+func removeAllIn(root *os.Root, rel string) error {
+	info, err := root.Lstat(rel)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if info.IsDir() {
+		dir, err := root.Open(rel)
+		if err != nil {
+			return err
+		}
+		names, readErr := dir.Readdirnames(-1)
+		_ = dir.Close()
+		if readErr != nil {
+			return readErr
+		}
+		for _, name := range names {
+			if err := removeAllIn(root, path.Join(rel, name)); err != nil {
+				return err
+			}
+		}
+	}
+	return root.Remove(rel)
+}
+
+// asPathError maps an os.Root containment refusal onto errInvalidPath so the
+// caller answers 400 rather than leaking the underlying filesystem error.
+func asPathError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return fmt.Errorf("%w: %v", errInvalidPath, err)
 }
 
 func (m *sandboxManager) listFiles(workflowExecutionID, relPath string) ([]fileEntry, error) {
@@ -428,11 +564,19 @@ func (m *sandboxManager) listFiles(workflowExecutionID, relPath string) ([]fileE
 	if err != nil {
 		return nil, err
 	}
-	target, err := m.resolveSandboxPath(sb, relPath)
+	root, err := openWorkspace(sb)
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(target)
+	defer root.Close()
+
+	dir, err := root.Open(normalizeSandboxPath(relPath))
+	if err != nil {
+		return nil, asPathError(err)
+	}
+	defer dir.Close()
+
+	entries, err := dir.ReadDir(-1)
 	if err != nil {
 		return nil, err
 	}
@@ -459,11 +603,29 @@ func (m *sandboxManager) readFile(workflowExecutionID, relPath string) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	target, err := m.resolveSandboxPath(sb, relPath)
+	root, err := openWorkspace(sb)
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(target)
+	defer root.Close()
+
+	f, err := root.Open(normalizeSandboxPath(relPath))
+	if err != nil {
+		return nil, asPathError(err)
+	}
+	defer f.Close()
+
+	// Refuse anything that is not a regular file: opening a device or FIFO the
+	// sandbox planted in its workspace would otherwise block or stream forever.
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errInvalidPath
+	}
+
+	data, err := io.ReadAll(io.LimitReader(f, maxReadFileBytes))
 	if err != nil {
 		return nil, err
 	}
@@ -476,14 +638,29 @@ func (m *sandboxManager) writeFile(workflowExecutionID, relPath string, content 
 	if err != nil {
 		return err
 	}
-	target, err := m.resolveSandboxPath(sb, relPath)
+	rel := normalizeSandboxPath(relPath)
+	if rel == "." {
+		return errInvalidPath
+	}
+
+	root, err := openWorkspace(sb)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+	defer root.Close()
+
+	if err := mkdirAllIn(root, path.Dir(rel)); err != nil {
+		return asPathError(err)
+	}
+	f, err := root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return asPathError(err)
+	}
+	if _, err := f.Write(content); err != nil {
+		_ = f.Close()
 		return err
 	}
-	if err := os.WriteFile(target, content, 0o644); err != nil {
+	if err := f.Close(); err != nil {
 		return err
 	}
 	m.touch(workflowExecutionID)
@@ -495,15 +672,19 @@ func (m *sandboxManager) deletePath(workflowExecutionID, relPath string) error {
 	if err != nil {
 		return err
 	}
-	target, err := m.resolveSandboxPath(sb, relPath)
+	rel := normalizeSandboxPath(relPath)
+	if rel == "." {
+		return errInvalidPath
+	}
+
+	root, err := openWorkspace(sb)
 	if err != nil {
 		return err
 	}
-	if target == filepath.Clean(sb.WorkspacePath) {
-		return errInvalidPath
-	}
-	if err := os.RemoveAll(target); err != nil {
-		return err
+	defer root.Close()
+
+	if err := removeAllIn(root, rel); err != nil {
+		return asPathError(err)
 	}
 	m.touch(workflowExecutionID)
 	return nil
@@ -777,6 +958,15 @@ func (h *apiHandler) installPackages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "packages list is empty")
 		return
 	}
+	if !h.manager.cfg.NetworkEgress {
+		// Fail with an explanation rather than letting npm spend the whole exec
+		// timeout failing to resolve registry.npmjs.org on an --internal network.
+		writeError(w, http.StatusConflict,
+			"sandbox containers have no network egress, so packages cannot be installed at runtime. "+
+				"Add the dependency to the baked-in Remotion template image instead, or set "+
+				"SANDBOX_NETWORK_EGRESS=true to allow sandboxed code to reach the network.")
+		return
+	}
 	for _, pkg := range req.Packages {
 		if !npmPackageNameRe.MatchString(pkg) {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid package name: %q", pkg))
@@ -795,7 +985,9 @@ func (h *apiHandler) installPackages(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	args := append([]string{"exec", "-w", "/workspace", sb.ContainerName, "npm", "install", "--save"}, req.Packages...)
+	// "--" terminates npm's own flag parsing, so even if a package name slips past
+	// npmPackageNameRe it is treated as an operand and never as an option.
+	args := append([]string{"exec", "-w", "/workspace", sb.ContainerName, "npm", "install", "--save", "--"}, req.Packages...)
 	output, execErr := runDocker(ctx, args...)
 	h.manager.touch(workflowExecutionID)
 	if execErr != nil {
@@ -826,13 +1018,38 @@ func writeManagerError(w http.ResponseWriter, err error) {
 
 func statusFromErr(err error) int {
 	switch {
-	case errors.Is(err, errNotFound):
+	case errors.Is(err, errNotFound), errors.Is(err, fs.ErrNotExist):
 		return http.StatusNotFound
 	case errors.Is(err, errInvalidPath), errors.Is(err, errBadExec), errors.Is(err, errBadExecution):
 		return http.StatusBadRequest
 	default:
 		return http.StatusInternalServerError
 	}
+}
+
+// maxRequestBodyBytes caps any JSON request body. writeFile bodies are base64,
+// so this bounds a written file at roughly three quarters of the limit.
+const maxRequestBodyBytes = 96 << 20 // 96 MiB
+
+// requireAPIToken rejects any request that does not carry the shared secret in
+// `Authorization: Bearer <token>`.
+//
+// This service has no notion of a user: every caller can start containers and
+// read and write files under SANDBOX_ROOT, so the only access control available
+// is "does the caller hold the secret". The comparison is constant-time so a
+// caller cannot recover the token a byte at a time from response timing.
+func requireAPIToken(token string, next http.Handler) http.Handler {
+	expected := []byte(token)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		presented := []byte(strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
+		if subtle.ConstantTimeCompare(presented, expected) != 1 {
+			log.Printf("rejected unauthenticated %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		next.ServeHTTP(w, r)
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, body interface{}) {
@@ -904,20 +1121,69 @@ func purgeExistingContainers(cfg appConfig) {
 	}
 }
 
+// ensureSandboxNetwork creates the docker network sandbox containers attach to,
+// and verifies it has the isolation this service assumes.
+//
+// The network is created with --internal unless egress is explicitly enabled.
+// --internal removes the container's default route, which is the only thing that
+// actually stops sandboxed code from reaching the host: on a normal bridge the
+// container can address the host gateway, and every port docker publishes is
+// bound there, so Postgres, RabbitMQ, MinIO and nginx are all one hop away.
+// Docker network segmentation alone does not prevent that.
+//
+// The network is also re-inspected when it already exists, because a network
+// left over from an earlier release was created without --internal and would
+// silently keep its egress.
+func ensureSandboxNetwork(cfg appConfig) {
+	args := []string{"network", "create"}
+	if !cfg.NetworkEgress {
+		args = append(args, "--internal")
+	}
+	args = append(args, cfg.SandboxNetwork)
+
+	if out, err := runDocker(context.Background(), args...); err != nil {
+		// Already exists is the normal path on restart; anything else is fatal,
+		// since falling back to the default bridge would silently drop isolation.
+		if !strings.Contains(string(out), "already exists") {
+			log.Fatalf("failed to create sandbox network %s: %v\noutput: %s", cfg.SandboxNetwork, err, string(out))
+		}
+	}
+
+	out, err := runDocker(context.Background(), "network", "inspect", cfg.SandboxNetwork, "--format", "{{.Internal}}")
+	if err != nil {
+		log.Fatalf("failed to inspect sandbox network %s: %v\noutput: %s", cfg.SandboxNetwork, err, string(out))
+	}
+	isInternal := strings.TrimSpace(string(out)) == "true"
+	switch {
+	case !cfg.NetworkEgress && !isInternal:
+		log.Fatalf("sandbox network %s exists but is not internal, so sandboxed code could reach the host "+
+			"gateway and every published port. Remove it (docker network rm %s) and restart, or set "+
+			"SANDBOX_NETWORK_EGRESS=true to accept that exposure deliberately.",
+			cfg.SandboxNetwork, cfg.SandboxNetwork)
+	case cfg.NetworkEgress:
+		log.Printf("WARNING: SANDBOX_NETWORK_EGRESS is enabled — sandbox containers can reach the network. "+
+			"Ensure no service is published on a host interface the sandbox can route to; only nginx should "+
+			"be published beyond loopback. (network %s, internal=%v)", cfg.SandboxNetwork, isInternal)
+	default:
+		log.Printf("sandbox network %s ready (internal=true, no egress)", cfg.SandboxNetwork)
+	}
+}
+
 func main() {
 	cfg := loadConfig()
+	if cfg.APIToken == "" {
+		log.Fatal("SANDBOX_API_TOKEN is required and must not be empty: this service starts containers " +
+			"and reads and writes files on behalf of its callers, so it refuses to run unauthenticated. " +
+			"Set it to a long random value shared with the workflow engine (Sandbox__ApiToken).")
+	}
 	if err := os.MkdirAll(cfg.SandboxRoot, 0o755); err != nil {
 		log.Fatalf("failed to create sandbox root: %v", err)
 	}
 	// ensure any pre-existing containers are gone before we begin
 	purgeExistingContainers(cfg)
 
-	// ensure sandbox network exists so that containers can reach npm registry
-	// while remaining isolated from the primary application network
 	if cfg.SandboxNetwork != "" {
-		// create network if missing (ignore errors if it already exists)
-		_, _ = runDocker(context.Background(), "network", "inspect", cfg.SandboxNetwork)
-		_, _ = runDocker(context.Background(), "network", "create", cfg.SandboxNetwork)
+		ensureSandboxNetwork(cfg)
 	}
 
 	manager := newSandboxManager(cfg)
@@ -932,6 +1198,7 @@ func main() {
 	}).Methods(http.MethodGet)
 
 	api := router.PathPrefix("/api/v1/sandboxes").Subrouter()
+	api.Use(func(next http.Handler) http.Handler { return requireAPIToken(cfg.APIToken, next) })
 	api.HandleFunc("", handler.createSandbox).Methods(http.MethodPost)
 	api.HandleFunc("", handler.listSandboxes).Methods(http.MethodGet)
 	api.HandleFunc("/{workflowExecutionId}", handler.getSandbox).Methods(http.MethodGet)

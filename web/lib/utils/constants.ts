@@ -7,7 +7,8 @@ export const STATUS_COLORS: Record<string, string> = {
   Failed: 'red',
   Pending: 'gray',
   Processing: 'blue',
-  Completed: 'green',
+  Completed: 'green', // StepStatus
+  Done: 'green', // SummaryStatus — a distinct enum from StepStatus/ExecutionStatus that uses 'Done'
   Skipped: 'yellow',
   NotIndexed: 'gray',
   Indexed: 'green',
@@ -27,6 +28,9 @@ export const AGENT_TYPE_GROUP: Record<string, string> = {
   AuthorAgent: 'Production',
   ReviewAgent: 'Quality',
   FileSummarizerAgent: 'File Processing',
+  ExtractTransform: 'Extract',
+  VideoStoryEditor: 'Video',
+  VideoTransform: 'Video',
   Custom: 'Custom',
 };
 
@@ -36,6 +40,8 @@ export const AGENT_GROUP_COLORS: Record<string, string> = {
   Production: 'violet',
   Quality: 'orange',
   'File Processing': 'teal',
+  Extract: 'grape',
+  Video: 'indigo',
   Custom: 'pink',
 };
 
@@ -49,14 +55,23 @@ export const STEP_TYPE_LABELS: Record<StepType, string> = {
   ForEach: 'For Each',
   ReviewLoop: 'Review Loop',
   Parallel: 'Parallel',
+  Extract: 'Extract',
+  VideoAnalyze: 'Analyze Video',
+  VideoCompile: 'Compile Video',
 };
 
+// Note: 'cyan'/'teal' were the plan's suggested colors for VideoAnalyze/VideoCompile, but both are
+// already taken by ForEach/Parallel in this exact map — picked 'blue'/'indigo' instead so every
+// step type badge in the flowchart builder is visually distinct, not just distinct from Extract.
 export const STEP_TYPE_COLORS: Record<StepType, string> = {
   Agent: 'violet',
   Conditional: 'orange',
   ForEach: 'cyan',
   ReviewLoop: 'green',
   Parallel: 'teal',
+  Extract: 'grape',
+  VideoAnalyze: 'blue',
+  VideoCompile: 'indigo',
 };
 
 export const STEP_TYPE_DESCRIPTIONS: Record<StepType, string> = {
@@ -65,4 +80,7 @@ export const STEP_TYPE_DESCRIPTIONS: Record<StepType, string> = {
   ForEach: 'Iterate a step over each item in a collection',
   ReviewLoop: 'Loop back to a target step until a quality score is met',
   Parallel: 'Run multiple agents in parallel and merge their outputs',
+  Extract: 'Deterministically reduce prior outputs or project files into a bounded view (no AI call)',
+  VideoAnalyze: 'Deterministic ffmpeg-based derushing — silence, shot, and transcript analysis (no AI call)',
+  VideoCompile: 'Deterministic ffmpeg-based cutting from an editorial decision (no AI call)',
 };

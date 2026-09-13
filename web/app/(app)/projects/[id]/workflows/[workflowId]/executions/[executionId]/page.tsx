@@ -21,6 +21,7 @@ import '@xyflow/react/dist/style.css';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { apiFetch } from '@/lib/api/client';
 import { getOutputVideoUrl } from '@/lib/api/outputs';
+import { getStepResultArtifact } from '@/lib/api/step-result-artifacts';
 import { getExecution, stopExecution } from '@/lib/api/executions';
 import type { WorkflowExecution, WorkflowDefinition, WorkflowStepResult } from '@/lib/types/workflow';
 import { formatDate, formatDurationLong } from '@/lib/utils/format';
@@ -208,6 +209,9 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [selectedStepResult, setSelectedStepResult] = useState<WorkflowStepResult | null>(null);
   const [modalOpened, setModalOpened] = useState(false);
+  const [artifactJson, setArtifactJson] = useState<string | null>(null);
+  const [artifactError, setArtifactError] = useState<string | null>(null);
+  const [artifactLoading, setArtifactLoading] = useState(false);
 
   const streamEnabled = !!execution && !!workflow && !isTerminalExecutionStatus(execution.status);
   const {
@@ -396,6 +400,29 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
       setSelectedStepResult(updatedSelection);
     }
   }, [execution, selectedStepResult]);
+
+  // Fetch the step's large artifact (e.g. a VideoAnalyze analysis JSON or VideoCompile EDL) whenever
+  // the selected step result carries one. Separate from `output`/`outputJson` — this is the
+  // "Edit decision list" style panel backed by `artifactStorageKey`.
+  // Depend on the stable id + artifact key rather than the whole `selectedStepResult` object: the
+  // SSE sync effect above replaces `execution` (and thus this object's identity) on every event,
+  // which previously re-triggered this fetch of a potentially large artifact even when neither the
+  // selected step nor its artifact had actually changed (found by Copilot review).
+  const selectedStepResultId = selectedStepResult?.id;
+  const selectedArtifactStorageKey = selectedStepResult?.artifactStorageKey;
+
+  useEffect(() => {
+    setArtifactJson(null);
+    setArtifactError(null);
+    if (!selectedArtifactStorageKey || !selectedStepResultId) {
+      return;
+    }
+    setArtifactLoading(true);
+    getStepResultArtifact(projectId, selectedStepResultId)
+      .then((data) => setArtifactJson(JSON.stringify(data)))
+      .catch((err: unknown) => setArtifactError(err instanceof Error ? err.message : 'Failed to load artifact'))
+      .finally(() => setArtifactLoading(false));
+  }, [projectId, selectedStepResultId, selectedArtifactStorageKey]);
 
   if (loading) {
     return <Center h={400}><Loader size="lg" /></Center>;
@@ -820,6 +847,21 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
                   style={{ width: '100%', borderRadius: 8 }}
                   src={getOutputVideoUrl(projectId, selectedStepResult.id)}
                 />
+              </Card>
+            )}
+
+            {/* Edit decision / artifact panel — VideoAnalyze's full analysis JSON or VideoCompile's EDL */}
+            {selectedStepResult.artifactStorageKey && (
+              <Card withBorder padding="md" radius="md">
+                <Text size="sm" fw={600} mb="xs">Edit Decision Artifact</Text>
+                <Divider mb="sm" />
+                {artifactLoading && <Text size="sm" c="dimmed">Loading artifact...</Text>}
+                {artifactError && (
+                  <Alert icon={<IconAlertCircle size={14} />} color="yellow" variant="light">
+                    Could not load artifact: {artifactError}
+                  </Alert>
+                )}
+                {artifactJson && <JsonViewer label="Artifact JSON" value={artifactJson} />}
               </Card>
             )}
 

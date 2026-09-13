@@ -56,6 +56,9 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
             trueBranchStepOrder: s.trueBranchStepOrder ?? null,
             falseBranchStepOrder: s.falseBranchStepOrder ?? null,
             parallelAgentIds: s.parallelAgentIdsJson ? JSON.parse(s.parallelAgentIdsJson) : [],
+            extractConfig: s.extractConfigJson ? JSON.parse(s.extractConfigJson) : null,
+            videoAnalyzeConfig: s.videoAnalyzeConfigJson ? JSON.parse(s.videoAnalyzeConfigJson) : null,
+            videoCompileConfig: s.videoCompileConfigJson ? JSON.parse(s.videoCompileConfigJson) : null,
           })),
       );
       setInitialized(true);
@@ -92,6 +95,9 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
           trueBranchStepOrder: s.trueBranchStepOrder,
           falseBranchStepOrder: s.falseBranchStepOrder,
           parallelAgentIdsJson: s.parallelAgentIds.length > 0 ? JSON.stringify(s.parallelAgentIds) : null,
+          extractConfigJson: s.extractConfig ? JSON.stringify(s.extractConfig) : null,
+          videoAnalyzeConfigJson: s.videoAnalyzeConfig ? JSON.stringify(s.videoAnalyzeConfig) : null,
+          videoCompileConfigJson: s.videoCompileConfig ? JSON.stringify(s.videoCompileConfig) : null,
         })),
       });
       mutate();
@@ -177,7 +183,7 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
             checked={form.values.requiresUserInput}
             onChange={(e) => form.setFieldValue('requiresUserInput', e.currentTarget.checked)}
           />
-          {steps && <FlowchartBuilderWrapper steps={steps} onChange={setSteps} />}
+          {steps && <FlowchartBuilderWrapper steps={steps} onChange={setSteps} projectId={projectId} />}
           <Group>
             <Button type="submit" loading={saving} size="lg" variant="gradient" gradient={{ from: 'violet', to: 'purple' }}>
               Save Changes

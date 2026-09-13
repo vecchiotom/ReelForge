@@ -8,6 +8,7 @@ import {
   IconUsers,
   IconSettings,
   IconBroadcast,
+  IconPlugConnected,
 } from '@tabler/icons-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -22,6 +23,7 @@ const links = [
 const adminLinks = [
   { label: 'Overview', href: '/admin', icon: IconSettings, exact: true },
   { label: 'Workflow Service', href: '/admin/workflow-service', icon: IconBroadcast, exact: false },
+  { label: 'Inference', href: '/admin/inference-providers', icon: IconPlugConnected, exact: false },
   { label: 'Users', href: '/admin/users', icon: IconUsers, exact: false },
 ];
 
