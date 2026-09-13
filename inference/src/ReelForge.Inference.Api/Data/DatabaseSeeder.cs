@@ -669,7 +669,19 @@ public static class DatabaseSeeder
         "ListProjectFiles", "ReadProjectFile", "WriteProjectFile",
         "EnsureSandbox", "GetSandbox", "ListSandboxFiles", "ReadSandboxFile",
         "WriteSandboxFile", "DeleteSandboxPath", "RunSandboxNpmScript",
-        "RunSandboxRemotionCommand", "CompleteSandbox"
+        "RunSandboxRemotionCommand", "CompleteSandbox",
+        // Granted to every real LLM agent by AgentToolProvider.GetTools — was missing from this
+        // display metadata entirely (found by e2e QA).
+        "FailWorkflow"
+    ];
+
+    // Minimal, read-only project-context tools — no sandbox access, no WriteProjectFile, no
+    // render tool. Matches AgentToolProvider.GetTools' VideoStoryEditor case exactly: this agent
+    // only decides which offered ids to keep, it never produces or touches media.
+    private static readonly string[] ReadOnlyProjectContextTools =
+    [
+        "ListProjectFiles", "ReadProjectFile", "SearchProjectFiles", "GetDeterministicContextFiles",
+        "FailWorkflow"
     ];
 
     private static readonly string[] RemotionSkillsTools =
@@ -679,6 +691,18 @@ public static class DatabaseSeeder
 
     private static string GetAvailableToolsJson(AgentType agentType)
     {
+        // ExtractTransform/VideoTransform are deterministic, non-LLM placeholder agents — they
+        // are never registered as an IReelForgeAgent and never actually invoked with tools, so
+        // their display metadata should say so rather than falling through to BaseTools.
+        if (agentType is AgentType.ExtractTransform or AgentType.VideoTransform)
+            return JsonSerializer.Serialize(Array.Empty<string>());
+
+        // VideoStoryEditor's real runtime tool scope (AgentToolProvider.GetTools) is deliberately
+        // minimal and read-only; falling through to BaseTools here would misreport it as having
+        // WriteProjectFile/sandbox access it does not actually receive (found by e2e QA).
+        if (agentType is AgentType.VideoStoryEditor)
+            return JsonSerializer.Serialize(ReadOnlyProjectContextTools);
+
         string[] extra = agentType switch
         {
             AgentType.CodeStructureAnalyzer => ["ReadFileTree", "ReadFileContent"],

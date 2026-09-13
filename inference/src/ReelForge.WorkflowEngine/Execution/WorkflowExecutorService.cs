@@ -197,7 +197,7 @@ public class WorkflowExecutorService
                     stepResult.TokensUsed = result.TokensUsed;
                     stepResult.DurationMs = result.DurationMs;
                     stepResult.InputJson = ResolveInputJsonForPersistence(context.LastResolvedAgentInput, accumulatedOutput);
-                    stepResult.OutputJson = result.Output;
+                    stepResult.OutputJson = EnsureJsonForJsonbColumn(result.Output);
                     stepResult.Status = StepStatus.Failed;
                     stepResult.ErrorDetails = result.ErrorDetails;
                     stepResult.IterationNumber = result.IterationNumber;
@@ -239,7 +239,7 @@ public class WorkflowExecutorService
                 stepResult.TokensUsed = result.TokensUsed;
                 stepResult.DurationMs = result.DurationMs;
                 stepResult.InputJson = inputJsonForPersistence;
-                stepResult.OutputJson = outputJsonForPersistence;
+                stepResult.OutputJson = EnsureJsonForJsonbColumn(outputJsonForPersistence);
                 stepResult.Status = result.Status;
                 stepResult.ErrorDetails = result.ErrorDetails;
                 stepResult.IterationNumber = result.IterationNumber;
@@ -305,7 +305,7 @@ public class WorkflowExecutorService
             await EnsureAuthorArtifactProducedAsync(execution.Id, steps, db, ct);
 
             execution.Status = ExecutionStatus.Passed;
-            execution.ResultJson = accumulatedOutput;
+            execution.ResultJson = EnsureJsonForJsonbColumn(accumulatedOutput);
             execution.CompletedAt = DateTime.UtcNow;
             execution.CurrentStepId = null;
             _logger.LogDebug(
@@ -361,7 +361,34 @@ public class WorkflowExecutorService
             execution.Status = ExecutionStatus.Failed;
             execution.ErrorMessage = ex.Message;
             execution.CompletedAt = DateTime.UtcNow;
-            await db.SaveChangesAsync(ct);
+            try
+            {
+                await db.SaveChangesAsync(ct);
+            }
+            catch (Exception saveEx)
+            {
+                // db may still be tracking an entity whose SaveChangesAsync already failed once
+                // in this request (e.g. a step result — EF does not roll back the change tracker
+                // on a failed save), so retrying on the same context can reproduce the exact same
+                // failure forever, and the execution's Status update is lost with it — permanently
+                // "Running" even though it has, in fact, failed. Fall back to a fresh scope/
+                // DbContext touching only the execution row, decoupled from whatever the shared
+                // context is still holding onto (found by e2e QA).
+                _logger.LogError(saveEx,
+                    "Failed to persist failure state for execution {ExecutionId} via the primary " +
+                    "DbContext; retrying with a fresh scope", executionId);
+                using IServiceScope failureScope = _scopeFactory.CreateScope();
+                WorkflowEngineDbContext failureDb = failureScope.ServiceProvider.GetRequiredService<WorkflowEngineDbContext>();
+                WorkflowExecution? freshExecution = await failureDb.WorkflowExecutions
+                    .FirstOrDefaultAsync(e => e.Id == executionId, CancellationToken.None);
+                if (freshExecution != null)
+                {
+                    freshExecution.Status = ExecutionStatus.Failed;
+                    freshExecution.ErrorMessage = ex.Message;
+                    freshExecution.CompletedAt = DateTime.UtcNow;
+                    await failureDb.SaveChangesAsync(CancellationToken.None);
+                }
+            }
             await _eventPublisher.PublishExecutionFailedAsync(execution, ct);
 
             ReelForgeDiagnostics.CompletedWorkflows.Add(1,
@@ -676,6 +703,33 @@ public class WorkflowExecutorService
         }
         catch (JsonException) { }
         return 0;
+    }
+
+    /// <summary>
+    /// Ensures a value is safe to write to a jsonb column: null/empty or already-valid JSON pass
+    /// through unchanged; anything else (e.g. a chat completion that didn't conform to its
+    /// requested output schema — structured-output enforcement is a request, not a guarantee, and
+    /// some OpenAI-compatible endpoints ignore it entirely) is wrapped as a JSON string. Without
+    /// this, writing arbitrary text into WorkflowStepResult.OutputJson/WorkflowExecution.ResultJson
+    /// (both jsonb) fails the whole SaveChangesAsync with Postgres error 22P02 ("invalid input
+    /// syntax for type json") — and since the step/execution's Status change is batched in the
+    /// same SaveChangesAsync call, that failure discards the Status update too, leaving the
+    /// execution stuck "Running" forever (found by e2e QA).
+    /// </summary>
+    private static string? EnsureJsonForJsonbColumn(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return null;
+
+        try
+        {
+            using JsonDocument _ = JsonDocument.Parse(value);
+            return value;
+        }
+        catch (JsonException)
+        {
+            return JsonSerializer.Serialize(value);
+        }
     }
 
     private static bool IsValidJson(string? value)

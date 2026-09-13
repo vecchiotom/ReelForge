@@ -342,6 +342,62 @@ namespace ReelForge.WorkflowEngine.Tests
             copied.ArtifactStorageKey.Should().Be(expectedArtifactKey);
             copied.OutputStorageKey.Should().Be(original.OutputStorageKey);
         }
+
+        // Regression coverage for a bug found by e2e QA: writing arbitrary non-JSON text (e.g. a
+        // chat completion that didn't conform to its requested output schema) straight into
+        // WorkflowStepResult.OutputJson/WorkflowExecution.ResultJson (both jsonb columns) fails
+        // SaveChangesAsync with Postgres 22P02, discarding the step/execution's Status update
+        // along with it and leaving the execution stuck "Running" forever.
+        private static string? InvokeEnsureJsonForJsonbColumn(string? value)
+        {
+            var method = typeof(WorkflowExecutorService).GetMethod(
+                "EnsureJsonForJsonbColumn",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            method.Should().NotBeNull("WorkflowExecutorService must expose a jsonb-safety helper");
+            return (string?)method!.Invoke(null, [value]);
+        }
+
+        [Fact]
+        public void EnsureJsonForJsonbColumn_passes_through_valid_json_unchanged()
+        {
+            string valid = "{\"status\":\"ok\",\"items\":[1,2,3]}";
+            InvokeEnsureJsonForJsonbColumn(valid).Should().Be(valid);
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        public void EnsureJsonForJsonbColumn_maps_null_or_empty_to_null(string? input)
+        {
+            InvokeEnsureJsonForJsonbColumn(input).Should().BeNull();
+        }
+
+        [Fact]
+        public void EnsureJsonForJsonbColumn_wraps_non_json_text_as_a_json_string_instead_of_crashing()
+        {
+            // exactly the shape of a non-conforming chat completion: plain prose, not JSON
+            string raw = "I'm sorry, I cannot keep any segments because the request was unclear.";
+
+            string? result = InvokeEnsureJsonForJsonbColumn(raw);
+
+            result.Should().NotBeNull();
+            // must itself be valid JSON (a jsonb column would reject anything else)
+            System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(result!);
+            doc.RootElement.ValueKind.Should().Be(System.Text.Json.JsonValueKind.String);
+            doc.RootElement.GetString().Should().Be(raw);
+        }
+
+        [Fact]
+        public void EnsureJsonForJsonbColumn_wraps_whitespace_only_text_rather_than_passing_it_through()
+        {
+            // whitespace-only is not a valid standalone JSON token even though some callers'
+            // permissive IsValidJson helper treats it as "fine" for logging purposes
+            string? result = InvokeEnsureJsonForJsonbColumn("   ");
+
+            result.Should().NotBeNull();
+            System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(result!);
+            doc.RootElement.ValueKind.Should().Be(System.Text.Json.JsonValueKind.String);
+        }
     }
 
     // helper classes for tests

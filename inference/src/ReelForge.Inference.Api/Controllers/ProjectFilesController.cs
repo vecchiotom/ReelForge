@@ -113,7 +113,10 @@ public class ProjectFilesController : ControllerBase
         // R22: video/audio uploads (raw source footage for the video-editing workflow) must never
         // be handed to the text summarizer or the vector/embedding chunker — both assume text
         // content, and a large mp4/wav would otherwise be queued into them regardless of size.
-        bool isMediaUpload = IsVideoOrAudioMimeType(file.ContentType);
+        // The stored MimeType is resolved (not the raw client Content-Type) so a client that sends
+        // a generic "application/octet-stream" for a known media extension doesn't defeat R22.
+        string? resolvedMimeType = ResolveUploadMimeType(file.ContentType, file.FileName);
+        bool isMediaUpload = IsVideoOrAudioMimeType(resolvedMimeType);
 
         ProjectFile projectFile = new()
         {
@@ -128,7 +131,7 @@ public class ProjectFilesController : ControllerBase
             StorageBucket = storedObject.BucketName,
             StoragePrefix = storedObject.StoragePrefix,
             StorageMetadataJson = storedObject.StorageMetadataJson,
-            MimeType = file.ContentType,
+            MimeType = resolvedMimeType,
             SizeBytes = file.Length,
             SummaryStatus = isMediaUpload ? SummaryStatus.Done : SummaryStatus.Pending,
             IndexingStatus = isMediaUpload ? FileIndexingStatus.NotIndexed : FileIndexingStatus.Pending,
@@ -666,6 +669,41 @@ public class ProjectFilesController : ControllerBase
         !string.IsNullOrEmpty(mimeType) &&
         (mimeType.StartsWith("video/", StringComparison.OrdinalIgnoreCase) ||
          mimeType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase));
+
+    private static readonly Dictionary<string, string> MediaExtensionMimeTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        [".mp4"] = "video/mp4",
+        [".m4v"] = "video/mp4",
+        [".mov"] = "video/quicktime",
+        [".webm"] = "video/webm",
+        [".mkv"] = "video/x-matroska",
+        [".avi"] = "video/x-msvideo",
+        [".mp3"] = "audio/mpeg",
+        [".wav"] = "audio/wav",
+        [".m4a"] = "audio/mp4",
+        [".aac"] = "audio/aac",
+        [".flac"] = "audio/flac",
+        [".ogg"] = "audio/ogg",
+    };
+
+    /// R22 relies on the client-supplied Content-Type to detect video/audio uploads, but a real
+    /// client (especially a non-browser one) can send a generic "application/octet-stream" for a
+    /// media file, which would otherwise defeat R22 and hand the raw binary to the text
+    /// summarizer/chunker. When the content type is missing or generic, fall back to the file
+    /// extension for well-known media formats; any other specific content type is trusted as-is.
+    private static string? ResolveUploadMimeType(string? contentType, string? fileName)
+    {
+        if (!string.IsNullOrEmpty(contentType) &&
+            !contentType.Equals("application/octet-stream", StringComparison.OrdinalIgnoreCase))
+        {
+            return contentType;
+        }
+
+        string ext = Path.GetExtension(fileName ?? string.Empty);
+        return !string.IsNullOrEmpty(ext) && MediaExtensionMimeTypes.TryGetValue(ext, out string? resolved)
+            ? resolved
+            : contentType;
+    }
 
     private static bool IsLikelyText(string mimeType, string fileName)
     {

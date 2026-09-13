@@ -26,7 +26,7 @@ func handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Email == "" || req.DisplayName == "" {
-		http.Error(w, `{"error":"email and display_name are required"}`, http.StatusBadRequest)
+		http.Error(w, `{"error":"email and displayName are required"}`, http.StatusBadRequest)
 		return
 	}
 

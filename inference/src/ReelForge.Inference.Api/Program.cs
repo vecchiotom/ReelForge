@@ -85,20 +85,25 @@ builder.Services.AddSingleton<IInferenceProviderResolver, InferenceProviderResol
 builder.Services.AddSingleton<IAgentChatClientProvider, AgentChatClientProvider>();
 
 // --- Embeddings (Qdrant) — left on AzureOpenAI:* config directly, out of scope for the
-// configurable-inference-provider work (see plan's Open Questions resolution). ---
+// configurable-inference-provider work (see plan's Open Questions resolution).
+//
+// Wrapped in LazyEmbeddingGenerator so a missing/invalid AzureOpenAI:Endpoint only fails when
+// vector search is actually used, not the instant anything resolves this singleton — which,
+// via VectorSearchQueryService, is every ProjectFilesController action (found by e2e QA). ---
 builder.Services.AddSingleton<IEmbeddingGenerator<string, Embedding<float>>>(sp =>
-{
-    string endpoint = builder.Configuration["AzureOpenAI:Endpoint"] ?? string.Empty;
-    string apiKey = builder.Configuration["AzureOpenAI:ApiKey"] ?? string.Empty;
-    string embeddingDeployment = builder.Configuration["VectorSearch:EmbeddingDeployment"]
-        ?? sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<VectorSearchOptions>>().Value.EmbeddingDeployment;
+    new ReelForge.Inference.Api.Services.VectorSearch.LazyEmbeddingGenerator(() =>
+    {
+        string endpoint = builder.Configuration["AzureOpenAI:Endpoint"] ?? string.Empty;
+        string apiKey = builder.Configuration["AzureOpenAI:ApiKey"] ?? string.Empty;
+        string embeddingDeployment = builder.Configuration["VectorSearch:EmbeddingDeployment"]
+            ?? sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<VectorSearchOptions>>().Value.EmbeddingDeployment;
 
-    AzureOpenAIClient client = new(
-        new Uri(endpoint),
-        new System.ClientModel.ApiKeyCredential(apiKey));
+        AzureOpenAIClient client = new(
+            new Uri(endpoint),
+            new System.ClientModel.ApiKeyCredential(apiKey));
 
-    return client.GetEmbeddingClient(embeddingDeployment).AsIEmbeddingGenerator();
-});
+        return client.GetEmbeddingClient(embeddingDeployment).AsIEmbeddingGenerator();
+    }));
 
 builder.Services.AddSingleton<IFileChunker, SimpleTokenChunker>();
 builder.Services.AddSingleton<IVectorIndexService, QdrantVectorIndexService>();

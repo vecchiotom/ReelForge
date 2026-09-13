@@ -10,7 +10,7 @@ import { AgentForm } from '@/components/agents/AgentForm';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { getAgentGroup } from '@/lib/utils/constants';
 
-const GROUP_ORDER = ['Analysis', 'Translation', 'Production', 'Quality', 'File Processing', 'Custom'];
+const GROUP_ORDER = ['Analysis', 'Translation', 'Production', 'Quality', 'File Processing', 'Extract', 'Video', 'Custom'];
 
 export default function AgentsPage() {
   const { data: agents, isLoading, mutate } = useAgents();
