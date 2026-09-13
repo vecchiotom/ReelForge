@@ -291,6 +291,24 @@ export interface VideoCompileStepConfig {
   crf: number;
   preset: string;
   registerProjectFile: boolean;
+  // -- Phase 3: optional motion-graphics overlays (see docs/video-editing.md
+  //    "Motion graphics (Phase 3)"). enableGraphics=false (default) is byte-identical to the
+  //    pre-Phase-3 compile path. --
+  /** Which step's resolved MotionGraphicsPlanOutput to apply. `null` = no graphics plan looked up. Only `from: 'Previous'` or `from: 'Step'` are valid, same as `decision`. */
+  graphicsPlan?: ExtractInputRef | null;
+  enableGraphics: boolean;
+  maxOverlays: number;
+  overlayShortMs: number;
+  overlayMediumMs: number;
+  overlayHoldMs: number;
+  overlayFadeMs: number;
+  /** Percent of frame height, clamped 2..12 server-side. */
+  overlayFontSizePct: number;
+  // Allowlisted at execution time, same discipline as videoCodec/audioCodec/preset above.
+  overlayFontColor: string;
+  overlayBoxColor: string;
+  maxOverlayTextChars: number;
+  maxOverlaySubtextChars: number;
   expect?: VideoCompileExpectation | null;
 }
 

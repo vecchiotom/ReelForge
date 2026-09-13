@@ -159,10 +159,10 @@ inference/
 │   │   └── appsettings.json
 │   │
 │   └── ReelForge.WorkflowEngine/                 # Service 2: Execution Engine
-│       ├── Agents/                               # All 12 workflow agents (11 original + VideoStoryEditor)
+│       ├── Agents/                               # All 13 workflow agents (11 original + VideoStoryEditor + MotionGraphicsPlanner)
 │       │   ├── Analysis/                         # 5 code analysis agents
 │       │   ├── Translation/                      # Remotion + Animation agents
-│       │   ├── Production/                       # Director, Scriptwriter, Author, VideoStoryEditor
+│       │   ├── Production/                       # Director, Scriptwriter, Author, VideoStoryEditor, MotionGraphicsPlanner
 │       │   ├── Quality/                          # ReviewAgent
 │       │   └── Tools/                            # Shared AIFunction tools
 │       ├── Consumers/                            # MassTransit consumer
@@ -268,7 +268,7 @@ Production: `DirectorAgent`, `ScriptwriterAgent`, `AuthorAgent`
 Quality: `ReviewAgent`
 File Processing: `FileSummarizerAgent` (in Inference API only)
 Extract/Transform: `ExtractTransform` — built-in, non-LLM agent row seeded so `StepType.Extract` steps satisfy the non-nullable `WorkflowStep.AgentDefinitionId` FK; `SystemPrompt` is empty and `GeneratesOutput` is `false` since it is never sent to a model, only run as deterministic code by `ExtractStepExecutor`.
-Video editing: `VideoStoryEditor` — LLM agent, `OutputSchemaName = "VideoEditDecisionOutput"`; decides which shots/silence-gaps/transcript-spans to KEEP from a bounded, id-anchored view produced by a `VideoAnalyze` step. Structurally incapable of emitting a timestamp (guarded by a reflection test, `VideoEditDecisionOutputInvariantTests`) — see [`docs/video-editing.md`](docs/video-editing.md). Tool access is read-only project context + `FailWorkflow`; no sandbox tools, no write/render tools. `VideoTransform` — deterministic, non-LLM placeholder agent (identical role to `ExtractTransform`) seeded so `StepType.VideoAnalyze`/`VideoCompile` steps satisfy the same non-nullable FK; runs ffmpeg, never a model.
+Video editing: `VideoStoryEditor` — LLM agent, `OutputSchemaName = "VideoEditDecisionOutput"`; decides which shots/silence-gaps/transcript-spans to KEEP from a bounded, id-anchored view produced by a `VideoAnalyze` step. Structurally incapable of emitting a timestamp (guarded by a reflection test, `VideoEditDecisionOutputInvariantTests`) — see [`docs/video-editing.md`](docs/video-editing.md). Tool access is read-only project context + `FailWorkflow`; no sandbox tools, no write/render tools. `MotionGraphicsPlanner` — LLM agent (Phase 3), `OutputSchemaName = "MotionGraphicsPlanOutput"`; plans zero or more motion-graphics overlays (lower-thirds, titles, callouts) anchored only to opaque placement ids offered by a `VideoAnalyze` step's `view.placements`. Structurally incapable of emitting a timestamp OR a pixel coordinate (guarded by `MotionGraphicsPlanOutputInvariantTests`); identical minimal tool scope to `VideoStoryEditor`. `VideoTransform` — deterministic, non-LLM placeholder agent (identical role to `ExtractTransform`) seeded so `StepType.VideoAnalyze`/`VideoCompile` steps satisfy the same non-nullable FK; runs ffmpeg, never a model.
 User-defined: `Custom`
 
 ### Default Workflow Pipeline
@@ -288,8 +288,11 @@ step (op `Project`) after `ComponentInventoryAnalyzer` to reduce its output to a
 
 A third, opt-in template — `video-derush-edit` (`AutoCreateOnProject: false`) — demonstrates the
 video-editing feature end to end: `VideoAnalyze` (`Source: PreviousStepOutput`) → `Agent(VideoStoryEditor)`
-→ `VideoCompile` (`Decision: Previous`, `AnalysisStepOrder: 1`). See
-[`docs/video-editing.md`](docs/video-editing.md).
+→ `VideoCompile` (`Decision: Previous`, `AnalysisStepOrder: 1`). A fourth, opt-in template —
+`video-derush-edit-graphics` (`AutoCreateOnProject: false`) — extends that pipeline with Phase 3
+motion graphics: `VideoAnalyze` (`emitOverlayPlacements: true`) → `Agent(VideoStoryEditor)` →
+`Agent(MotionGraphicsPlanner)` → `VideoCompile` (`enableGraphics: true`, `graphicsPlan` pointing at
+the `MotionGraphicsPlanner` step). See [`docs/video-editing.md`](docs/video-editing.md).
 
 ### Video Editing (ffmpeg-based, `VideoAnalyze`/`VideoCompile` step types)
 
@@ -329,7 +332,19 @@ compilation. Full design in [`docs/video-editing.md`](docs/video-editing.md); su
 - **`StepType.VideoCompile`** (`Shared/Workflows/VideoCompileStepConfig.cs`) — deterministic,
   non-LLM. Resolves the agent's chosen ids to frame-accurate `[start, end)` times against the full
   analysis artifact (never trusting a model-supplied number, because there is none), then encodes
-  with ffmpeg.
+  with ffmpeg. **Phase 3** (`EnableGraphics`, default `false`) adds optional motion-graphics
+  overlays applied during the same encode: deterministic overlay-placement candidates
+  (`view.placements`, id namespace `p{n}` — separate from cut-anchor ids and never resolvable by
+  `BuildIdTimeIndex`) are derived per-shot by `OverlayPlacementBuilder` in `VideoAnalyze`
+  (`EmitOverlayPlacements`), then `AgentType.MotionGraphicsPlanner` (`MotionGraphicsPlanOutput`)
+  plans zero or more overlays anchored only to those ids, and `VideoCompileStepExecutor` maps each
+  chosen placement's source-timeline window through the cut to the output timeline
+  (`MapSourceToOutputSec`/`MapSourceWindowToOutput`) before rendering a `drawbox`+`drawtext` per
+  overlay. Overlay text is sanitized (`OverlayTextSanitizer`, an allowlist) and written to its own
+  scratch file referenced via drawtext's `textfile=` (with `expansion=none`) — never interpolated
+  into the ffmpeg filter string. A bad/missing graphics plan, an unknown placement id, or a missing
+  `drawtext` filter all degrade to "no graphics applied" rather than failing the compile. See
+  `docs/video-editing.md` § "Motion graphics (Phase 3)".
 
 **Why ffmpeg runs inside the WorkflowEngine container, not the Remotion sandbox
 (`/sandbox`):** the sandbox's container and network isolation exists to contain
@@ -560,6 +575,7 @@ All configuration is driven by `.env` at the repo root (copy `.env.example` to `
 | `VIDEO_MAX_CONCURRENT_JOBS` | `1` | Max ffmpeg/ffprobe invocations running concurrently in the WorkflowEngine container (`VideoEditing:MaxConcurrentJobs`) — kept low by default since encoding is CPU-heavy and competes with `WORKFLOW_MAX_CONCURRENCY` |
 | `VIDEO_ANALYZE_TIMEOUT_SECONDS` | `900` | Hard wall-clock timeout for a `VideoAnalyze` step's ffmpeg/ffprobe/ASR calls (`VideoEditing:AnalyzeTimeoutSeconds`) |
 | `VIDEO_COMPILE_TIMEOUT_SECONDS` | `1800` | Hard wall-clock timeout for a `VideoCompile` step's ffmpeg encode (`VideoEditing:CompileTimeoutSeconds`) |
+| `VIDEO_FONT_FILE` | `/usr/share/fonts/dejavu/DejaVuSans.ttf` | Font file passed to drawtext's `fontfile=` for Phase 3 motion-graphics overlays (`VideoEditing:FontFilePath`) — must exist in the `workflow-engine` image; the default matches the `font-dejavu` Alpine package the Dockerfile installs alongside ffmpeg |
 
 ### Inference `appsettings.json` Keys
 
@@ -580,3 +596,4 @@ Both services share these keys (overridden by Docker Compose env vars):
 | `VideoEditing:FfmpegPath` / `VideoEditing:FfprobePath` | Executable name or path for ffmpeg/ffprobe; default `ffmpeg`/`ffprobe`, resolved via `PATH` (Engine only) |
 | `VideoEditing:MaxConcurrentJobs` | Max ffmpeg/ffprobe invocations running concurrently across the whole process, enforced by a single process-wide semaphore; default `1` (Engine only) |
 | `VideoEditing:AnalyzeTimeoutSeconds` / `VideoEditing:CompileTimeoutSeconds` | Hard wall-clock timeouts for `VideoAnalyze`/`VideoCompile` step tool invocations; default `900`/`1800` (Engine only) |
+| `VideoEditing:FontFilePath` | Font file for drawtext-based Phase 3 motion-graphics overlays; default `/usr/share/fonts/dejavu/DejaVuSans.ttf` (Engine only) |

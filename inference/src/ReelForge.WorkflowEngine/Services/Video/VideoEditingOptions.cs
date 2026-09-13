@@ -33,4 +33,12 @@ public sealed class VideoEditingOptions
 
     /// <summary>Hard wall-clock timeout, in seconds, for a single VideoCompile step's tool invocations.</summary>
     public int CompileTimeoutSeconds { get; set; } = 1800;
+
+    /// <summary>
+    /// Font file path passed to drawtext's <c>fontfile=</c> for Phase 3 motion-graphics overlays
+    /// (see docs/video-editing.md "Motion graphics (Phase 3)"). Must be a font actually installed
+    /// in the image — the WorkflowEngine Dockerfile installs Alpine's <c>font-dejavu</c> package
+    /// alongside ffmpeg specifically so this default resolves.
+    /// </summary>
+    public string FontFilePath { get; set; } = "/usr/share/fonts/dejavu/DejaVuSans.ttf";
 }

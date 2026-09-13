@@ -170,4 +170,14 @@ public sealed record VideoAnalyzeStepConfig(
     /// anywhere. Uploading them for later inspection is explicitly out of scope for Phase 2.
     /// </summary>
     bool PersistKeyframes = false,
+    // -- Phase 3: deterministic overlay-placement candidates (see docs/video-editing.md
+    //    "Motion graphics (Phase 3)") — off by default, purely additive, never touches ffmpeg
+    //    argv or a timestamp the model can see beyond the server-resolved window below --
+    /// <summary>
+    /// When <c>true</c>, derives overlay-placement candidates (<c>view.placements</c>) from
+    /// each shot's Phase 1 region data, for a downstream motion-graphics planning agent.
+    /// </summary>
+    bool EmitOverlayPlacements = false,
+    int MaxPlacementsPerShot = 2,
+    int MaxPlacements = 40,
     VideoAnalyzeExpectation? Expect = null);

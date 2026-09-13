@@ -17,6 +17,7 @@ executors, agents in general) see `CLAUDE.md`.
 - [Scene/visual analysis (Phase 1)](#scenevisual-analysis-phase-1)
 - [Vision captioning (Phase 2)](#vision-captioning-phase-2)
 - [Transcription (ASR)](#transcription-asr)
+- [Motion graphics (Phase 3)](#motion-graphics-phase-3)
 - [Security: why ffmpeg is not in the sandbox](#security-why-ffmpeg-is-not-in-the-sandbox)
 - [Explicitly not built](#explicitly-not-built)
 
@@ -57,7 +58,14 @@ executors, agents in general) see `CLAUDE.md`.
    `WorkflowEngine/Execution/StepExecutors/VideoCompileStepExecutor.cs`) — deterministic, non-LLM.
    Loads the **full** analysis artifact from step 1, resolves the agent's chosen ids to exact
    `[start, end)` times, validates and normalizes the resulting cut list, frame-quantizes it, and
-   encodes the edited video with ffmpeg.
+   encodes the edited video with ffmpeg. Optionally (Phase 3, `EnableGraphics`), also composites
+   motion-graphics overlays during that same encode — see
+   [Motion graphics (Phase 3)](#motion-graphics-phase-3).
+
+An optional fourth stage — `StepType.Agent` + `AgentType.MotionGraphicsPlanner` — can sit between
+steps 2 and 3, planning overlays from placement candidates step 1 derived alongside its usual cut
+anchors. It follows the exact same shape as step 2 (an ordinary Agent step, no new step type). See
+[Motion graphics (Phase 3)](#motion-graphics-phase-3) for the full design.
 
 Both `VideoAnalyze` and `VideoCompile` follow the same discipline `ExtractStepExecutor`
 established: they **never throw**. Every failure mode — an unresolvable source, a missing
@@ -267,6 +275,9 @@ before chunking it — wasted compute at best, a very large in-memory string at 
 | `VisionTimeoutSeconds` | `120` | Aggregate wall-clock budget for the whole captioning pass (not per-shot) |
 | `MaxCaptionChars` | `320` | Caption `summary` field is truncated to this length |
 | `PersistKeyframes` | `false` | When `false` (default), extracted keyframe JPEGs are scratch-only and deleted with the rest of scratch space; no storage upload in Phase 2 either way |
+| `EmitOverlayPlacements` | `false` | Phase 3: derives deterministic overlay-placement candidates (`view.placements`) from each shot's Phase 1 region data — see [Motion graphics (Phase 3)](#motion-graphics-phase-3) |
+| `MaxPlacementsPerShot` | `2` | Top-N regions (by `Suitability`) offered per shot |
+| `MaxPlacements` | `40` | Hard cap on placements across the whole artifact; lowest-suitability candidates dropped first |
 | `Expect` | `null` | Optional structural checks (`MinShots`, `MinTranscriptSegments`, `MaxSilenceRatio`, `MinShotsWithVisuals`) |
 
 ### `VideoCompileStepConfig`
@@ -288,6 +299,15 @@ before chunking it — wasted compute at best, a very large in-memory string at 
 | `Crf` | `20` | Clamped `0..51` |
 | `Preset` | `"veryfast"` | Allowlisted (`ultrafast` … `veryslow`) |
 | `RegisterProjectFile` | `true` | Registers the compiled video as a re-editable `ProjectFile` row |
+| `GraphicsPlan` | `null` | Phase 3: `ExtractInputRef` (`Previous`/`Step` only) — which step's resolved `MotionGraphicsPlanOutput` to apply. `null` = no graphics looked up. See [Motion graphics (Phase 3)](#motion-graphics-phase-3) |
+| `EnableGraphics` | `false` | Phase 3: applies the resolved graphics plan during the same encode. `false` (default) is byte-identical to the pre-Phase-3 compile path. Requires `Mode = Reencode` |
+| `MaxOverlays` | `20` | Cap on applied overlays; excess dropped (recorded in the `graphics` block) |
+| `OverlayShortMs` / `OverlayMediumMs` / `OverlayHoldMs` | `1500` / `3000` / `6000` | Milliseconds an overlay stays on screen, keyed by the model's `Duration` word (`Short`/`Medium`/`Hold`) |
+| `OverlayFadeMs` | `300` | Fade-in/fade-out duration at each end of an overlay's on-screen window |
+| `OverlayFontSizePct` | `5` | Percent of frame height; clamped `2..12` at execution time |
+| `OverlayFontColor` | `"white"` | Allowlisted (`white`/`black`/`yellow`/`#RRGGBB`) — reaches ffmpeg's filter string, so validated like `VideoCodec` |
+| `OverlayBoxColor` | `"black@0.45"` | Allowlisted (`black@0.45`, `black@0.6`, `white@0.4`, `none`) |
+| `MaxOverlayTextChars` / `MaxOverlaySubtextChars` | `80` / `60` | Sanitized-text truncation budget (`OverlayTextSanitizer`) |
 | `Expect` | `null` | Optional structural checks (`MinOutputSeconds`, `MaxOutputSeconds`, `MinRetainedRatio` default `0.15`, `MaxRetainedRatio`) |
 
 ### The `video-derush-edit` template
@@ -299,6 +319,17 @@ An opt-in workflow template (`AutoCreateOnProject: false`, seeded in
 against the real config types in
 `WorkflowTemplateCatalogConfigDeserializationTests.cs`, so a future field-name drift between the
 template and the config records it targets fails CI rather than a live workflow run.
+
+### The `video-derush-edit-graphics` template
+
+A fourth opt-in template (`AutoCreateOnProject: false`), extending `video-derush-edit` with Phase
+3 motion graphics end to end: `VideoAnalyze` (`Source: ProjectFile`, `EmitOverlayPlacements: true`)
+→ `Agent(VideoStoryEditor)` → `Agent(MotionGraphicsPlanner)` → `VideoCompile`
+(`Decision: Step 2`, `AnalysisStepOrder: 1`, `EnableGraphics: true`, `GraphicsPlan: Step 3`).
+`Decision`/`GraphicsPlan` reference their source steps explicitly by `StepOrder` rather than
+`Previous`, since `Previous` relative to the compile step would resolve to the
+`MotionGraphicsPlanner` step's output, not the story editor's decision. Deserialization-tested the
+same way as `video-derush-edit`.
 
 ---
 
@@ -678,6 +709,230 @@ out, since that override only ever feeds chat resolution.
 
 ---
 
+## Motion graphics (Phase 3)
+
+Optional motion-graphics overlays — lower-thirds, titles, callouts — applied during
+`VideoCompile`'s encode, planned by a third built-in agent that reasons over overlay-safe-zone
+"placement" candidates derived deterministically from Phase 1's per-shot region data, but never
+emits a timestamp or pixel coordinate — the same structural discipline
+`VideoEditDecisionOutput`/`VideoStoryEditorAgent` already established, extended to cover geometry
+as well as time. **Off by default** (`VideoAnalyzeStepConfig.EmitOverlayPlacements = false`,
+`VideoCompileStepConfig.EnableGraphics = false`) — both flags must be explicitly opted into, and
+`EnableGraphics = false` leaves the compile path byte-identical to the pre-Phase-3 behavior.
+
+This is the highest-risk phase of the feature: motion-graphics overlay TEXT is the first
+model-authored content in this feature to reach ffmpeg at all (every prior stage passes only
+opaque ids and workflow-author-supplied enum/allowlisted config). The text-sanitization and
+textfile-based discipline below is the core deliverable of this phase, not polish on top of it.
+
+### Placement candidates (deterministic, in `VideoAnalyze`)
+
+`OverlayPlacementBuilder` (`WorkflowEngine/Services/Video/OverlayPlacementBuilder.cs`) is a pure,
+unit-tested static class deriving overlay-placement candidates from shots that already carry Phase
+1 `Visual`/`Regions` data (nothing is computed if visual analysis is off or degraded). For each
+shot: rank its three NAMED overlay-safe-zone bands — `LowerThird`/`UpperThird`/`CenterBand` (never
+the 3x3 `R0`..`R8` grid cells, which exist for other diagnostics, not placement) — by
+`Suitability` descending, take up to `MaxPlacementsPerShot`, and resolve a time window:
+
+1. **`LongestStillWindow`** — the shot's longest Phase 1 still window, if one exists (clamped to
+   the shot's own bounds).
+2. **`ShotMiddle`** — else, a ~2.5s window centered on the shot's midpoint, clamped to the shot's
+   own bounds.
+3. **`ShotStart`** — else (a degenerate `ShotMiddle` window, e.g. an extremely short shot), a
+   window anchored at the shot's start, clamped to the shot's own bounds.
+
+The whole artifact is capped at `MaxPlacements`, dropping the lowest-suitability candidates first;
+survivors are then re-sorted into deterministic generation order (shot order, then per-shot rank)
+and assigned SEQUENTIAL, globally unique ids `p0`, `p1`, … — a single counter across the whole
+artifact, not per-shot.
+
+**Critical id-isolation requirement:** `p{n}` placement ids are a SEPARATE namespace from
+`s{n}`/`g{n}`/`t{n}` cut-anchor ids. `VideoAnalysisArtifact.OfferedPlacementIds` is a SEPARATE list
+from `OfferedIds`, gated on the exact same "degrade before drop" `VisualDetail` discipline Phase 1
+established: `view.placements` is shown as one atomic array at `Compact`/`Full` detail and omitted
+entirely at `None` — so a placement id is only ever "offered" when the whole array survived to
+whatever detail level the view actually settled on. `VideoCompileStepExecutor.BuildIdTimeIndex`
+(which resolves `Keep` span ids to cut times) deliberately does NOT include placements — a code
+comment there explains why — and a dedicated test proves a `Keep` span naming a `p0` id fails
+`UNKNOWN_ID` exactly like any other id that index does not contain.
+
+`view.placements` entries are deliberately small: `{id, shotId, region, fit, text}` — a
+0-100 suitability score and a `"Light"`/`"Dark"` text-color hint, never a rect or a time window
+(those are resolved server-side only, at compile time, from the full artifact).
+
+### `AgentType.MotionGraphicsPlanner` and `MotionGraphicsPlanOutput`
+
+An ordinary `StepType.Agent` step — no new step type, exactly the precedent
+`AgentType.VideoStoryEditor` set. Given the story editor's decision (or the same bounded view) plus
+`view.placements`, it decides zero or more overlays:
+
+```csharp
+public class MotionGraphicsOverlay
+{
+    public string PlacementId { get; set; } = "";   // must be in OfferedPlacementIds
+    public string Kind { get; set; } = "";           // LowerThird | Title | Callout | Tag
+    public string Text { get; set; } = "";
+    public string Subtext { get; set; } = "";
+    public string Duration { get; set; } = "";       // Short | Medium | Hold — never a number
+    public string Emphasis { get; set; } = "";       // Subtle | Normal | Strong
+    public string Reason { get; set; } = "";
+}
+
+public class MotionGraphicsPlanOutput
+{
+    public List<MotionGraphicsOverlay> Overlays { get; set; } = new();
+    public string PlanRationale { get; set; } = "";
+}
+```
+
+Every property on both types is a `string`/`List<string-bearing-type>` — the SAME rushcut
+invariant `VideoEditDecisionOutput` established, extended to also forbid a pixel coordinate.
+`MotionGraphicsPlanOutputInvariantTests` mirrors `VideoEditDecisionOutputInvariantTests`'s
+reflection approach exactly. `Duration`/`Emphasis`/`Kind` are enum WORDS the model chooses from a
+closed vocabulary described in its prompt — `VideoCompileStepExecutor` alone resolves `Duration`
+to milliseconds (`OverlayShortMs`/`OverlayMediumMs`/`OverlayHoldMs`, defaulting to `Medium` on an
+unrecognized value) and `OverlayFontSizePct` to an actual pixel font size. The
+`MotionGraphicsPlannerAgent` class's fallback prompt and the seeded built-in `AgentDefinition` row
+in `DatabaseSeeder` are kept verbatim-identical, enforced by
+`MotionGraphicsPlannerPromptConsistencyTests` (mirroring
+`VideoStoryEditorPromptConsistencyTests`'s reflection approach). Tool access is the same minimal
+read-only project context + `FailWorkflow` `VideoStoryEditor` gets — no sandbox tools, no
+write/render tools.
+
+### The source-to-output timeline mapping problem
+
+A placement's window was resolved against the SOURCE video during `VideoAnalyze`. But drawtext's
+`enable=`/`alpha=` expressions run against the ffmpeg filtergraph's OUTPUT timeline — the one the
+existing select/setpts cut stage produces, which is shorter than the source and has every cut gap
+removed entirely. Two internal, directly-unit-tested static functions on
+`VideoCompileStepExecutor` solve this purely from the already-resolved, frame-quantized
+`ResolvedSpan` list (their `SnappedStart`/`SnappedEnd` — the ACTUAL output-determining times, never
+the pre-quantization requested ones):
+
+```csharp
+internal static double? MapSourceToOutputSec(IReadOnlyList<ResolvedSpan> spans, double sourceSec);
+
+internal static (double Start, double End)? MapSourceWindowToOutput(
+    IReadOnlyList<ResolvedSpan> spans, double startSec, double endSec);
+```
+
+Both walk `spans` accumulating output-timeline duration as they go. `MapSourceToOutputSec` returns
+`null` when the second falls inside a cut gap (no corresponding output frame exists).
+`MapSourceWindowToOutput` intersects a window with the kept spans and returns the output-timeline
+window for the FIRST kept portion it overlaps (a single on-screen overlay cannot span a gap in the
+output video) — `null` if the window never overlaps any kept span at all. A placement's actual
+on-screen source window is `[placement.StartSec, min(placement.StartSec + durationMs/1000,
+shot.EndSec)]` — anchored at the placement's start, extended by the model's chosen `Duration`, and
+clamped to the OWNING SHOT's own bounds (looked up via `placement.ShotId` against the full
+artifact's `Shots`, not merely the placement's own already-narrow window) so a `Hold` duration
+cannot overlay past where the shot itself ends.
+
+### Text sanitization and the `textfile=`/`expansion=none` discipline
+
+**This is what makes the existing "not one model-originated character reaches an ffmpeg argv"
+claim (see [Security](#security-why-ffmpeg-is-not-in-the-sandbox)) need a qualification, not a
+retraction.** Overlay text is model-authored and does reach ffmpeg for the first time in this
+feature — but only as sanitized FILE CONTENT, never as argv or filter-string content:
+
+1. **`OverlayTextSanitizer.Sanitize(raw, maxChars)`** (`WorkflowEngine/Services/Video/`) — an
+   ALLOWLIST (never a denylist, which is only ever safe against characters someone thought of) of
+   letters, digits, spaces, and a small safe punctuation set. NFC-normalizes first; collapses ALL
+   whitespace (including newlines/tabs — drawtext treats a raw newline as a forced line break) to
+   single spaces before the allowlist strips anything, so a newline becomes a space rather than
+   being silently deleted (which would wrongly glue two words together); truncates to `maxChars`
+   without splitting a grapheme cluster (`StringInfo`-based, never a blind `str[..n]`); returns
+   `""` for an empty/whitespace-only result, and the caller then drops that overlay/line entirely.
+   Colon (`:`) and percent (`%`) are deliberately excluded from the punctuation set as
+   defense-in-depth — even though the architecture below already neutralizes drawtext's own use of
+   those characters — so a future refactor that accidentally put this text into a filter string
+   directly still could not terminate a drawtext option or invoke an `%{eif:...}`/`%{pts}`
+   expansion. Emoji are also deliberately excluded (outside `\p{L}`/`\p{N}`): the configured
+   overlay font is not guaranteed to carry emoji glyphs, so admitting them risks silent tofu-box
+   rendering.
+2. **Text never appears in the ffmpeg argv or filter string at all.** Each overlay's sanitized
+   text/subtext is written to its own scratch file (`{scratch}/ov-{slot}.txt` —
+   `DrawtextFilterBuilder.MainTextSlot`/`SubtextSlot` are the single source of truth both the
+   writer and the filter-string builder use for slot numbering) and referenced via drawtext's
+   `textfile=` option, never an inline `text=` value — so no drawtext metacharacter (`:`, `'`,
+   `\`, `%`) in the text can ever terminate or inject into the filter string, because the text
+   literally never appears in that string.
+3. **`expansion=none` on every drawtext filter** — disables drawtext's own `%{...}` expansion
+   syntax (which can read `pts`/`localtime`/`metadata` or run `%{eif:...}` expressions) as
+   defense-in-depth, even though the text is already sanitized and file-based.
+4. **Every geometry/timing number is computed in C#** (`DrawtextFilterBuilder`, from the probed
+   frame size and the already-resolved output-timeline window) and formatted via
+   `FfmpegArgvFormat.Number` — culture-invariant, exactly like `EncodeReencodeAsync`'s existing
+   `BetweenTerms()` — before being interpolated into the filter string. The model never supplies
+   any of this directly; its only contributions are an offered placement id and a handful of
+   already-resolved enum words.
+
+`DrawtextFilterBuilder.BuildFilterChain` renames the cut stage's output label from `[vout]` to
+`[vcut]` only when there is at least one overlay to draw (when `EnableGraphics=false`, or
+`EnableGraphics=true` but zero overlays survived resolution, the label plumbing is untouched — the
+cut stage outputs directly to `[vout]` exactly as before Phase 3), then chains one `drawbox`
+(semi-transparent background, `enable='between(t,start,end)'`, skipped entirely when
+`OverlayBoxColor = "none"`) plus one `drawtext` per overlay (plus a second smaller `drawtext` when
+`Subtext` is non-empty), with the LAST overlay's final filter becoming the new `[vout]` that
+`-map` continues to reference. `FilterComplexScriptThreshold`'s condition now also checks the
+built filter STRING LENGTH (`spans.Count > 64 || filterComplex.Length > 4000`), since overlays can
+make one long filter string even with very few cut segments.
+
+### Soft-failure discipline: the cut must never become hostage to graphics
+
+Every graphics-specific failure mode degrades to "no graphics applied", never to a failed compile
+— the cut is the primary deliverable:
+
+| Situation | Outcome |
+|---|---|
+| `GraphicsPlan` configured but unresolvable/invalid JSON | Cut proceeds with no graphics; `graphics.reason` records why |
+| `GraphicsPlan` not configured at all (`null`) | Cut proceeds with no graphics; no error |
+| An overlay's `PlacementId` not in `OfferedPlacementIds` | That ONE overlay dropped (`unknown_placement_id`); the rest still apply |
+| More overlays than `MaxOverlays` | Excess dropped (`max_overlays_exceeded`), in original order |
+| Sanitized text ends up empty | That overlay dropped (`empty_text_after_sanitization`) |
+| Placement's window falls entirely in a cut gap | That overlay dropped (`cut_away`) |
+| `drawtext` filter unavailable in this ffmpeg build | ALL overlays skipped; `graphics.unavailable = true` |
+| `EnableGraphics=true` with `Mode=StreamCopy` | Step FAILS `GRAPHICS_REQUIRE_REENCODE` — the one graphics failure that IS a hard failure, since it is a pure config error caught before any resolution work, not a soft runtime condition |
+
+The one exception above (`GRAPHICS_REQUIRE_REENCODE`) is deliberate: drawtext/drawbox filters have
+no stream-copy equivalent, so this is a workflow-author config mistake to fix, not a runtime
+condition to degrade around.
+
+`VideoCompileStepExecutor.BuildEdl`/the step's output summary JSON gain a `graphics` block —
+present ONLY when `EnableGraphics=true` (when `false`, the EDL/output shape is byte-identical to
+the pre-Phase-3 compile path):
+
+```jsonc
+{
+  "graphics": {
+    "enabled": true,
+    "applied": true,
+    "appliedOverlayCount": 1,
+    "droppedOverlays": [{ "placementId": "p7", "reason": "unknown_placement_id" }],
+    "unavailable": false
+  }
+}
+```
+
+### `drawtext` availability probe
+
+`drawtext` needs libfreetype (Alpine's `font-dejavu` package, which the WorkflowEngine Dockerfile
+now installs alongside ffmpeg) and a font file
+(`VideoEditingOptions.FontFilePath`, default `/usr/share/fonts/dejavu/DejaVuSans.ttf`, wired
+through `VIDEO_FONT_FILE`). A one-off runtime check (`ffmpeg -hide_banner -filters`, checking for
+`drawtext` in the output) is cached for the process lifetime — never re-probed per step. If
+unavailable (an unrebuilt image, or a dev environment missing the font package), ALL overlays are
+skipped and `graphics.unavailable = true` is recorded, but the cut video is still produced
+successfully — never fails an otherwise-successful encode over a missing font/filter.
+
+### Not built by Phase 3
+
+Only static text/box overlays with fade in/out — Phase 3 does NOT apply Ken-Burns zoompan (Phase
+1's `KenBurnsCandidate` remains identification-only), does NOT burn in subtitles, and does NOT do
+transitions between cuts. See [Explicitly not built](#explicitly-not-built) below, which is
+unchanged by this phase except for graphics moving out of "not built" and into this section.
+
+---
+
 ## Security: why ffmpeg is not in the sandbox
 
 **ffmpeg and ffprobe run as first-party, non-AI-authored C# code inside the WorkflowEngine
@@ -698,6 +953,14 @@ Meanwhile, the containment property the sandbox exists to provide is **not neede
 feature's ffmpeg argv is built entirely by first-party C# from a validated, typed cut list. The
 model's only contribution is a set of opaque ids drawn from a set the system itself issued — not
 one model-originated character reaches an ffmpeg argv.
+
+> **Qualification (Phase 3):** motion-graphics overlay TEXT is model-authored and does reach
+> ffmpeg — but never as argv or filter-string content. It is sanitized to an allowlist, written to
+> its own scratch file, and referenced only via drawtext's `textfile=` option (with
+> `expansion=none` set as defense-in-depth). See
+> [Motion graphics (Phase 3)](#motion-graphics-phase-3) for the full discipline. The claim above —
+> "not one model-originated character reaches an ffmpeg argv" — still holds exactly as stated for
+> the argv/filter-string surface; it is the reason Phase 3's text still cannot inject into it.
 
 The sandbox's mechanics are also concretely wrong for large binary media: containers run
 `--read-only` with a 256 MB tmpfs `/tmp`; sandbox file I/O is base64-over-JSON (a 400 MB mp4

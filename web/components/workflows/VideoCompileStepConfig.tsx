@@ -36,6 +36,18 @@ export function createDefaultVideoCompileStepConfig(): VideoCompileStepConfigVal
     crf: 20,
     preset: 'veryfast',
     registerProjectFile: true,
+    graphicsPlan: null,
+    enableGraphics: false,
+    maxOverlays: 20,
+    overlayShortMs: 1500,
+    overlayMediumMs: 3000,
+    overlayHoldMs: 6000,
+    overlayFadeMs: 300,
+    overlayFontSizePct: 5,
+    overlayFontColor: 'white',
+    overlayBoxColor: 'black@0.45',
+    maxOverlayTextChars: 80,
+    maxOverlaySubtextChars: 60,
     expect: null,
   };
 }
@@ -118,7 +130,12 @@ export function VideoCompileStepConfig({
         onChange={(v) => {
           if (!v) return;
           const mode = v as VideoCompileMode;
-          patch({ mode, allowKeyframeSnapping: mode === 'StreamCopy' ? config.allowKeyframeSnapping : false });
+          patch({
+            mode,
+            allowKeyframeSnapping: mode === 'StreamCopy' ? config.allowKeyframeSnapping : false,
+            // Graphics overlays require Re-encode mode (drawtext/drawbox have no stream-copy equivalent).
+            enableGraphics: mode === 'StreamCopy' ? false : config.enableGraphics,
+          });
         }}
       />
       {config.mode === 'StreamCopy' && (
@@ -214,6 +231,29 @@ export function VideoCompileStepConfig({
           onChange={(e) => patch({ registerProjectFile: e.currentTarget.checked })}
         />
       </Group>
+
+      <Divider label="Motion graphics (optional)" labelPosition="left" />
+      <Switch
+        label="Enable graphics overlays"
+        description="Applies a motion-graphics plan (lower-thirds/titles/callouts) during this same encode. Requires Re-encode mode."
+        checked={config.enableGraphics}
+        onChange={(e) => {
+          const enableGraphics = e.currentTarget.checked;
+          patch({
+            enableGraphics,
+            mode: enableGraphics && config.mode === 'StreamCopy' ? 'Reencode' : config.mode,
+          });
+        }}
+      />
+      {config.enableGraphics && (
+        <InputRefPicker
+          label="Motion graphics plan"
+          value={config.graphicsPlan ?? { from: 'Previous' }}
+          onChange={(graphicsPlan) => patch({ graphicsPlan })}
+          priorStepOptions={priorStepOptions}
+          allowedSources={['Previous', 'Step']}
+        />
+      )}
 
       <Button
         variant="subtle"

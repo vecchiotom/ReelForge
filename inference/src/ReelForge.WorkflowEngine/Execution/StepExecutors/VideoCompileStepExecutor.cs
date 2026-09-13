@@ -58,6 +58,25 @@ public class VideoCompileStepExecutor : IStepExecutor
         "ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"
     };
 
+    // Phase 3 (motion graphics) — same allowlist discipline as the codec/preset sets above: this
+    // is workflow-author-supplied config that still reaches ffmpeg's drawtext/drawbox filter
+    // string, so it is validated exactly as strictly.
+    private static readonly HashSet<string> NamedOverlayFontColors =
+        new(StringComparer.OrdinalIgnoreCase) { "white", "black", "yellow" };
+
+    private static readonly Regex HexColorPattern = new("^#[0-9A-Fa-f]{6}$", RegexOptions.Compiled);
+
+    private static readonly HashSet<string> AllowedOverlayBoxColors =
+        new(StringComparer.OrdinalIgnoreCase) { "black@0.45", "black@0.6", "white@0.4", "none" };
+
+    /// <summary>Process-lifetime cache of whether the ffmpeg build on PATH has the drawtext filter (needs libfreetype) — probed once, never per-step.</summary>
+    private static bool? _drawtextAvailableCache;
+
+    private static readonly SemaphoreSlim DrawtextProbeLock = new(1, 1);
+
+    /// <summary>Test-only hook: resets the process-lifetime drawtext-availability cache so each test case gets its own fresh probe against its own mocked <see cref="IVideoToolRunner"/>.</summary>
+    internal static void ResetDrawtextAvailabilityCacheForTests() => _drawtextAvailableCache = null;
+
     /// <summary>
     /// Above this many segments, the select/aselect filtergraph is written to a scratch file and
     /// passed via <c>-filter_complex_script</c> instead of inline <c>-filter_complex</c>, to avoid
@@ -120,6 +139,38 @@ public class VideoCompileStepExecutor : IStepExecutor
                 return Failure(
                     context, sw, "CONFIG_INVALID",
                     $"VideoCompile Decision.From must be Previous or Step; got '{config.Decision.From}'.");
+            }
+
+            if (config.GraphicsPlan is not null &&
+                config.GraphicsPlan.From != ExtractInputSource.Previous && config.GraphicsPlan.From != ExtractInputSource.Step)
+            {
+                return Failure(
+                    context, sw, "CONFIG_INVALID",
+                    $"VideoCompile GraphicsPlan.From must be Previous or Step; got '{config.GraphicsPlan.From}'.");
+            }
+
+            // Phase 3 (motion graphics): drawbox/drawtext filters require the reencode
+            // filtergraph — stream-copy has no filtergraph at all. Checked up front, before any
+            // artifact/decision resolution work, since this is a pure config error.
+            if (config.EnableGraphics && config.Mode == VideoCompileMode.StreamCopy)
+            {
+                return Failure(
+                    context, sw, "GRAPHICS_REQUIRE_REENCODE",
+                    "EnableGraphics=true requires Mode=Reencode — drawtext/drawbox filters have no stream-copy equivalent.");
+            }
+
+            if (config.EnableGraphics && !IsValidOverlayFontColor(config.OverlayFontColor))
+            {
+                return Failure(
+                    context, sw, "CODEC_NOT_ALLOWED",
+                    $"OverlayFontColor '{config.OverlayFontColor}' is not in the allowlist (white/black/yellow/#RRGGBB).");
+            }
+
+            if (config.EnableGraphics && !AllowedOverlayBoxColors.Contains(config.OverlayBoxColor))
+            {
+                return Failure(
+                    context, sw, "CODEC_NOT_ALLOWED",
+                    $"OverlayBoxColor '{config.OverlayBoxColor}' is not in the allowlist.");
             }
 
             // ---- Resolve the analyze step's FULL artifact (never the bounded view) ----
@@ -310,11 +361,24 @@ public class VideoCompileStepExecutor : IStepExecutor
                     "Mode=StreamCopy requires AllowKeyframeSnapping=true (stream-copy cuts can only land on keyframes).");
             }
 
+            // ---- Phase 3 (motion graphics): resolve & validate the plan, purely soft-failure.
+            // Only even attempted when EnableGraphics=true — when false (the default), nothing
+            // below this point differs from the pre-Phase-3 compile path at all, which is the
+            // load-bearing backward-compatibility guarantee of this whole phase. ----
+
+            List<ResolvedOverlay> resolvedOverlays = [];
+            JsonObject? graphicsNode = null;
+            if (config.EnableGraphics)
+            {
+                (resolvedOverlays, graphicsNode) = await ResolveGraphicsAsync(
+                    context, config, artifact, resolvedSpans, context.CancellationToken);
+            }
+
             // ---- Write the EDL audit artifact ----
 
             string edlLocalPath = scratch.GetPath("edl.json");
             JsonObject edl = BuildEdl(
-                config, analysisArtifactKey, resolvedSpans, retainedRatio, totalOutputSeconds, droppedOverCap, crf);
+                config, analysisArtifactKey, resolvedSpans, retainedRatio, totalOutputSeconds, droppedOverCap, crf, graphicsNode);
             await File.WriteAllTextAsync(edlLocalPath, edl.ToJsonString(EnvelopeJsonOptions), context.CancellationToken);
 
             string edlFileName = $"video-analysis/{context.Execution.Id:D}/step-{step.StepOrder}-edl.json";
@@ -335,7 +399,11 @@ public class VideoCompileStepExecutor : IStepExecutor
             TimeSpan timeout = TimeSpan.FromSeconds(_options.CompileTimeoutSeconds);
 
             VideoToolResult encodeResult = config.Mode == VideoCompileMode.Reencode
-                ? await EncodeReencodeAsync(scratch, localVideoPath, encodedLocalPath, resolvedSpans, config.VideoCodec, config.AudioCodec, config.Preset, crf, timeout, context.CancellationToken)
+                ? await EncodeReencodeAsync(
+                    scratch, localVideoPath, encodedLocalPath, resolvedSpans, config.VideoCodec, config.AudioCodec, config.Preset, crf,
+                    timeout, context.CancellationToken,
+                    overlays: resolvedOverlays, probedWidth: artifact.Media.Width, probedHeight: artifact.Media.Height,
+                    graphicsConfig: resolvedOverlays.Count > 0 ? config : null)
                 : await EncodeStreamCopyAsync(scratch, localVideoPath, encodedLocalPath, resolvedSpans, timeout, context.CancellationToken);
 
             if (!encodeResult.Succeeded)
@@ -374,6 +442,9 @@ public class VideoCompileStepExecutor : IStepExecutor
                 ["retainedRatio"] = retainedRatio,
                 ["droppedSegmentsOverCap"] = droppedOverCap
             };
+
+            if (graphicsNode is not null)
+                outputSummary["graphics"] = JsonNode.Parse(graphicsNode.ToJsonString(EnvelopeJsonOptions));
 
             return new StepExecutionResult
             {
@@ -447,7 +518,16 @@ public class VideoCompileStepExecutor : IStepExecutor
             : (entry.ArtifactStorageKey, null);
     }
 
-    private static (string? Json, string? Error) ResolveDecisionJson(StepExecutionContext context, ExtractInputRef decisionRef)
+    /// <summary>
+    /// Resolves an <see cref="ExtractInputRef"/> (<c>Previous</c>/<c>Step</c> only) to the raw
+    /// JSON output of that step. Generic over WHICH input it is resolving — used unchanged for
+    /// <see cref="VideoCompileStepConfig.Decision"/> (via the <paramref name="label"/> default,
+    /// preserving this method's exact prior signature/behavior for that caller) and, with
+    /// <paramref name="label"/> set to <c>"GraphicsPlan"</c>, for
+    /// <see cref="VideoCompileStepConfig.GraphicsPlan"/> (Phase 3) as well.
+    /// </summary>
+    private static (string? Json, string? Error) ResolveDecisionJson(
+        StepExecutionContext context, ExtractInputRef decisionRef, string label = "Decision")
     {
         string? content = decisionRef.From switch
         {
@@ -459,7 +539,7 @@ public class VideoCompileStepExecutor : IStepExecutor
             _ => null
         };
 
-        return string.IsNullOrWhiteSpace(content) ? (null, "Decision input resolved to empty content.") : (content, null);
+        return string.IsNullOrWhiteSpace(content) ? (null, $"{label} input resolved to empty content.") : (content, null);
     }
 
     /// <summary>
@@ -599,6 +679,13 @@ public class VideoCompileStepExecutor : IStepExecutor
         foreach (VideoAnalysisSegment s in artifact.Segments)
             index[s.Id] = (s.StartSec, s.EndSec);
         // Words are deliberately excluded — never offered to the model in v1, so never resolvable here.
+        //
+        // Phase 3 (motion graphics) placements (artifact.Placements, ids "p{n}") are ALSO
+        // deliberately excluded — they are a completely separate id namespace used only for
+        // overlay planning (see ResolveGraphicsAsync), never for cut-anchor resolution. A `Keep`
+        // span naming a placement id must fail UNKNOWN_ID exactly like any other id this index
+        // does not contain (see VideoCompileStepExecutorTests) — adding placements here would
+        // silently let a story-editor "Keep" span reference an id it was never meant to resolve.
         return index;
     }
 
@@ -634,8 +721,276 @@ public class VideoCompileStepExecutor : IStepExecutor
     internal static double FrameToSec(long frame, int fpsNum, int fpsDen) =>
         frame * (double)fpsDen / fpsNum;
 
-    private sealed record ResolvedSpan(
+    // internal (not private) so MapSourceToOutputSec/MapSourceWindowToOutput — internal so
+    // dedicated tests can construct fixtures directly (see plan §4.4) — can expose it too.
+    internal sealed record ResolvedSpan(
         double RequestedStart, double RequestedEnd, double SnappedStart, double SnappedEnd, long StartFrame, long EndFrame);
+
+    // ---------------------------------------------------------------------
+    // Phase 3 (motion graphics): source-timeline -> output-timeline mapping. This is the single
+    // most important correctness function in Phase 3 (see docs/video-editing.md "Motion graphics
+    // (Phase 3)") — a placement's window was resolved against the SOURCE video, but drawtext's
+    // `enable=`/`alpha=` expressions run against the OUTPUT video's own timeline (the one the
+    // select/setpts filtergraph produces), which is shorter than the source and has every cut
+    // gap removed. Both methods work purely from `spans` — already sorted, non-overlapping, using
+    // their SnappedStart/SnappedEnd (the ACTUAL frame-quantized times that determine the real
+    // output timeline, never the pre-quantization requested times) — by walking the spans and
+    // accumulating output-timeline duration up to the point of interest.
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Maps a source-timeline second to its position in the compiled output timeline. Returns
+    /// <c>null</c> when <paramref name="sourceSec"/> falls inside a CUT region (no corresponding
+    /// output frame exists) — including before the first kept span or after the last.
+    /// </summary>
+    internal static double? MapSourceToOutputSec(IReadOnlyList<ResolvedSpan> spans, double sourceSec)
+    {
+        double accumulated = 0;
+        foreach (ResolvedSpan span in spans)
+        {
+            if (sourceSec < span.SnappedStart)
+                return null; // Falls in the cut gap before this span (or before the first span).
+
+            if (sourceSec < span.SnappedEnd)
+                return accumulated + (sourceSec - span.SnappedStart);
+
+            accumulated += span.SnappedEnd - span.SnappedStart;
+        }
+
+        return null; // Past the end of the last kept span.
+    }
+
+    /// <summary>
+    /// Intersects a source-timeline <c>[startSec, endSec)</c> window (a placement's window,
+    /// possibly duration-extended) with the kept spans and maps the surviving portion to the
+    /// output timeline. Returns <c>null</c> if the window is entirely cut away; otherwise the
+    /// (possibly-clipped) output-timeline window. A window straddling a cut boundary is clipped
+    /// to only its kept portion(s) — specifically, to the FIRST kept portion it overlaps, since a
+    /// single on-screen overlay cannot span a gap in the output video.
+    /// </summary>
+    internal static (double Start, double End)? MapSourceWindowToOutput(
+        IReadOnlyList<ResolvedSpan> spans, double startSec, double endSec)
+    {
+        if (endSec <= startSec)
+            return null;
+
+        double accumulated = 0;
+        foreach (ResolvedSpan span in spans)
+        {
+            double overlapStart = Math.Max(startSec, span.SnappedStart);
+            double overlapEnd = Math.Min(endSec, span.SnappedEnd);
+
+            if (overlapEnd > overlapStart)
+            {
+                double outStart = accumulated + (overlapStart - span.SnappedStart);
+                double outEnd = accumulated + (overlapEnd - span.SnappedStart);
+                return (outStart, outEnd);
+            }
+
+            accumulated += span.SnappedEnd - span.SnappedStart;
+        }
+
+        return null; // The window never overlapped any kept span — entirely cut away.
+    }
+
+    // ---------------------------------------------------------------------
+    // Phase 3 (motion graphics): plan resolution — soft-failure only, exactly like a per-shot
+    // Phase 2 vision-caption failure never aborting the whole analysis. A missing/bad graphics
+    // plan, an unknown placement id, or a missing drawtext filter all degrade to "no graphics
+    // applied", never to a failed compile — the cut is the primary deliverable.
+    // ---------------------------------------------------------------------
+
+    private sealed record DroppedOverlay(string PlacementId, string Reason);
+
+    private async Task<(List<ResolvedOverlay> Overlays, JsonObject GraphicsNode)> ResolveGraphicsAsync(
+        StepExecutionContext context,
+        VideoCompileStepConfig config,
+        VideoAnalysisArtifact artifact,
+        IReadOnlyList<ResolvedSpan> resolvedSpans,
+        CancellationToken ct)
+    {
+        var graphics = new JsonObject { ["enabled"] = true, ["applied"] = false, ["appliedOverlayCount"] = 0, ["unavailable"] = false };
+        List<DroppedOverlay> dropped = new();
+
+        if (config.GraphicsPlan is null)
+        {
+            graphics["reason"] = "No GraphicsPlan configured.";
+            graphics["droppedOverlays"] = new JsonArray();
+            return ([], graphics);
+        }
+
+        (string? planJson, string? planError) = ResolveDecisionJson(context, config.GraphicsPlan, "GraphicsPlan");
+        if (planJson is null)
+        {
+            _logger.LogWarning("VideoCompile step {StepOrder}: GraphicsPlan unresolved: {Error}", context.Step.StepOrder, planError);
+            graphics["reason"] = planError ?? "GraphicsPlan input could not be resolved.";
+            graphics["droppedOverlays"] = new JsonArray();
+            return ([], graphics);
+        }
+
+        MotionGraphicsPlanOutput? plan;
+        try
+        {
+            plan = JsonSerializer.Deserialize<MotionGraphicsPlanOutput>(planJson, DecisionJsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "VideoCompile step {StepOrder}: GraphicsPlan is not valid JSON.", context.Step.StepOrder);
+            graphics["reason"] = $"GraphicsPlan content is not valid JSON: {ex.Message}";
+            graphics["droppedOverlays"] = new JsonArray();
+            return ([], graphics);
+        }
+
+        if (plan is null || plan.Overlays.Count == 0)
+        {
+            graphics["droppedOverlays"] = new JsonArray();
+            return ([], graphics);
+        }
+
+        if (!await IsDrawtextAvailableAsync(ct))
+        {
+            _logger.LogWarning(
+                "VideoCompile step {StepOrder}: drawtext filter unavailable in this ffmpeg build; skipping all overlays.",
+                context.Step.StepOrder);
+            graphics["unavailable"] = true;
+            graphics["reason"] = "The ffmpeg build in this container does not expose the drawtext filter (missing font/libfreetype support).";
+            graphics["droppedOverlays"] = new JsonArray();
+            return ([], graphics);
+        }
+
+        Dictionary<string, VideoAnalysisPlacement> placementById =
+            (artifact.Placements ?? []).ToDictionary(p => p.Id, StringComparer.Ordinal);
+        Dictionary<string, VideoAnalysisShot> shotById =
+            artifact.Shots.ToDictionary(s => s.Id, StringComparer.Ordinal);
+        HashSet<string> offeredPlacementIds = new(artifact.OfferedPlacementIds ?? [], StringComparer.Ordinal);
+
+        List<(MotionGraphicsOverlay Overlay, VideoAnalysisPlacement Placement)> known = new();
+        foreach (MotionGraphicsOverlay overlay in plan.Overlays)
+        {
+            // Validated against OfferedPlacementIds specifically (not merely "present in
+            // artifact.Placements") — the same "offered is a stricter check than exists"
+            // discipline VideoEditKeepSpan ids already use (see docs/video-editing.md).
+            if (!offeredPlacementIds.Contains(overlay.PlacementId) ||
+                !placementById.TryGetValue(overlay.PlacementId, out VideoAnalysisPlacement? placement))
+            {
+                dropped.Add(new DroppedOverlay(overlay.PlacementId, "unknown_placement_id"));
+                continue;
+            }
+
+            known.Add((overlay, placement));
+        }
+
+        int maxOverlays = Math.Max(0, config.MaxOverlays);
+        if (known.Count > maxOverlays)
+        {
+            foreach ((MotionGraphicsOverlay overlay, _) in known.Skip(maxOverlays))
+                dropped.Add(new DroppedOverlay(overlay.PlacementId, "max_overlays_exceeded"));
+            known = known.Take(maxOverlays).ToList();
+        }
+
+        List<ResolvedOverlay> resolved = new(known.Count);
+        foreach ((MotionGraphicsOverlay overlay, VideoAnalysisPlacement placement) in known)
+        {
+            string text = OverlayTextSanitizer.Sanitize(overlay.Text, config.MaxOverlayTextChars);
+            if (text.Length == 0)
+            {
+                dropped.Add(new DroppedOverlay(overlay.PlacementId, "empty_text_after_sanitization"));
+                continue;
+            }
+
+            string subtext = OverlayTextSanitizer.Sanitize(overlay.Subtext, config.MaxOverlaySubtextChars);
+
+            int durationMs = overlay.Duration switch
+            {
+                "Short" => config.OverlayShortMs,
+                "Medium" => config.OverlayMediumMs,
+                "Hold" => config.OverlayHoldMs,
+                _ => config.OverlayMediumMs
+            };
+            if (overlay.Duration is not ("Short" or "Medium" or "Hold"))
+            {
+                _logger.LogInformation(
+                    "VideoCompile step {StepOrder}: overlay for placement {PlacementId} has unrecognized Duration '{Duration}'; defaulting to Medium.",
+                    context.Step.StepOrder, overlay.PlacementId, overlay.Duration);
+            }
+
+            // The placement's own window already encodes WHERE (spatially/temporally) is a good
+            // moment; Duration (Short/Medium/Hold) controls HOW LONG the overlay stays up,
+            // extended from the placement's start and clamped to the owning shot's own bounds —
+            // never beyond what Phase 1 actually analyzed for that shot.
+            double shotEnd = shotById.TryGetValue(placement.ShotId, out VideoAnalysisShot? shot)
+                ? shot.EndSec
+                : placement.EndSec;
+            double sourceStart = placement.StartSec;
+            double sourceEnd = Math.Min(placement.StartSec + durationMs / 1000.0, shotEnd);
+
+            (double Start, double End)? outputWindow = MapSourceWindowToOutput(resolvedSpans, sourceStart, sourceEnd);
+            if (outputWindow is null)
+            {
+                dropped.Add(new DroppedOverlay(overlay.PlacementId, "cut_away"));
+                continue;
+            }
+
+            string emphasis = overlay.Emphasis is "Subtle" or "Normal" or "Strong" ? overlay.Emphasis : "Normal";
+
+            resolved.Add(new ResolvedOverlay(
+                overlay.PlacementId, overlay.Kind, text, subtext, durationMs, emphasis,
+                outputWindow.Value.Start, outputWindow.Value.End, placement.Rect, placement.TextColor));
+        }
+
+        graphics["applied"] = resolved.Count > 0;
+        graphics["appliedOverlayCount"] = resolved.Count;
+        graphics["droppedOverlays"] = new JsonArray(dropped.Select(d => (JsonNode)new JsonObject
+        {
+            ["placementId"] = d.PlacementId,
+            ["reason"] = d.Reason
+        }).ToArray());
+
+        return (resolved, graphics);
+    }
+
+    /// <summary>
+    /// Probes whether the ffmpeg build on <see cref="VideoEditingOptions.FfmpegPath"/> exposes the
+    /// drawtext filter (needs libfreetype/a font package — see the WorkflowEngine Dockerfile),
+    /// caching the result for the process lifetime so this never runs more than once. Never throws
+    /// — any failure to probe is treated as "unavailable", the same graceful-degradation outcome
+    /// as drawtext genuinely being absent.
+    /// </summary>
+    private async Task<bool> IsDrawtextAvailableAsync(CancellationToken ct)
+    {
+        if (_drawtextAvailableCache.HasValue)
+            return _drawtextAvailableCache.Value;
+
+        await DrawtextProbeLock.WaitAsync(ct);
+        try
+        {
+            if (_drawtextAvailableCache.HasValue)
+                return _drawtextAvailableCache.Value;
+
+            try
+            {
+                VideoToolResult result = await _videoToolRunner.RunFfmpegAsync(
+                    new[] { "-hide_banner", "-filters" }, TimeSpan.FromSeconds(15), ct);
+                _drawtextAvailableCache = result.Succeeded &&
+                    result.StdOut.Contains("drawtext", StringComparison.Ordinal);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "VideoCompile: drawtext availability probe failed; treating as unavailable.");
+                _drawtextAvailableCache = false;
+            }
+
+            return _drawtextAvailableCache.Value;
+        }
+        finally
+        {
+            DrawtextProbeLock.Release();
+        }
+    }
 
     // ---------------------------------------------------------------------
     // Encoding
@@ -651,18 +1006,53 @@ public class VideoCompileStepExecutor : IStepExecutor
         string preset,
         int crf,
         TimeSpan timeout,
-        CancellationToken ct)
+        CancellationToken ct,
+        IReadOnlyList<ResolvedOverlay>? overlays = null,
+        int probedWidth = 0,
+        int probedHeight = 0,
+        VideoCompileStepConfig? graphicsConfig = null)
     {
         string BetweenTerms() => string.Join("+", spans.Select(s =>
             $"between(t,{FfmpegArgvFormat.Number(s.SnappedStart)},{FfmpegArgvFormat.Number(s.SnappedEnd)})"));
 
         string videoFilter = $"select='{BetweenTerms()}',setpts=N/FRAME_RATE/TB";
         string audioFilter = $"aselect='{BetweenTerms()}',asetpts=N/SR/TB";
-        string filterComplex = $"[0:v]{videoFilter}[vout];[0:a]{audioFilter}[aout]";
+
+        string filterComplex;
+        if (overlays is { Count: > 0 } && graphicsConfig is not null)
+        {
+            // Phase 3: the cut stage now outputs to an internal label ([vcut]) instead of
+            // [vout] directly — the LAST overlay's drawtext becomes the new [vout] that -map
+            // continues to reference. Text never appears in this string: each overlay's
+            // sanitized text was already written to its own scratch file before this call, and
+            // DrawtextFilterBuilder only ever interpolates the FILE PATH here, never the text.
+            for (int i = 0; i < overlays.Count; i++)
+            {
+                ResolvedOverlay overlay = overlays[i];
+                await WriteOverlayTextFileAsync(scratch, DrawtextFilterBuilder.MainTextSlot(i), overlay.SanitizedText, ct);
+                if (overlay.SanitizedSubtext.Length > 0)
+                    await WriteOverlayTextFileAsync(scratch, DrawtextFilterBuilder.SubtextSlot(i), overlay.SanitizedSubtext, ct);
+            }
+
+            string overlayChain = DrawtextFilterBuilder.BuildFilterChain(
+                "[vcut]", overlays, probedWidth, probedHeight,
+                graphicsConfig.OverlayFontSizePct, graphicsConfig.OverlayFadeMs,
+                graphicsConfig.OverlayFontColor, graphicsConfig.OverlayBoxColor, _options.FontFilePath,
+                slot => scratch.GetPath($"ov-{slot}.txt"));
+
+            filterComplex = $"[0:v]{videoFilter}[vcut];[0:a]{audioFilter}[aout];{overlayChain}";
+        }
+        else
+        {
+            filterComplex = $"[0:v]{videoFilter}[vout];[0:a]{audioFilter}[aout]";
+        }
 
         List<string> args = new() { "-nostdin", "-hide_banner", "-y", "-loglevel", "error", "-protocol_whitelist", "file", "-i", localVideoPath };
 
-        if (spans.Count > FilterComplexScriptThreshold)
+        // R20, extended for Phase 3: overlays can make one long filter string even with very few
+        // spans (many drawbox/drawtext filters chained), so the script-file threshold now also
+        // accounts for filter STRING LENGTH, not just segment count.
+        if (spans.Count > FilterComplexScriptThreshold || filterComplex.Length > 4000)
         {
             string scriptPath = scratch.GetPath("filter_complex.txt");
             await File.WriteAllTextAsync(scriptPath, filterComplex, ct);
@@ -685,6 +1075,16 @@ public class VideoCompileStepExecutor : IStepExecutor
 
         return await _videoToolRunner.RunFfmpegAsync(args, timeout, ct);
     }
+
+    /// <summary>
+    /// Writes one overlay text/subtext's ALREADY-SANITIZED content to its own scratch file
+    /// (<c>{scratch}/ov-{slot}.txt</c>), referenced by <see cref="DrawtextFilterBuilder"/> via
+    /// drawtext's <c>textfile=</c> option — never inline <c>text=</c> — so no drawtext
+    /// metacharacter in the text can ever terminate or inject into the filter string, because the
+    /// text never appears in the filter string at all.
+    /// </summary>
+    private static Task WriteOverlayTextFileAsync(VideoScratchSpace scratch, int slot, string sanitizedText, CancellationToken ct) =>
+        File.WriteAllTextAsync(scratch.GetPath($"ov-{slot}.txt"), sanitizedText, ct);
 
     private async Task<VideoToolResult> EncodeStreamCopyAsync(
         VideoScratchSpace scratch,
@@ -771,6 +1171,9 @@ public class VideoCompileStepExecutor : IStepExecutor
         return withoutExt + ".mp4";
     }
 
+    private static bool IsValidOverlayFontColor(string color) =>
+        NamedOverlayFontColors.Contains(color) || HexColorPattern.IsMatch(color);
+
     private static string? EvaluateExpect(VideoCompileExpectation? expect, double totalOutputSeconds, double retainedRatio)
     {
         if (expect is null)
@@ -803,7 +1206,8 @@ public class VideoCompileStepExecutor : IStepExecutor
         double retainedRatio,
         double totalOutputSeconds,
         int droppedOverCap,
-        int crf)
+        int crf,
+        JsonObject? graphics = null)
     {
         var segmentsArray = new JsonArray();
         for (int i = 0; i < spans.Count; i++)
@@ -821,7 +1225,7 @@ public class VideoCompileStepExecutor : IStepExecutor
             });
         }
 
-        return new JsonObject
+        var edl = new JsonObject
         {
             ["version"] = 1,
             ["analysisArtifactStorageKey"] = analysisArtifactKey,
@@ -840,6 +1244,13 @@ public class VideoCompileStepExecutor : IStepExecutor
                 ["crf"] = crf
             }
         };
+
+        // Phase 3 (motion graphics): only present at all when EnableGraphics=true — when false
+        // (the default), the EDL shape is byte-identical to the pre-Phase-3 compile path.
+        if (graphics is not null)
+            edl["graphics"] = graphics;
+
+        return edl;
     }
 
     private static string BuildResolvedInputDescriptor(VideoCompileStepConfig config, VideoEditDecisionOutput decision)

@@ -7,7 +7,7 @@ USER root
 # $APP_UID here, in the image, because Docker seeds a fresh named volume's ownership from the
 # image directory at first mount (R12); creating them only at container runtime would leave the
 # volumes root-owned and unwritable by the non-root user.
-RUN apk add --no-cache ffmpeg \
+RUN apk add --no-cache ffmpeg font-dejavu \
  && mkdir -p /var/tmp/reelforge-video /keys \
  && chown -R $APP_UID:$APP_UID /var/tmp/reelforge-video /keys
 USER $APP_UID

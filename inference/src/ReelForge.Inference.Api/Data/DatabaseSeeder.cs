@@ -581,6 +581,66 @@ public static class DatabaseSeeder
              "#0284C7")
         },
         {
+            AgentType.MotionGraphicsPlanner,
+            ("MotionGraphicsPlanner",
+             "Plans zero or more motion-graphics overlays (lower-thirds, titles, callouts) anchored only to offered placement ids from a video analysis.",
+             """
+             You are a motion-graphics planner for an edited video. You are given the story
+             editor's already-decided edit (or the same bounded analysis view) plus a list
+             of overlay-placement candidates under "placements" — each with a short opaque
+             id such as "p0" or "p3", the named region it sits in (LowerThird, UpperThird,
+             or CenterBand), a 0-100 "fit" score for how suitable that spot is, and a
+             "text" hint ("Light" or "Dark") for which text color reads well there. You
+             decide zero or more text/graphic overlays (lower-thirds, titles, callouts) to
+             add during the final compile.
+
+             ## Rules — hard constraints, not suggestions
+
+             - You may reference ONLY placement ids that appear in the "placements" list
+               you were given. Never invent one, never guess one, never reuse an id from a
+               previous run or a different video, and never reuse a shot/silence/segment
+               id ("s2", "g3", "t7") as a placement id — those are a completely different
+               kind of id and are never valid here.
+             - You must NEVER output, estimate, or mention a timestamp, duration in
+               seconds/milliseconds, frame number, or pixel/percentage coordinate,
+               anywhere in your structured output. You are not given frame-accurate
+               timing or geometry and are not trusted with either — a separate
+               deterministic step resolves your chosen placement ids to exact positions
+               and times against the full analysis artifact. Your only job is choosing
+               which placements to use and what each overlay says.
+             - Duration is a WORD, not a number: choose exactly one of "Short", "Medium",
+               or "Hold" for how long an overlay should stay on screen. A separate
+               deterministic step maps these words to actual milliseconds — you never
+               supply a number yourself.
+             - Emphasis is also a WORD: choose one of "Subtle", "Normal", or "Strong" for
+               how visually prominent the overlay should be.
+             - Kind is one of "LowerThird", "Title", "Callout", or "Tag" — pick whichever
+               best matches what the overlay is for.
+             - Keep Text short and Subtext, if used, shorter still — think broadcast
+               lower-third, not a paragraph. Prefer zero overlays over a cluttered edit:
+               only add one where it genuinely helps the viewer (introducing a speaker,
+               naming a place, calling out a key point), never as decoration on every cut.
+             - Do not reuse the same placement id twice, and do not exceed a small,
+               tasteful number of overlays for the whole edit.
+
+             ## Tools
+
+             Use `ListProjectFiles` and `ReadProjectFile` if you need to check other
+             project context (e.g. a brief or script) before deciding. You have no
+             sandbox tools and no ability to write files or render media — you only plan.
+
+             Output ONLY valid JSON matching the MotionGraphicsPlanOutput schema: an
+             `overlays` list of {placementId, kind, text, subtext, duration, emphasis,
+             reason} entries (subtext may be empty), and a `planRationale` explaining
+             your overall approach.
+
+             If there are no placements offered, or none of them warrant an overlay,
+             output an empty `overlays` list rather than inventing a placement id or
+             forcing an overlay that is not warranted.
+             """,
+             "#DB2777")
+        },
+        {
             AgentType.FileSummarizerAgent,
             ("FileSummarizer",
              "Produces concise summaries of uploaded files.",
@@ -730,10 +790,12 @@ public static class DatabaseSeeder
         if (agentType is AgentType.ExtractTransform or AgentType.VideoTransform)
             return JsonSerializer.Serialize(Array.Empty<string>());
 
-        // VideoStoryEditor's real runtime tool scope (AgentToolProvider.GetTools) is deliberately
-        // minimal and read-only; falling through to BaseTools here would misreport it as having
-        // WriteProjectFile/sandbox access it does not actually receive (found by e2e QA).
-        if (agentType is AgentType.VideoStoryEditor)
+        // VideoStoryEditor/MotionGraphicsPlanner's real runtime tool scope
+        // (AgentToolProvider.GetTools) is deliberately minimal and read-only; falling through to
+        // BaseTools here would misreport either as having WriteProjectFile/sandbox access it does
+        // not actually receive (found by e2e QA for VideoStoryEditor; mirrored for Phase 3's
+        // MotionGraphicsPlanner, which has the identical minimal tool scope).
+        if (agentType is AgentType.VideoStoryEditor or AgentType.MotionGraphicsPlanner)
             return JsonSerializer.Serialize(ReadOnlyProjectContextTools);
 
         string[] extra = agentType switch
@@ -768,6 +830,7 @@ public static class DatabaseSeeder
         AgentType.ReviewAgent => "ReviewOutput",
         AgentType.FileSummarizerAgent => "FileSummaryOutput",
         AgentType.VideoStoryEditor => "VideoEditDecisionOutput",
+        AgentType.MotionGraphicsPlanner => "MotionGraphicsPlanOutput",
         _ => null
     };
 
@@ -788,6 +851,7 @@ public static class DatabaseSeeder
             AgentType.ReviewAgent => GenerateReviewSchema(),
             AgentType.FileSummarizerAgent => GenerateFileSummarySchema(),
             AgentType.VideoStoryEditor => GenerateVideoEditDecisionSchema(),
+            AgentType.MotionGraphicsPlanner => GenerateMotionGraphicsPlanSchema(),
             _ => null
         };
 
@@ -1289,5 +1353,35 @@ public static class DatabaseSeeder
             suggestedTitle = new { type = "string", description = "A short suggested title for the edited video." }
         },
         required = new[] { "keep", "editRationale", "suggestedTitle" }
+    };
+
+    private static object GenerateMotionGraphicsPlanSchema() => new
+    {
+        type = "object",
+        properties = new
+        {
+            overlays = new
+            {
+                type = "array",
+                items = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        placementId = new { type = "string", description = "Must be a placement id from the offered \"placements\" list (e.g. \"p0\") — never invented, never a shot/silence/segment id." },
+                        kind = new { type = "string", description = "One of: LowerThird | Title | Callout | Tag." },
+                        text = new { type = "string", description = "The overlay's main text. Keep short." },
+                        subtext = new { type = "string", description = "Optional secondary line. May be empty." },
+                        duration = new { type = "string", description = "One of: Short | Medium | Hold — never a number. A deterministic step maps this to milliseconds." },
+                        emphasis = new { type = "string", description = "One of: Subtle | Normal | Strong." },
+                        reason = new { type = "string", description = "Why this overlay was chosen. Prose only — never a timestamp or coordinate." }
+                    },
+                    required = new[] { "placementId", "kind", "text", "subtext", "duration", "emphasis", "reason" }
+                },
+                description = "Zero or more planned overlays, each anchored only to an offered placement id. Never exceed a small, tasteful count."
+            },
+            planRationale = new { type = "string", description = "Overall explanation of the graphics plan. Prose only." }
+        },
+        required = new[] { "overlays", "planRationale" }
     };
 }

@@ -80,7 +80,14 @@ public enum AgentType
     /// StepType.VideoAnalyze and StepType.VideoCompile steps. Runs ffmpeg, never a model.
     /// Identical role to ExtractTransform, one row serving both new deterministic step types.
     /// </summary>
-    VideoTransform
+    VideoTransform,
+    /// <summary>
+    /// LLM agent that plans zero or more motion-graphics overlays (lower-thirds, titles,
+    /// callouts) anchored ONLY to opaque placement ids offered by a StepType.VideoAnalyze step
+    /// (Phase 3). Never emits a coordinate or a timestamp — see
+    /// ReelForge.Shared.Data.OutputSchemas.MotionGraphicsPlanOutput.
+    /// </summary>
+    MotionGraphicsPlanner
 }
 
 /// <summary>

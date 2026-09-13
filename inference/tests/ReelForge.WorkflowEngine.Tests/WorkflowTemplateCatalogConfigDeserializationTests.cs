@@ -126,6 +126,75 @@ public class WorkflowTemplateCatalogConfigDeserializationTests
     }
 
     [Fact]
+    public void VideoAnalyze_graphics_step_literal_deserializes_against_the_real_config_type()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-graphics", 0);
+        step.StepType.Should().Be(StepType.VideoAnalyze);
+        step.VideoAnalyzeConfigJson.Should().NotBeNullOrWhiteSpace();
+
+        VideoAnalyzeStepConfig? config = JsonSerializer.Deserialize<VideoAnalyzeStepConfig>(
+            step.VideoAnalyzeConfigJson!, ConfigJsonOptions);
+
+        config.Should().NotBeNull();
+        config!.Version.Should().Be(1);
+        config.Source.Kind.Should().Be(VideoSourceKind.ProjectFile);
+        config.EmitOverlayPlacements.Should().BeTrue();
+
+        // Phase 3 defaults not set by the literal — confirm they fall back to sane values rather
+        // than being silently nulled/zeroed by a future property-name mismatch.
+        config.MaxPlacementsPerShot.Should().Be(2);
+        config.MaxPlacements.Should().Be(40);
+    }
+
+    [Fact]
+    public void The_second_video_derush_edit_graphics_step_is_the_story_editor_agent()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-graphics", 1);
+        step.AgentType.Should().Be(AgentType.VideoStoryEditor);
+        step.StepType.Should().Be(StepType.Agent);
+    }
+
+    [Fact]
+    public void The_third_video_derush_edit_graphics_step_is_the_motion_graphics_planner_agent_with_no_deterministic_config()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-graphics", 2);
+        step.AgentType.Should().Be(AgentType.MotionGraphicsPlanner);
+        step.StepType.Should().Be(StepType.Agent);
+        step.VideoAnalyzeConfigJson.Should().BeNull();
+        step.VideoCompileConfigJson.Should().BeNull();
+        step.ExtractConfigJson.Should().BeNull();
+    }
+
+    [Fact]
+    public void VideoCompile_graphics_step_literal_deserializes_against_the_real_config_type()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-graphics", 3);
+        step.StepType.Should().Be(StepType.VideoCompile);
+        step.VideoCompileConfigJson.Should().NotBeNullOrWhiteSpace();
+
+        VideoCompileStepConfig? config = JsonSerializer.Deserialize<VideoCompileStepConfig>(
+            step.VideoCompileConfigJson!, ConfigJsonOptions);
+
+        config.Should().NotBeNull();
+        config!.Version.Should().Be(1);
+        config.Decision.From.Should().Be(ExtractInputSource.Step);
+        config.Decision.StepOrder.Should().Be(2);
+        config.AnalysisStepOrder.Should().Be(1);
+        config.EnableGraphics.Should().BeTrue();
+        config.GraphicsPlan.Should().NotBeNull();
+        config.GraphicsPlan!.From.Should().Be(ExtractInputSource.Step);
+        config.GraphicsPlan.StepOrder.Should().Be(3);
+
+        // Phase 3 graphics defaults not set by the literal.
+        config.MaxOverlays.Should().Be(20);
+        config.OverlayShortMs.Should().Be(1500);
+        config.OverlayMediumMs.Should().Be(3000);
+        config.OverlayHoldMs.Should().Be(6000);
+        config.OverlayFontColor.Should().Be("white");
+        config.OverlayBoxColor.Should().Be("black@0.45");
+    }
+
+    [Fact]
     public void Lean_context_promo_Extract_step_literal_still_deserializes_against_the_real_config_type()
     {
         // Precedent check (R7): this template predates video editing but is the same

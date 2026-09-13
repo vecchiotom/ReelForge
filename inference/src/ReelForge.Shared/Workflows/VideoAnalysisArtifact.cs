@@ -42,7 +42,22 @@ public sealed record VideoAnalysisArtifact(
     IReadOnlyList<string> OfferedIds,
     VideoAnalysisProvenance Provenance,
     IReadOnlyList<VideoAnalysisDuplicateGroup>? DuplicateGroups = null,
-    VideoAnalysisPacing? Pacing = null);
+    VideoAnalysisPacing? Pacing = null,
+    /// <summary>
+    /// Phase 3 addition — deterministic overlay-placement candidates (see
+    /// docs/video-editing.md "Motion graphics (Phase 3)"), populated only when
+    /// <c>VideoAnalyzeStepConfig.EmitOverlayPlacements</c> is set. A SEPARATE id namespace
+    /// (<c>p{n}</c>) from shots/silences/segments — deliberately NOT resolvable by
+    /// <c>VideoCompileStepExecutor.BuildIdTimeIndex</c>, which resolves only cut-anchor ids.
+    /// </summary>
+    IReadOnlyList<VideoAnalysisPlacement>? Placements = null,
+    /// <summary>
+    /// Exactly which placement ids were actually included in the bounded view shown to the
+    /// motion-graphics agent — the Phase 3 analogue of <see cref="OfferedIds"/>, but a SEPARATE
+    /// list/budget: a placement id must never be validated against <see cref="OfferedIds"/>, and
+    /// a cut-anchor id must never be validated against this list.
+    /// </summary>
+    IReadOnlyList<string>? OfferedPlacementIds = null);
 
 /// <summary>
 /// Probed media characteristics. Fps is carried as an exact rational (ffprobe's
@@ -270,3 +285,31 @@ public sealed record VideoShotCaption(
     string CameraAngle,
     IReadOnlyList<string> OnScreenText,
     IReadOnlyList<string> Tags);
+
+// =============================================================================================
+// Phase 3: optional motion-graphics overlay placement candidates (see docs/video-editing.md
+// "Motion graphics (Phase 3)"). Purely additive on top of Phase 1/2's schema — Version stays 2,
+// same rationale as Phase 2: every new field here is optional/nullable/default-valued.
+// =============================================================================================
+
+/// <summary>
+/// One deterministic overlay-placement candidate, derived from a shot's Phase 1
+/// <see cref="VideoAnalysisRegion"/> data by <c>OverlayPlacementBuilder</c>. Id: <c>p{n}</c> —
+/// a SEPARATE namespace from <c>s{n}</c>/<c>g{n}</c>/<c>t{n}</c> cut-anchor ids, assigned by a
+/// global counter across the whole artifact (not per-shot). Carries a fully server-resolved
+/// time window ([<see cref="StartSec"/>, <see cref="EndSec"/>), clamped to the owning shot's own
+/// bounds) so <c>VideoCompileStepExecutor</c> never has to guess a placement's timing — only its
+/// on/off decision and text content are left to the motion-graphics agent.
+/// </summary>
+public sealed record VideoAnalysisPlacement(
+    string Id,
+    string ShotId,
+    /// <summary>One of the three named overlay-candidate bands: "LowerThird" / "UpperThird" / "CenterBand".</summary>
+    string Region,
+    VideoAnalysisRect Rect,
+    /// <summary>How <see cref="StartSec"/>/<see cref="EndSec"/> were chosen: "LongestStillWindow" / "ShotMiddle" / "ShotStart".</summary>
+    string TimeAnchor,
+    double StartSec,
+    double EndSec,
+    double Suitability,
+    string TextColor);

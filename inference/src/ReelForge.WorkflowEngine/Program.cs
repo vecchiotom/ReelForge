@@ -115,6 +115,7 @@ builder.Services.AddSingleton<IReelForgeAgent, ScriptwriterAgentImpl>();
 builder.Services.AddSingleton<IReelForgeAgent, AuthorAgentImpl>();
 builder.Services.AddSingleton<IReelForgeAgent, ReviewAgentImpl>();
 builder.Services.AddSingleton<IReelForgeAgent, VideoStoryEditorAgent>();
+builder.Services.AddSingleton<IReelForgeAgent, MotionGraphicsPlannerAgent>();
 builder.Services.AddSingleton<IAgentRegistry, AgentRegistry>();
 builder.Services.AddSingleton<IAgentToolProvider, AgentToolProvider>();
 builder.Services.AddSingleton<IProjectFileWorkspace, ProjectFileWorkspace>();

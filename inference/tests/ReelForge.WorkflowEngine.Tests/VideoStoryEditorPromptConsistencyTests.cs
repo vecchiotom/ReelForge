@@ -17,15 +17,28 @@ namespace ReelForge.WorkflowEngine.Tests;
 /// stale no-timestamp rule or missing Phase 1 visual/audio field description) than what agents
 /// actually run with day to day. Reflection is used since both are intentionally private —
 /// neither should widen its access just to satisfy this test.
+///
+/// <see cref="MotionGraphicsPlannerAgent"/> (Phase 3) gets the exact same verbatim-consistency
+/// check, mirroring the same risk for its own no-timestamp/no-coordinate contract.
 /// </summary>
 public class VideoStoryEditorPromptConsistencyTests
 {
     [Fact]
     public void Fallback_prompt_matches_the_seeded_built_in_agent_prompt_verbatim()
     {
-        FieldInfo? promptField = typeof(VideoStoryEditorAgent)
-            .GetField("DefaultPrompt", BindingFlags.NonPublic | BindingFlags.Static);
-        promptField.Should().NotBeNull("VideoStoryEditorAgent must expose a private DefaultPrompt constant");
+        AssertFallbackMatchesSeeded(typeof(VideoStoryEditorAgent), AgentType.VideoStoryEditor);
+    }
+
+    [Fact]
+    public void MotionGraphicsPlanner_fallback_prompt_matches_the_seeded_built_in_agent_prompt_verbatim()
+    {
+        AssertFallbackMatchesSeeded(typeof(MotionGraphicsPlannerAgent), AgentType.MotionGraphicsPlanner);
+    }
+
+    private static void AssertFallbackMatchesSeeded(System.Type agentType, AgentType builtInAgentType)
+    {
+        FieldInfo? promptField = agentType.GetField("DefaultPrompt", BindingFlags.NonPublic | BindingFlags.Static);
+        promptField.Should().NotBeNull($"{agentType.Name} must expose a private DefaultPrompt constant");
         string fallbackPrompt = (string)promptField!.GetValue(null)!;
 
         FieldInfo? builtInAgentsField = typeof(DatabaseSeeder)
@@ -35,11 +48,11 @@ public class VideoStoryEditorPromptConsistencyTests
         var builtInAgents = (Dictionary<AgentType, (string Name, string Description, string SystemPrompt, string Color)>)
             builtInAgentsField!.GetValue(null)!;
 
-        builtInAgents.Should().ContainKey(AgentType.VideoStoryEditor);
-        string seededPrompt = builtInAgents[AgentType.VideoStoryEditor].SystemPrompt;
+        builtInAgents.Should().ContainKey(builtInAgentType);
+        string seededPrompt = builtInAgents[builtInAgentType].SystemPrompt;
 
         seededPrompt.Should().Be(fallbackPrompt,
-            "the fallback prompt in VideoStoryEditorAgent.cs and the seeded built-in agent row in " +
+            $"the fallback prompt in {agentType.Name}.cs and the seeded built-in agent row in " +
             "DatabaseSeeder.cs must be kept verbatim-identical");
     }
 }

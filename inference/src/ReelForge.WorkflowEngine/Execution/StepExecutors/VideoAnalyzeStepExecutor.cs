@@ -465,6 +465,14 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                 }
             }
 
+            // ---- Phase 3: deterministic overlay-placement candidates (see
+            // docs/video-editing.md "Motion graphics (Phase 3)") — derived entirely from Phase
+            // 1's per-shot Visual/Regions data, so only computed when visual analysis actually
+            // succeeded (never when it degraded/was off). Purely additive: off by default. ----
+            List<VideoAnalysisPlacement> placements = config.EmitOverlayPlacements && visualApplied
+                ? OverlayPlacementBuilder.BuildPlacements(shots, config.MaxPlacementsPerShot, config.MaxPlacements).ToList()
+                : [];
+
             VideoAnalysisPacing pacing = FrameGridAnalyzer.ComputePacing(shots, probe.DurationSec);
 
             List<VideoAnalysisSilenceSpan> silences = silenceSpans
@@ -508,7 +516,9 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                     CaptionedShotCount: captionedShotCount,
                     VisionPartial: visionPartial),
                 DuplicateGroups: duplicateGroups.Count > 0 ? duplicateGroups : null,
-                Pacing: pacing);
+                Pacing: pacing,
+                Placements: placements.Count > 0 ? placements : null,
+                OfferedPlacementIds: []);
 
             // ---- Build the bounded, id-anchored prompt view FIRST, so we know exactly which ids
             // were actually shown before persisting the artifact's OfferedIds. ----
@@ -522,7 +532,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
 
             // artifactStorageKey isn't known yet (the artifact hasn't been uploaded) — meta's
             // copy is patched in below once it is.
-            (JsonObject view, JsonObject meta, List<string> viewOfferedIds) = BuildBoundedView(
+            (JsonObject view, JsonObject meta, List<string> viewOfferedIds, List<string> viewOfferedPlacementIds) = BuildBoundedView(
                 draftArtifact, viewSegments, config, artifactStorageKey: string.Empty,
                 transcriptionApplied, transcriptionDegraded, transcriptionProviderName,
                 visualApplied, visualDegraded, audioLevelsApplied,
@@ -532,8 +542,13 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             // truncation — VideoCompileStepExecutor validates the model's Keep spans against this
             // list, so persisting the full pre-truncation id set here would let it accept ids the
             // model was never actually shown, defeating the id-anchored contract entirely (found
-            // by Copilot review).
-            VideoAnalysisArtifact artifact = draftArtifact with { OfferedIds = viewOfferedIds };
+            // by Copilot review). OfferedPlacementIds gets the exact same discipline, applied to
+            // the SEPARATE Phase 3 placement-id namespace (never merged with OfferedIds).
+            VideoAnalysisArtifact artifact = draftArtifact with
+            {
+                OfferedIds = viewOfferedIds,
+                OfferedPlacementIds = viewOfferedPlacementIds
+            };
 
             string artifactLocalPath = scratch.GetPath("analysis.json");
             await File.WriteAllTextAsync(
@@ -858,7 +873,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         return list;
     }
 
-    private static (JsonObject View, JsonObject Meta, List<string> OfferedIds) BuildBoundedView(
+    private static (JsonObject View, JsonObject Meta, List<string> OfferedIds, List<string> OfferedPlacementIds) BuildBoundedView(
         VideoAnalysisArtifact artifact,
         List<VideoAnalysisSegment> viewSegments,
         VideoAnalyzeStepConfig config,
@@ -927,6 +942,19 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         int droppedItems = Math.Max(0, totalItemCount - offeredIds.Count);
         bool truncated = droppedItems > 0;
 
+        // Phase 3: placements are a SEPARATE budget concern from OfferedIds/offered items above
+        // (see VideoAnalysisArtifact.OfferedPlacementIds's doc comment) — they are shown as one
+        // atomic array gated on detail != None (same gate as pacing/duplicateGroups), never
+        // individually dropped by the item-truncation loop above. So "offered" here means
+        // exactly "the whole placements array survived to the detail level actually applied" —
+        // empty whenever detailApplied == None, which is also the same point Compact/Full's
+        // per-shot v/a/c detail gets dropped, satisfying "dropped as a whole array before shot
+        // items start getting dropped" (item-dropping only ever runs once detail has already
+        // reached None).
+        List<string> offeredPlacementIds = detailApplied != VideoVisualDetail.None
+            ? (artifact.Placements?.Select(p => p.Id).ToList() ?? [])
+            : [];
+
         var meta = new JsonObject
         {
             ["operation"] = "videoAnalyze",
@@ -963,10 +991,11 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                 ["failedShots"] = failedShotCount
             },
             ["sourceChars"] = artifact.Shots.Count + artifact.SilenceSpans.Count + artifact.Segments.Count + artifact.Words.Count,
-            ["outputChars"] = serialized.Length
+            ["outputChars"] = serialized.Length,
+            ["offeredPlacementIdCount"] = offeredPlacementIds.Count
         };
 
-        return (view, meta, offeredIds);
+        return (view, meta, offeredIds, offeredPlacementIds);
     }
 
     private static JsonObject BuildView(
@@ -993,6 +1022,9 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
 
             if (artifact.DuplicateGroups is { Count: > 0 })
                 view["duplicateGroups"] = DuplicateGroupsNode(artifact.DuplicateGroups, config.MaxViewDuplicateGroups);
+
+            if (artifact.Placements is { Count: > 0 })
+                view["placements"] = PlacementsNode(artifact.Placements);
         }
 
         return view;
@@ -1178,6 +1210,22 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             ["shotIds"] = new JsonArray(g.ShotIds.Select(id => (JsonNode)id).ToArray()),
             ["bestShotId"] = g.BestShotId,
             ["similarity"] = Score(g.MeanSimilarity)
+        }).ToArray());
+
+    /// <summary>
+    /// Phase 3's <c>view.placements</c> — deliberately small/budget-friendly (no rect, no time
+    /// window, no anchor kind): a downstream motion-graphics planner only needs "which candidate
+    /// ids exist, how good is each, is it a light- or dark-text region", never the geometry or
+    /// timing that <c>VideoCompileStepExecutor</c> alone resolves from the full artifact.
+    /// </summary>
+    private static JsonArray PlacementsNode(IReadOnlyList<VideoAnalysisPlacement> placements) =>
+        new(placements.Select(p => (JsonNode)new JsonObject
+        {
+            ["id"] = p.Id,
+            ["shotId"] = p.ShotId,
+            ["region"] = p.Region,
+            ["fit"] = Score(p.Suitability),
+            ["text"] = p.TextColor
         }).ToArray());
 
     private static JsonObject SilenceNode(VideoAnalysisSilenceSpan s) => new()
