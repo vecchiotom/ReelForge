@@ -6,7 +6,7 @@ import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
 import { IconPlugConnected } from '@tabler/icons-react';
 import { createProvider, updateProvider, testProviderConfig } from '@/lib/api/inference-providers';
-import type { InferenceProvider, InferenceProviderKind } from '@/lib/types/inference-provider';
+import type { InferenceProvider, InferenceProviderKind, InferenceProviderCapability } from '@/lib/types/inference-provider';
 
 interface InferenceProviderFormProps {
   opened: boolean;
@@ -20,6 +20,11 @@ const KIND_OPTIONS: { value: InferenceProviderKind; label: string }[] = [
   { value: 'OpenAICompatible', label: 'OpenAI-compatible' },
 ];
 
+const CAPABILITY_OPTIONS: { value: InferenceProviderCapability; label: string }[] = [
+  { value: 'Chat', label: 'Chat' },
+  { value: 'Transcription', label: 'Transcription (ASR)' },
+];
+
 export function InferenceProviderForm({ opened, onClose, onSuccess, provider }: InferenceProviderFormProps) {
   const [loading, setLoading] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -29,6 +34,7 @@ export function InferenceProviderForm({ opened, onClose, onSuccess, provider }: 
     initialValues: {
       name: provider?.name || '',
       kind: (provider?.kind || 'AzureOpenAI') as InferenceProviderKind,
+      capability: (provider?.capability || 'Chat') as InferenceProviderCapability,
       endpoint: provider?.endpoint || '',
       modelName: provider?.modelName || '',
       apiKey: '',
@@ -55,6 +61,7 @@ export function InferenceProviderForm({ opened, onClose, onSuccess, provider }: 
       const result = await testProviderConfig({
         id: provider?.id,
         kind: form.values.kind,
+        capability: form.values.capability,
         endpoint: form.values.endpoint,
         modelName: form.values.modelName,
         apiKey: form.values.apiKey ? form.values.apiKey : undefined,
@@ -90,6 +97,7 @@ export function InferenceProviderForm({ opened, onClose, onSuccess, provider }: 
         await updateProvider(provider.id, {
           name: values.name,
           kind: values.kind,
+          capability: values.capability,
           endpoint: values.endpoint,
           modelName: values.modelName,
           apiKey: values.apiKey ? values.apiKey : undefined,
@@ -102,6 +110,7 @@ export function InferenceProviderForm({ opened, onClose, onSuccess, provider }: 
         await createProvider({
           name: values.name,
           kind: values.kind,
+          capability: values.capability,
           endpoint: values.endpoint,
           modelName: values.modelName,
           apiKey: values.apiKey ? values.apiKey : undefined,
@@ -136,6 +145,13 @@ export function InferenceProviderForm({ opened, onClose, onSuccess, provider }: 
             allowDeselect={false}
             {...form.getInputProps('kind')}
           />
+          <Select
+            label="Capability"
+            description="Chat providers serve agent completions; Transcription providers serve ASR for VideoAnalyze steps. Each has its own independent default."
+            data={CAPABILITY_OPTIONS}
+            allowDeselect={false}
+            {...form.getInputProps('capability')}
+          />
           <TextInput label={endpointLabel} placeholder={endpointPlaceholder} {...form.getInputProps('endpoint')} />
           <TextInput label={modelLabel} placeholder={modelPlaceholder} {...form.getInputProps('modelName')} />
           <TextInput
@@ -151,7 +167,10 @@ export function InferenceProviderForm({ opened, onClose, onSuccess, provider }: 
             min={1}
             {...form.getInputProps('timeoutSeconds')}
           />
-          <Switch label="Set as default provider" {...form.getInputProps('isDefault', { type: 'checkbox' })} />
+          <Switch
+            label={`Set as default ${form.values.capability === 'Transcription' ? 'transcription' : 'chat'} provider`}
+            {...form.getInputProps('isDefault', { type: 'checkbox' })}
+          />
           <Switch label="Enabled" {...form.getInputProps('isEnabled', { type: 'checkbox' })} />
 
           <Group justify="space-between" mt="sm">

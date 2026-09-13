@@ -7,7 +7,8 @@ export const STATUS_COLORS: Record<string, string> = {
   Failed: 'red',
   Pending: 'gray',
   Processing: 'blue',
-  Completed: 'green',
+  Completed: 'green', // StepStatus
+  Done: 'green', // SummaryStatus — a distinct enum from StepStatus/ExecutionStatus that uses 'Done'
   Skipped: 'yellow',
   NotIndexed: 'gray',
   Indexed: 'green',

@@ -210,6 +210,78 @@ namespace ReelForge.WorkflowEngine.Tests
                 throw new NotImplementedException("Not invoked by this test — only dispatch resolution is under test.");
         }
 
+        private sealed class CleanFailureExecutor : IStepExecutor
+        {
+            public CleanFailureExecutor(StepType stepType) => StepType = stepType;
+            public StepType StepType { get; }
+
+            public Task<StepExecutionResult> ExecuteAsync(StepExecutionContext context) =>
+                Task.FromResult(new StepExecutionResult
+                {
+                    // Mirrors ExtractStepExecutor/VideoAnalyzeStepExecutor/VideoCompileStepExecutor's
+                    // own Failure() helpers: Status=Failed with an already-valid-JSON Output,
+                    // exactly as R15 requires of every deterministic executor.
+                    Output = "{\"status\":\"failed\",\"error\":{\"code\":\"TEST\",\"message\":\"boom\"}}",
+                    NextStepIndex = context.CurrentStepIndex + 1,
+                    NewIterationCount = context.IterationCount,
+                    Status = StepStatus.Failed,
+                    ErrorDetails = "boom"
+                });
+        }
+
+        /// <summary>
+        /// Regression test for a live-testing-only-discoverable bug: a deterministic step type
+        /// (Extract/VideoAnalyze/VideoCompile all have ResolveMaxRetries == 1, see the theory
+        /// above) that fails via its own clean, already-valid-JSON Failure() envelope was, on its
+        /// very FIRST attempt, thrown as an InvalidOperationException by ExecuteStepWithRetryAsync
+        /// (attemptNumber never being &lt; maxRetries==1) — discarding that valid JSON. The outer
+        /// catch in ExecuteAsync then persisted BuildFailureStepResult's Output (plain text from
+        /// BuildRetryDiagnosticMessage, not JSON) directly into WorkflowStepResult.OutputJson, a
+        /// jsonb column — crashing the whole execution's SaveChangesAsync with Postgres error
+        /// 22P02 and leaving the execution stuck in "Running" forever (observed live against a
+        /// real Postgres instance; EFCore.InMemory does not enforce column types so this was
+        /// invisible to every other test in this suite). BuildFailureStepResult must always
+        /// produce a valid JSON Output, regardless of what the underlying exception's message
+        /// looks like.
+        /// </summary>
+        [Fact]
+        public async Task BuildFailureStepResult_output_is_always_valid_json_even_from_a_deterministic_steps_own_clean_failure()
+        {
+            var executor = new CleanFailureExecutor(StepType.VideoCompile);
+            var service = new WorkflowExecutorService(
+                scopeFactory: null!,
+                eventPublisher: null!,
+                logger: NullLogger<WorkflowExecutorService>.Instance,
+                executors: new[] { (IStepExecutor)executor },
+                rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()),
+                hardeningOptions: Options.Create(new WorkflowHardeningOptions()));
+
+            var step = new WorkflowStep { StepOrder = 3, StepType = StepType.VideoCompile };
+            var context = new StepExecutionContext
+            {
+                Execution = new WorkflowExecution(),
+                Step = step,
+                AllSteps = new List<WorkflowStep> { step },
+                AccumulatedOutput = string.Empty,
+                StepOutputHistory = new List<StepOutputHistoryEntry>(),
+                CurrentStepIndex = 0,
+                IterationCount = 0,
+                CorrelationId = "",
+                CancellationToken = CancellationToken.None
+            };
+
+            InvalidOperationException ex = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => service.ExecuteStepWithRetryAsync(executor, context, step, CancellationToken.None));
+
+            System.Reflection.MethodInfo buildFailure = typeof(WorkflowExecutorService).GetMethod(
+                "BuildFailureStepResult", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+            var result = (StepExecutionResult)buildFailure.Invoke(null, [step, context, ex])!;
+
+            result.Status.Should().Be(StepStatus.Failed);
+            Action parse = () => System.Text.Json.JsonDocument.Parse(result.Output);
+            parse.Should().NotThrow(because: "this Output is written verbatim into a jsonb column");
+        }
+
         [Fact]
         public void VideoAnalyze_and_VideoCompile_step_types_dispatch_to_their_own_executors_not_the_Agent_executor()
         {

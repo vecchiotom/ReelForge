@@ -143,7 +143,8 @@ inference/
 │   │   └── SnakeCaseNamingHelper.cs              # Shared DB naming convention
 │   │
 │   ├── ReelForge.Inference.Api/                  # Service 1: REST API
-│   │   ├── Controllers/                          # Projects, Files, Agents, Workflows, InferenceProviders, Outputs CRUD
+│   │   ├── Controllers/                          # Projects, Files, Agents, Workflows, InferenceProviders, Outputs,
+│   │   │                                          # StepResultArtifacts CRUD
 │   │   ├── Controllers/Dto/                      # Request/response DTOs
 │   │   ├── Data/InferenceApiDbContext.cs          # Owns user/project/file/agent/inference-provider tables
 │   │   ├── Data/DatabaseSeeder.cs                # Auto-migrate + seed agents
@@ -158,10 +159,10 @@ inference/
 │   │   └── appsettings.json
 │   │
 │   └── ReelForge.WorkflowEngine/                 # Service 2: Execution Engine
-│       ├── Agents/                               # All 11 workflow agents
+│       ├── Agents/                               # All 12 workflow agents (11 original + VideoStoryEditor)
 │       │   ├── Analysis/                         # 5 code analysis agents
 │       │   ├── Translation/                      # Remotion + Animation agents
-│       │   ├── Production/                       # Director, Scriptwriter, Author
+│       │   ├── Production/                       # Director, Scriptwriter, Author, VideoStoryEditor
 │       │   ├── Quality/                          # ReviewAgent
 │       │   └── Tools/                            # Shared AIFunction tools
 │       ├── Consumers/                            # MassTransit consumer
@@ -169,8 +170,11 @@ inference/
 │       │   ├── WorkflowExecutorService.cs        # Step-executor strategy pattern
 │       │   ├── IStepExecutor.cs                  # Strategy interface
 │       │   ├── ExpressionEvaluator.cs            # NCalc condition evaluator
-│       │   └── StepExecutors/                    # Agent, Conditional, ForEach, ReviewLoop, Parallel, Extract
+│       │   └── StepExecutors/                    # Agent, Conditional, ForEach, ReviewLoop, Parallel, Extract,
+│       │                                          # VideoAnalyze, VideoCompile
 │       ├── Services/Inference/                   # WorkflowEngineProviderStore (IInferenceProviderStore impl)
+│       ├── Services/Video/                       # ffmpeg/ffprobe runner, silence/shot detectors, audio extractor,
+│       │                                          # scratch-space management (see docs/video-editing.md)
 │       ├── Workers/WorkflowWorkerPool.cs         # Health monitoring service
 │       ├── Controllers/                          # Health + admin endpoints
 │       ├── Observability/ReelForgeDiagnostics.cs # OTel instrumentation
@@ -188,8 +192,8 @@ inference/
 - **Agents** inherit from `ReelForgeAgentBase`, which wraps `IChatClient.AsAIAgent()`. Tools are registered via `AIFunctionFactory.Create()` and cast to `IList<AITool>`.
 - **System prompts** are read from `appsettings.json` key `Agents:<AgentName>:SystemPrompt` with hardcoded fallback defaults.
 - **MassTransit** handles RabbitMQ messaging. Inference API publishes `WorkflowExecutionRequested`, WorkflowEngine consumes it.
-- **Step Executors** implement `IStepExecutor` strategy pattern: `AgentStepExecutor`, `ConditionalStepExecutor`, `ForEachStepExecutor`, `ReviewLoopStepExecutor`, `ParallelStepExecutor`, `ExtractStepExecutor` (deterministic, non-LLM — no `IChatClient`/`IAgentRegistry` dependency, always retried at most once).
-- **Inference providers** are resolved per agent via `IAgentChatClientProvider` → `IInferenceProviderResolver` (60s TTL-cached, `Inference:ProviderCacheSeconds`) → `IChatClientFactory`. Precedence: per-agent `AgentDefinition.InferenceProviderId` override → the single `inference_providers` row with `IsDefault = true` → the legacy `AzureOpenAI:*` config keys as a final fallback. API keys are encrypted at rest with ASP.NET Core Data Protection (`ISecretProtector`), keyed on a shared `dpkeys` volume mounted at `/keys` in both services so either can decrypt what the other wrote.
+- **Step Executors** implement `IStepExecutor` strategy pattern: `AgentStepExecutor`, `ConditionalStepExecutor`, `ForEachStepExecutor`, `ReviewLoopStepExecutor`, `ParallelStepExecutor`, `ExtractStepExecutor`, `VideoAnalyzeStepExecutor`, `VideoCompileStepExecutor` (all four non-`Agent` deterministic types are non-LLM — no `IChatClient`/`IAgentRegistry` dependency, always retried at most once; the video pair also never throws, always emitting valid JSON even on failure, since `output_json` is `jsonb`).
+- **Inference providers** are resolved per agent via `IAgentChatClientProvider` → `IInferenceProviderResolver` (60s TTL-cached, `Inference:ProviderCacheSeconds`) → `IChatClientFactory`. Chat precedence: per-agent `AgentDefinition.InferenceProviderId` override → the single `inference_providers` row with `IsDefault = true AND Capability = Chat` → the legacy `AzureOpenAI:*` config keys as a final fallback. Transcription precedence (used by `VideoAnalyze` steps via `ITranscriptionClientFactory`): `VideoAnalyzeStepConfig.TranscriptionProviderId` → the single row with `IsDefault = true AND Capability = Transcription` → none (no legacy config fallback — silently sending audio to a chat deployment would 404 confusingly). The two capabilities' defaults are fully independent (composite unique index), and each resolution path filters on its own `Capability` explicitly rather than picking "any `IsDefault` row". API keys are encrypted at rest with ASP.NET Core Data Protection (`ISecretProtector`), keyed on a shared `dpkeys` volume mounted at `/keys` in both services so either can decrypt what the other wrote.
 - **ExpressionEvaluator** uses NCalc for condition evaluation with JSON parameter extraction.
 - **OpenTelemetry** provides distributed tracing and metrics via `ActivitySource` and `Meter`.
 - **All controllers** require `[Authorize]` except `HealthController`. `ICurrentUser` extracts user identity from JWT claims.
@@ -197,17 +201,17 @@ inference/
 
 ### Enhanced Data Model
 
-**New enums:** `StepType` (Agent, Conditional, ForEach, ReviewLoop, Parallel, Extract), `StepStatus` (Pending, Running, Completed, Failed, Skipped), `InferenceProviderKind` (AzureOpenAI, OpenAICompatible)
+**New enums:** `StepType` (Agent, Conditional, ForEach, ReviewLoop, Parallel, Extract, **VideoAnalyze**, **VideoCompile**), `StepStatus` (Pending, Running, Completed, Failed, Skipped), `InferenceProviderKind` (AzureOpenAI, OpenAICompatible), **`InferenceProviderCapability`** (**Chat**, **Transcription** — what a provider row can be used for; see below)
 
-**WorkflowStep** enhanced with: `StepType`, `ConditionExpression`, `LoopSourceExpression`, `LoopTargetStepOrder`, `MaxIterations`, `MinScore`, `InputMappingJson`, `TrueBranchStepOrder`, `FalseBranchStepOrder`, `ParallelAgentIdsJson` (`StepType.Parallel` — JSON array of agent GUIDs run concurrently), `ExtractConfigJson` (`extract_config_json` column, `StepType.Extract` — JSON-serialized `ExtractStepConfig`: closed to three operations, `Project`/`Resolve`/`Files`, always emitting a `{view, meta}` envelope)
+**WorkflowStep** enhanced with: `StepType`, `ConditionExpression`, `LoopSourceExpression`, `LoopTargetStepOrder`, `MaxIterations`, `MinScore`, `InputMappingJson`, `TrueBranchStepOrder`, `FalseBranchStepOrder`, `ParallelAgentIdsJson` (`StepType.Parallel` — JSON array of agent GUIDs run concurrently), `ExtractConfigJson` (`extract_config_json` column, `StepType.Extract` — JSON-serialized `ExtractStepConfig`: closed to three operations, `Project`/`Resolve`/`Files`, always emitting a `{view, meta}` envelope), **`VideoAnalyzeConfigJson`** (`video_analyze_config_json`, jsonb, `StepType.VideoAnalyze` — JSON-serialized `VideoAnalyzeStepConfig`), **`VideoCompileConfigJson`** (`video_compile_config_json`, jsonb, `StepType.VideoCompile` — JSON-serialized `VideoCompileStepConfig`)
 
-**WorkflowStepResult** enhanced with: `InputJson`, `OutputJson`, `Status` (StepStatus), `ErrorDetails`, `IterationNumber`, `CompletedAt`
+**WorkflowStepResult** enhanced with: `InputJson`, `OutputJson`, `Status` (StepStatus), `ErrorDetails`, `IterationNumber`, `CompletedAt`, **`ArtifactStorageKey`** (`artifact_storage_key`, text, nullable — storage key of a large non-playable artifact such as a `VideoAnalyze` full analysis JSON or a `VideoCompile` EDL; kept as a column **separate** from `OutputStorageKey` so `OutputsController`/the execution UI never mistakes a JSON artifact for a playable render — see [`docs/video-editing.md`](docs/video-editing.md))
 
 **WorkflowExecution** enhanced with: `CorrelationId`, `InitiatedByUserId`, `ErrorMessage`
 
 **AgentDefinition** enhanced with: `InferenceProviderId` (nullable FK to `inference_providers`, `OnDelete(SetNull)`) + `InferenceProviderName` (denormalized on the response DTO only) — the per-agent inference-provider override.
 
-**InferenceProvider** (new entity, table `inference_providers`): `Id`, `Name` (unique), `Kind` (`InferenceProviderKind`), `Endpoint`, `ModelName`, `ApiKeyEncrypted`/`ApiKeyLastFour` (never returned in plaintext), `IsDefault` (unique partial index — at most one row), `IsEnabled`, `TimeoutSeconds`, `ExtraHeadersJson`, `LastTestAt`/`LastTestOk`/`LastTestError`.
+**InferenceProvider** (new entity, table `inference_providers`): `Id`, `Name` (unique), `Kind` (`InferenceProviderKind`), **`Capability`** (`InferenceProviderCapability`, default `Chat`), `Endpoint`, `ModelName`, `ApiKeyEncrypted`/`ApiKeyLastFour` (never returned in plaintext), `IsDefault` (**composite unique partial index on `(capability, is_default)` where `is_default`** — at most one default row *per capability*, so a Transcription default and a Chat default coexist independently), `IsEnabled`, `TimeoutSeconds`, `ExtraHeadersJson`, `LastTestAt`/`LastTestOk`/`LastTestError`. Chat-completion resolution (`IInferenceProviderResolver`) and transcription resolution each filter on their own `Capability` explicitly — never "any `IsDefault` row" — since the two default rows are independent.
 
 ### Integration Events (MassTransit)
 
@@ -236,6 +240,24 @@ to the Go API — see the Nginx table below.
 | `POST` | `/api/v1/inference-providers/test` | Admin | Tests an unsaved config; reuses the stored key when `id` is supplied and `apiKey` is omitted |
 | `PUT` | `/api/v1/agents/{id}/inference-provider` | Admin | Set/clear the per-agent provider override (`{ "inferenceProviderId": "<guid>" \| null }`) — unlike `PUT /api/v1/agents/{id}`, this is allowed for built-in agents, since overriding a built-in's provider is the primary use case |
 
+Every create/update/test request above also accepts a `capability` field (`"Chat"` or `"Transcription"`,
+defaults to `"Chat"` when omitted for backward compatibility). `POST /{id}/test` and `POST /test`
+branch on it: `Chat` runs the existing 1-token chat ping, `Transcription` transcribes a ~0.3s
+in-memory-synthesized silent WAV through `ITranscriptionClient`. The admin UI (`InferenceProviderForm`)
+exposes Capability as a field on create/edit, and the per-agent provider override picker
+(`AgentInferenceProviderSelect`) filters out `Transcription` rows, since that override feeds chat
+resolution only.
+
+### Video Editing Endpoints (Inference API)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/api/v1/projects/{projectId}/step-results/{stepResultId}/artifact` | Owner | Streams the large JSON artifact (`WorkflowStepResult.ArtifactStorageKey`) for a `VideoAnalyze`/`VideoCompile` step result — the full analysis document or the compile EDL. Validates the storage key against the `projects/{projectId}/agentFiles/video-analysis` prefix (never `outputFiles`) so it can't be coerced into serving a playable render or another project's object. |
+
+See [`docs/video-editing.md`](docs/video-editing.md) for the full feature: the three-stage
+`VideoAnalyze` → `Agent(VideoStoryEditor)` → `VideoCompile` pipeline, the id-anchored no-timestamp
+decision contract, artifact layout, and config reference.
+
 ### Agent Types (enum)
 
 Analysis: `CodeStructureAnalyzer`, `DependencyAnalyzer`, `ComponentInventoryAnalyzer`, `RouteAndApiAnalyzer`, `StyleAndThemeExtractor`
@@ -244,6 +266,7 @@ Production: `DirectorAgent`, `ScriptwriterAgent`, `AuthorAgent`
 Quality: `ReviewAgent`
 File Processing: `FileSummarizerAgent` (in Inference API only)
 Extract/Transform: `ExtractTransform` — built-in, non-LLM agent row seeded so `StepType.Extract` steps satisfy the non-nullable `WorkflowStep.AgentDefinitionId` FK; `SystemPrompt` is empty and `GeneratesOutput` is `false` since it is never sent to a model, only run as deterministic code by `ExtractStepExecutor`.
+Video editing: `VideoStoryEditor` — LLM agent, `OutputSchemaName = "VideoEditDecisionOutput"`; decides which shots/silence-gaps/transcript-spans to KEEP from a bounded, id-anchored view produced by a `VideoAnalyze` step. Structurally incapable of emitting a timestamp (guarded by a reflection test, `VideoEditDecisionOutputInvariantTests`) — see [`docs/video-editing.md`](docs/video-editing.md). Tool access is read-only project context + `FailWorkflow`; no sandbox tools, no write/render tools. `VideoTransform` — deterministic, non-LLM placeholder agent (identical role to `ExtractTransform`) seeded so `StepType.VideoAnalyze`/`VideoCompile` steps satisfy the same non-nullable FK; runs ffmpeg, never a model.
 User-defined: `Custom`
 
 ### Default Workflow Pipeline
@@ -260,6 +283,48 @@ The `quick-win-promo` template above (`AutoCreateOnProject: true`) is unmodified
 opt-in template — `lean-context-promo` (`AutoCreateOnProject: false`) — inserts a `StepType.Extract`
 step (op `Project`) after `ComponentInventoryAnalyzer` to reduce its output to a bounded
 `{view, meta}` view before it reaches the translation/production agents, cutting token usage.
+
+A third, opt-in template — `video-derush-edit` (`AutoCreateOnProject: false`) — demonstrates the
+video-editing feature end to end: `VideoAnalyze` (`Source: PreviousStepOutput`) → `Agent(VideoStoryEditor)`
+→ `VideoCompile` (`Decision: Previous`, `AnalysisStepOrder: 1`). See
+[`docs/video-editing.md`](docs/video-editing.md).
+
+### Video Editing (ffmpeg-based, `VideoAnalyze`/`VideoCompile` step types)
+
+Real source-video derushing and cutting — silence/shot detection, optional ASR transcription, an
+LLM editorial decision anchored to opaque ids only (never a timestamp), and frame-accurate ffmpeg
+compilation. Full design in [`docs/video-editing.md`](docs/video-editing.md); summary here:
+
+- **`StepType.VideoAnalyze`** (`Shared/Workflows/VideoAnalyzeStepConfig.cs`) — deterministic,
+  non-LLM. Probes the source (`VideoSourceRef`: a `ProjectFile`, a specific step's output, or the
+  previous step's output — render outputs are **not** `ProjectFile` rows, only reachable via
+  `WorkflowStepResult.OutputStorageKey`, so the source model resolves step-result keys as a
+  first-class kind), detects silence/shots via ffmpeg, optionally transcribes via
+  `ITranscriptionClient` (`VideoTranscriptionMode`: `Off`/`Optional`/`Required`), and emits a
+  `{view, meta}` envelope (same shape as `Extract`) plus a full analysis artifact
+  (`WorkflowStepResult.ArtifactStorageKey`).
+- **`StepType.Agent` + `AgentType.VideoStoryEditor`** — an LLM decides which offered ids to KEEP
+  (`VideoEditDecisionOutput`); no existing step type is duplicated for this, `AgentStepExecutor`
+  already provides structured output, retry-with-feedback, and tool scoping.
+- **`StepType.VideoCompile`** (`Shared/Workflows/VideoCompileStepConfig.cs`) — deterministic,
+  non-LLM. Resolves the agent's chosen ids to frame-accurate `[start, end)` times against the full
+  analysis artifact (never trusting a model-supplied number, because there is none), then encodes
+  with ffmpeg.
+
+**Why ffmpeg runs inside the WorkflowEngine container, not the Remotion sandbox
+(`/sandbox`):** the sandbox's command allowlist and container hardening exist to contain
+*untrusted, model-authored* code (arbitrary TSX, arbitrary npm packages). Video editing's ffmpeg
+argv is built entirely by first-party C# from a validated, typed cut list — the model contributes
+only opaque ids it was actually offered, never a path, flag, or timestamp — so there is nothing
+untrusted for the sandbox's containment to protect against, while admitting `ffmpeg` to the
+sandbox's allowlist would open one of the richest argv-injection surfaces in common Unix tooling
+(`-i http://…` SSRF into the sandbox's bridge network, `concat:`/`subfile:` arbitrary file read,
+`-f lavfi` with `movie=`) for zero containment benefit. The sandbox's mechanics are also simply
+wrong for large binary media: containers are `--read-only` with a 256 MB tmpfs `/tmp`, file I/O is
+base64-over-JSON (doubling memory for a large file in both directions), and sandbox containers
+cannot reach MinIO. `/sandbox` itself is untouched by this feature — see `docs/video-editing.md`
+for the full rationale and the phase-2 escape hatch (a dedicated `video-worker` microservice) this
+decision leaves open.
 
 ### Frontend (Next.js)
 
@@ -399,7 +464,7 @@ All services have Dockerfiles and are orchestrated via `docker-compose.yml` at t
 | `web` | Built from `./web` | — (internal) | 3000 | Next.js frontend |
 | `go-api` | Built from `./api` | — (internal) | 8080 | Depends on postgres (healthy) |
 | `inference` | Built from `./inference` | — (internal) | 8080 | Inference API, depends on go-api + rabbitmq; mounts `dpkeys` at `/keys` (Data Protection key ring) |
-| `workflow-engine` | Built from `./inference` | — (internal) | 8080 | Workflow engine, depends on inference + rabbitmq; mounts `dpkeys` at `/keys` (Data Protection key ring) |
+| `workflow-engine` | Built from `./inference` | — (internal) | 8080 | Workflow engine, depends on inference + rabbitmq; mounts `dpkeys` at `/keys` (Data Protection key ring) and `videoscratch` at `/var/tmp/reelforge-video` (per-execution ffmpeg scratch space, `VideoEditing:ScratchPath`); image includes `ffmpeg`/`ffprobe` (see Video Editing above) |
 | `postgres` | `postgres:16-alpine` | 5432 | 5432 | Volume `pgdata`, healthcheck via `pg_isready` |
 | `minio` | `minio/minio:latest` | 9000/9001 | 9000/9001 | Volume `miniodata`, console on 9001 |
 | `minio-init` | `minio/mc:latest` | — | — | One-shot: creates the `reelforge` bucket, then exits |
@@ -441,7 +506,7 @@ All configuration is driven by `.env` at the repo root (copy `.env.example` to `
 | `JWT_SIGNING_KEY` | — | HMAC-SHA256 symmetric key (min 32 chars) |
 | `JWT_ISSUER` | `reelforge-api` | JWT issuer claim |
 | `JWT_AUDIENCE` | `reelforge-inference` | JWT audience claim |
-| `AZURE_OPENAI_ENDPOINT` | — | Azure OpenAI endpoint URL. **Fallback only** — used for chat completions when no `inference_providers` row exists or none is marked default; configure providers at runtime via `/admin/inference-providers` instead. Embeddings for vector search always use this. |
+| `AZURE_OPENAI_ENDPOINT` | — | Azure OpenAI endpoint URL. **Fallback only** — used for chat completions when no `inference_providers` row exists or none is marked default for the `Chat` capability; configure providers at runtime via `/admin/inference-providers` instead. Embeddings for vector search always use this. There is no equivalent fallback for transcription — see `VideoEditing` below. |
 | `AZURE_OPENAI_API_KEY` | — | Azure OpenAI API key (see fallback note above) |
 | `AZURE_OPENAI_DEPLOYMENT` | `gpt-4o-mini` | Azure OpenAI deployment/model name (see fallback note above) |
 | `APP_PORT` | `80` | Nginx reverse proxy host port |
@@ -458,6 +523,9 @@ All configuration is driven by `.env` at the repo root (copy `.env.example` to `
 | `SMTP_FROM` | — | Sender email address |
 | `ADMIN_EMAIL` | `admin@reelforge.local` | Initial admin user email |
 | `ADMIN_PASSWORD` | — | Initial admin password (auto-generated if empty) |
+| `VIDEO_MAX_CONCURRENT_JOBS` | `1` | Max ffmpeg/ffprobe invocations running concurrently in the WorkflowEngine container (`VideoEditing:MaxConcurrentJobs`) — kept low by default since encoding is CPU-heavy and competes with `WORKFLOW_MAX_CONCURRENCY` |
+| `VIDEO_ANALYZE_TIMEOUT_SECONDS` | `900` | Hard wall-clock timeout for a `VideoAnalyze` step's ffmpeg/ffprobe/ASR calls (`VideoEditing:AnalyzeTimeoutSeconds`) |
+| `VIDEO_COMPILE_TIMEOUT_SECONDS` | `1800` | Hard wall-clock timeout for a `VideoCompile` step's ffmpeg encode (`VideoEditing:CompileTimeoutSeconds`) |
 
 ### Inference `appsettings.json` Keys
 
@@ -474,3 +542,7 @@ Both services share these keys (overridden by Docker Compose env vars):
 | `MinIO:Endpoint` / `MinIO:AccessKey` / `MinIO:SecretKey` / `MinIO:BucketName` | S3-compatible storage (API only) |
 | `WorkflowEngine:MaxConcurrency` | Max parallel executions (Engine only) |
 | `Agents:<AgentName>:SystemPrompt` | Override any agent's system prompt |
+| `VideoEditing:ScratchPath` | Root directory for per-execution/per-step video scratch files (extracted audio, intermediate segments); defaults to `/var/tmp/reelforge-video` — must be a volume pre-owned by the container's non-root `$APP_UID` (Engine only) |
+| `VideoEditing:FfmpegPath` / `VideoEditing:FfprobePath` | Executable name or path for ffmpeg/ffprobe; default `ffmpeg`/`ffprobe`, resolved via `PATH` (Engine only) |
+| `VideoEditing:MaxConcurrentJobs` | Max ffmpeg/ffprobe invocations running concurrently across the whole process, enforced by a single process-wide semaphore; default `1` (Engine only) |
+| `VideoEditing:AnalyzeTimeoutSeconds` / `VideoEditing:CompileTimeoutSeconds` | Hard wall-clock timeouts for `VideoAnalyze`/`VideoCompile` step tool invocations; default `900`/`1800` (Engine only) |

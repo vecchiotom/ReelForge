@@ -44,9 +44,14 @@ export function AgentInferenceProviderSelect({
     );
   }
 
+  // This override feeds IAgentChatClientProvider (chat resolution only) — a Transcription-
+  // capability provider must never be selectable here, since it has no chat completions
+  // endpoint (e.g. a whisper.cpp-server/faster-whisper-server deployment).
   const data = [
     { value: DEFAULT_VALUE, label: 'Default provider' },
-    ...(providers ?? []).map((p) => ({ value: p.id, label: p.name })),
+    ...(providers ?? [])
+      .filter((p) => p.capability !== 'Transcription')
+      .map((p) => ({ value: p.id, label: p.name })),
   ];
 
   const handleChange = async (value: string | null) => {

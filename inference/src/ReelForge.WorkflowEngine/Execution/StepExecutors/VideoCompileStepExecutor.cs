@@ -323,7 +323,7 @@ public class VideoCompileStepExecutor : IStepExecutor
 
             // ---- Resolve the source video (same artifact.Media info implies we need the bytes too) ----
 
-            (string? sourceStorageKey, string? sourceError) = ResolveSourceStorageKey(context);
+            (string? sourceStorageKey, string? sourceError) = await ResolveSourceStorageKeyAsync(context, config);
             if (sourceStorageKey is null)
                 return Failure(context, sw, "SOURCE_UNRESOLVED", sourceError ?? "Could not resolve the source video to cut.", edlStorageKey);
 
@@ -462,23 +462,127 @@ public class VideoCompileStepExecutor : IStepExecutor
         return string.IsNullOrWhiteSpace(content) ? (null, "Decision input resolved to empty content.") : (content, null);
     }
 
-    private static (string? Key, string? Error) ResolveSourceStorageKey(StepExecutionContext context)
+    /// <summary>
+    /// The source video is whatever the referenced VideoAnalyze step actually analyzed —
+    /// <see cref="VideoCompileStepConfig"/> does not carry its own <see cref="VideoSourceRef"/>
+    /// so as not to duplicate (and risk drifting from) the analyze step's own config. This reads
+    /// that step's <c>VideoAnalyzeConfigJson.Source</c> and resolves it exactly the way
+    /// <c>VideoAnalyzeStepExecutor</c> would have resolved it itself. This matters most for
+    /// <see cref="VideoSourceKind.ProjectFile"/> (an uploaded video with no prior step output at
+    /// all): a naive "search StepOutputHistory for any OutputStorageKey" heuristic can never
+    /// resolve that case, since a ProjectFile source is never represented as a step output.
+    /// </summary>
+    private async Task<(string? Key, string? Error)> ResolveSourceStorageKeyAsync(
+        StepExecutionContext context, VideoCompileStepConfig config)
     {
-        // The source video is whatever the referenced VideoAnalyze step analyzed. Since
-        // VideoCompileStepConfig does not carry its own VideoSourceRef, the most faithful
-        // same-execution resolution is "the step immediately before the analyze step's own
-        // resolved source" — but that information is not itself persisted. In practice the
-        // shipped template always compiles against the same PreviousStepOutput chain the
-        // analyze step consumed, so we resolve the source the same way VideoAnalyze's own
-        // PreviousStepOutput/StepOutput resolution would: the latest prior step (relative to
-        // THIS compile step) that produced a media OutputStorageKey.
-        StepOutputHistoryEntry? entry = context.StepOutputHistory
-            .Where(h => h.StepOrder < context.Step.StepOrder)
-            .LastOrDefault(h => !string.IsNullOrWhiteSpace(h.OutputStorageKey));
+        VideoAnalyzeStepConfig? analyzeConfig;
+        List<StepOutputHistoryEntry>? historyBeforeAnalyzeStep = null;
 
-        return entry is null
-            ? (null, "No prior step in this execution produced a video/media OutputStorageKey to compile from.")
-            : (entry.OutputStorageKey, null);
+        if (config.AnalysisStepResultId.HasValue)
+        {
+            // Cross-execution reference (R23-scoped): the analyze step's definition lives in
+            // workflow_steps, which persists independently of any one execution, so it can still
+            // be read even though context.AllSteps only covers the CURRENT execution's workflow.
+            using IServiceScope scope = _scopeFactory.CreateScope();
+            WorkflowEngineDbContext db = scope.ServiceProvider.GetRequiredService<WorkflowEngineDbContext>();
+
+            WorkflowStepResult? result = await db.WorkflowStepResults
+                .Include(r => r.WorkflowExecution)
+                .Include(r => r.WorkflowStep)
+                .AsNoTracking()
+                .FirstOrDefaultAsync(r => r.Id == config.AnalysisStepResultId.Value, context.CancellationToken);
+
+            if (result is null || result.WorkflowExecution.ProjectId != context.Execution.ProjectId)
+            {
+                // Already validated (and logged) by ResolveAnalysisArtifactKeyAsync above, which
+                // runs first and would have failed the step before reaching here in practice.
+                return (null, $"AnalysisStepResultId '{config.AnalysisStepResultId.Value}' could not be resolved.");
+            }
+
+            analyzeConfig = DeserializeAnalyzeConfig(result.WorkflowStep?.VideoAnalyzeConfigJson);
+            // Cross-execution StepOutput/PreviousStepOutput resolution would require walking the
+            // OTHER execution's step-output history, which this executor does not have loaded.
+            // Rather than guess, only ProjectFile (self-contained; no execution history needed)
+            // is supported cross-execution; other kinds fail with an explicit diagnostic below.
+        }
+        else
+        {
+            WorkflowStep? analyzeStep = context.AllSteps.FirstOrDefault(s => s.StepOrder == config.AnalysisStepOrder);
+            if (analyzeStep is null)
+                return (null, $"Step {config.AnalysisStepOrder} (expected to be the VideoAnalyze step) was not found in this workflow.");
+
+            analyzeConfig = DeserializeAnalyzeConfig(analyzeStep.VideoAnalyzeConfigJson);
+            historyBeforeAnalyzeStep = context.StepOutputHistory
+                .Where(h => h.StepOrder < config.AnalysisStepOrder)
+                .ToList();
+        }
+
+        if (analyzeConfig is null)
+        {
+            return (null,
+                $"Step {config.AnalysisStepOrder}'s VideoAnalyzeConfigJson is missing or invalid; cannot determine the source video to compile.");
+        }
+
+        VideoSourceRef source = analyzeConfig.Source;
+        switch (source.Kind)
+        {
+            case VideoSourceKind.ProjectFile:
+            {
+                if (!source.ProjectFileId.HasValue)
+                    return (null, "The analyze step's Source=ProjectFile has no ProjectFileId.");
+
+                IReadOnlyList<ProjectWorkspaceFile> files =
+                    await _workspace.ListFilesAsync(context.Execution.ProjectId, context.CancellationToken);
+                ProjectWorkspaceFile? file = files.FirstOrDefault(f => f.Id == source.ProjectFileId.Value);
+                return file is null
+                    ? (null, $"ProjectFile '{source.ProjectFileId.Value}' was not found in this project.")
+                    : (file.StorageKey, null);
+            }
+
+            case VideoSourceKind.StepOutput:
+            {
+                if (historyBeforeAnalyzeStep is null)
+                    return (null, "Cross-execution AnalysisStepResultId with Source=StepOutput is not supported; use ProjectFile for cross-execution recompiles.");
+                if (!source.StepOrder.HasValue)
+                    return (null, "The analyze step's Source=StepOutput has no StepOrder.");
+
+                StepOutputHistoryEntry? entry = historyBeforeAnalyzeStep
+                    .FirstOrDefault(h => h.StepOrder == source.StepOrder.Value);
+                return entry is null || string.IsNullOrWhiteSpace(entry.OutputStorageKey)
+                    ? (null, $"Step {source.StepOrder.Value} did not produce a video/media OutputStorageKey.")
+                    : (entry.OutputStorageKey, null);
+            }
+
+            case VideoSourceKind.PreviousStepOutput:
+            {
+                if (historyBeforeAnalyzeStep is null)
+                    return (null, "Cross-execution AnalysisStepResultId with Source=PreviousStepOutput is not supported; use ProjectFile for cross-execution recompiles.");
+
+                StepOutputHistoryEntry? entry = historyBeforeAnalyzeStep
+                    .LastOrDefault(h => !string.IsNullOrWhiteSpace(h.OutputStorageKey));
+                return entry is null
+                    ? (null, "The analyze step's Source=PreviousStepOutput, but no step before it produced a video/media OutputStorageKey.")
+                    : (entry.OutputStorageKey, null);
+            }
+
+            default:
+                return (null, $"Unknown VideoSourceKind '{source.Kind}'.");
+        }
+    }
+
+    private static VideoAnalyzeStepConfig? DeserializeAnalyzeConfig(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return null;
+
+        try
+        {
+            return JsonSerializer.Deserialize<VideoAnalyzeStepConfig>(json, ConfigJsonOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     // ---------------------------------------------------------------------

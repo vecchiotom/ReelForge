@@ -39,6 +39,7 @@ export function InferenceProviderTable({ providers, onDelete }: InferenceProvide
         <Table.Tr>
           <Table.Th>Name</Table.Th>
           <Table.Th>Kind</Table.Th>
+          <Table.Th>Capability</Table.Th>
           <Table.Th>Endpoint</Table.Th>
           <Table.Th>Model</Table.Th>
           <Table.Th>Default</Table.Th>
@@ -53,6 +54,11 @@ export function InferenceProviderTable({ providers, onDelete }: InferenceProvide
             <Table.Td>
               <Badge color={provider.kind === 'AzureOpenAI' ? 'blue' : 'grape'} variant="light" size="sm">
                 {provider.kind === 'AzureOpenAI' ? 'Azure OpenAI' : 'OpenAI-compatible'}
+              </Badge>
+            </Table.Td>
+            <Table.Td>
+              <Badge color={provider.capability === 'Transcription' ? 'teal' : 'indigo'} variant="light" size="sm">
+                {provider.capability === 'Transcription' ? 'Transcription' : 'Chat'}
               </Badge>
             </Table.Td>
             <Table.Td>{provider.endpoint}</Table.Td>

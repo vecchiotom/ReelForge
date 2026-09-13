@@ -84,6 +84,12 @@ export default function InferenceProviderDetailPage({ params }: { params: Promis
             </Badge>
           </Group>
           <Group>
+            <Text size="sm" fw={500} w={140}>Capability</Text>
+            <Badge color={provider.capability === 'Transcription' ? 'teal' : 'indigo'} variant="light">
+              {provider.capability === 'Transcription' ? 'Transcription' : 'Chat'}
+            </Badge>
+          </Group>
+          <Group>
             <Text size="sm" fw={500} w={140}>{provider.kind === 'AzureOpenAI' ? 'Endpoint' : 'Base URL'}</Text>
             <Text size="sm">{provider.endpoint}</Text>
           </Group>

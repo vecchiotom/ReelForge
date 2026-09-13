@@ -563,7 +563,16 @@ public class WorkflowExecutorService
         string diagnostic = BuildRetryDiagnosticMessage(ex.Message);
         return new StepExecutionResult
         {
-            Output = diagnostic,
+            // BuildRetryDiagnosticMessage returns PLAIN TEXT, not JSON — and this Output value
+            // is written verbatim into WorkflowStepResult.OutputJson, a jsonb column. Writing
+            // plain text there fails the whole SaveChangesAsync with Postgres error 22P02
+            // ("invalid input syntax for type json"), which then gets retried at the message-bus
+            // level while the execution is already marked Running — leaving it stuck forever.
+            // This is the single most common way to reach this method: any step whose
+            // ResolveMaxRetries is 1 (Extract, VideoAnalyze, VideoCompile) throws here on its
+            // very first failure, discarding its own already-valid-JSON failure envelope. Wrap
+            // the diagnostic in a minimal JSON envelope so persistence never crashes.
+            Output = JsonSerializer.Serialize(new { status = "failed", error = new { message = diagnostic } }),
             NextStepIndex = context.CurrentStepIndex + 1,
             NewIterationCount = context.IterationCount,
             DurationMs = 0,

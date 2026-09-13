@@ -58,7 +58,7 @@ The workflow engine (`.NET`) interacts with this service to:
           │  Container: rf-sbx-<uuid>        │
           │   image: reelforge-sandbox-      │
           │          executor:local          │
-          │   --network none                 │
+          │   --network sandbox-net          │
           │   --read-only                    │
           │   --user node                    │
           │   -v /var/lib/reelforge/         │
@@ -146,7 +146,7 @@ Each Docker container is launched with strict hardening flags:
 
 | Flag | Effect |
 |---|---|
-| `--network none` | No network access — container cannot make outbound calls |
+| `--network $SANDBOX_NETWORK` (`sandbox-net` by default — a normal Docker bridge network, not `none`) | Container can reach outbound registries (npm) and any other container attached to the same bridge network; it is isolated from the host's other application networks (e.g. the one carrying Postgres/RabbitMQ/MinIO traffic), but this is network segmentation, not "no network access" — code running in the sandbox is not prevented from making arbitrary outbound requests |
 | `--read-only` | Root filesystem is read-only — only `/workspace` and `/tmp` are writable |
 | `--tmpfs /tmp:rw,nosuid,nodev,size=256m` | Ephemeral `/tmp` limited to 256 MB |
 | `--memory` | Hard memory cap (default 2 GB) |
@@ -528,20 +528,32 @@ The `sandbox/Dockerfile` performs a two-stage build:
 2. Compiles the Go server as a static binary: `CGO_ENABLED=0 go build -ldflags="-s -w -X main.Version=<VERSION>"`.
 3. The `VERSION` build arg (defaults to `docker`) is injected into the `main.Version` variable, which is logged on startup.
 
-### Stage 2 — Runtime image (`node:22-alpine`)
+### Stage 2 — Runtime image (`node:22-bookworm-slim`)
 
-1. Installs system packages: `docker-cli`, `chromium`, `ffmpeg`, and font libraries (nss, freetype, harfbuzz, ttf-freefont).
-2. Sets `PUPPETEER_EXECUTABLE_PATH` to the headless-shell path so Remotion/Puppeteer loads the lightweight headless runtime instead of the system Chrome.
-3. Copies `template/package.json` and runs `npm install` to pre-install all Remotion dependencies into the image at `/opt/remotion-template/node_modules`.
+1. Installs system packages via `apt-get` (this is a Debian base, not Alpine): `ffmpeg`, the
+   Chrome/Chromium *dependency* libraries Remotion's headless renderer needs at runtime
+   (`libnss3`, `libatk-bridge2.0-0`, `libgbm1`, `libgtk-3-0`, etc. — there is no `chromium`
+   browser package installed directly), and font packages (`fonts-liberation`,
+   `fonts-noto-color-emoji`). Note there is no separate `PUPPETEER_EXECUTABLE_PATH` set in the
+   image — see the troubleshooting note below for how the actual headless binary is resolved.
+2. Installs Docker's official `docker-ce-cli` package from `download.docker.com`'s apt repo (the
+   `docker` CLI binary used to launch each per-execution sandbox container from inside this
+   service's own container).
+3. Copies `template/package.json` and runs `npm install` to pre-install all Remotion dependencies
+   into the image at `/opt/remotion-template/node_modules` — this is what actually provisions the
+   `chrome-headless-shell` binary Remotion renders with (see below), not a system package.
 4. Copies the rest of the template source files.
 
     > **Troubleshooting:** When workspaces run `npx remotion render` directly the CLI
     > defaults to a bundled `chrome-headless-shell` binary under
-    > `/workspace/node_modules/.remotion/...`. That file is **not** included in the Alpine
-    > image and will cause `ENOENT` errors like the one seen in workflow logs. The Go toolkit
-    > and template scripts automatically append `--chromium-executable=/workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/chrome-headless-shell` to
-    > render invocations to avoid this issue. If you execute remotion manually, add the flag
-    > yourself or set `REMOTION_CHROMIUM_EXECUTABLE`.
+    > `/workspace/node_modules/.remotion/...`, normally provisioned by Remotion itself during
+    > `npm install` (step 3 above/the per-workspace install). If that binary is missing —
+    > e.g. `npm install` was interrupted or skipped — `sandboxManager` falls back to
+    > symlinking `/usr/bin/chromium` into that path so stray spawn attempts still succeed. The
+    > Go toolkit and template scripts additionally append
+    > `--chromium-executable=/workspace/node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/chrome-headless-shell`
+    > to render invocations to avoid `ENOENT` errors. If you execute remotion manually, add the
+    > flag yourself or set `REMOTION_CHROMIUM_EXECUTABLE`.
 5. Copies the Go binary from Stage 1.
 6. Exposes port `8080` and sets the entrypoint to the Go binary.
 

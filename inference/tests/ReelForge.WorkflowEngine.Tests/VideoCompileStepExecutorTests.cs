@@ -337,6 +337,102 @@ public class VideoCompileStepExecutorTests
         parse.Should().NotThrow();
     }
 
+    /// <summary>
+    /// Regression test for a live-testing-only-discoverable bug: the source video must resolve
+    /// via the referenced VideoAnalyze step's own <c>Source</c> (here <c>VideoSourceKind.ProjectFile</c>
+    /// — an uploaded video with NO prior step output at all), never via a
+    /// "find any prior StepOutputHistory.OutputStorageKey" heuristic. That heuristic can never
+    /// succeed for ProjectFile sources since they are never represented as a step output — before
+    /// the fix, every VideoCompile step in a standalone (no preceding render step) workflow
+    /// against an uploaded video failed with SOURCE_UNRESOLVED.
+    /// </summary>
+    [Fact]
+    public async Task Successful_compile_resolves_ProjectFile_source_with_no_prior_step_output_at_all()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0), ("s1", 10.0, 20.0) },
+            offeredIds: new[] { "s0", "s1" });
+        string decisionJson = BuildDecisionJson(("s0", "s1", "keep the whole thing"));
+
+        Guid projectFileId = Guid.NewGuid();
+        const string projectFileStorageKey = "projects/p/userFiles/uploaded.mp4";
+
+        var workspace = new Mock<IProjectFileWorkspace>();
+        workspace
+            .Setup(w => w.DownloadStorageKeyToFileAsync(
+                It.IsAny<Guid>(), AnalysisKey, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<Guid, string, string, CancellationToken>((_, _, destPath, _) =>
+            {
+                File.WriteAllText(destPath, JsonSerializer.Serialize(artifact, ArtifactOptions()));
+                return Task.CompletedTask;
+            });
+        workspace
+            .Setup(w => w.DownloadStorageKeyToFileAsync(
+                It.IsAny<Guid>(), projectFileStorageKey, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<Guid, string, string, CancellationToken>((_, _, destPath, _) =>
+            {
+                File.WriteAllBytes(destPath, new byte[] { 0x00, 0x01, 0x02 });
+                return Task.CompletedTask;
+            });
+        workspace
+            .Setup(w => w.ListFilesAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ProjectWorkspaceFile>
+            {
+                new(projectFileId, ProjectId, "uploaded.mp4", null, "userFiles",
+                    projectFileStorageKey, "video/mp4", 12345, DateTime.UtcNow, null)
+            });
+
+        VideoCompileStepConfig config = new(
+            Version: 1,
+            Decision: new ExtractInputRef(ExtractInputSource.Previous),
+            AnalysisStepOrder: 1);
+
+        var step = new WorkflowStep
+        {
+            Id = Guid.NewGuid(),
+            StepOrder = 3,
+            StepType = StepType.VideoCompile,
+            VideoCompileConfigJson = JsonSerializer.Serialize(config, ConfigOptions())
+        };
+
+        VideoAnalyzeStepConfig analyzeConfig = new(
+            Version: 1,
+            Source: new VideoSourceRef(VideoSourceKind.ProjectFile, ProjectFileId: projectFileId));
+        var analyzeStep = new WorkflowStep
+        {
+            Id = Guid.NewGuid(),
+            StepOrder = 1,
+            StepType = StepType.VideoAnalyze,
+            VideoAnalyzeConfigJson = JsonSerializer.Serialize(analyzeConfig, ConfigOptions())
+        };
+
+        // Deliberately NO entry at all produces an OutputStorageKey — the old heuristic
+        // ("search StepOutputHistory for any prior OutputStorageKey") would find nothing here.
+        List<StepOutputHistoryEntry> history =
+        [
+            new StepOutputHistoryEntry(1, "Analyze", "{}", OutputStorageKey: null, ArtifactStorageKey: AnalysisKey),
+            new StepOutputHistoryEntry(2, "StoryEditor", decisionJson, OutputStorageKey: null, ArtifactStorageKey: null)
+        ];
+
+        StepExecutionContext context = new()
+        {
+            Execution = new WorkflowExecution { Id = Guid.NewGuid(), ProjectId = ProjectId },
+            Step = step,
+            AllSteps = [analyzeStep, step],
+            AccumulatedOutput = decisionJson,
+            StepOutputHistory = history,
+            CurrentStepIndex = 2,
+            IterationCount = 0,
+            CorrelationId = "test",
+            CancellationToken = CancellationToken.None
+        };
+
+        StepExecutionResult result = await CreateExecutor(workspace).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed);
+        result.OutputStorageKey.Should().NotBeNullOrWhiteSpace();
+    }
+
     [Fact]
     public async Task Missing_config_json_fails_with_valid_json_never_throws()
     {
@@ -485,6 +581,22 @@ public class VideoCompileStepExecutorTests
             VideoCompileConfigJson = configJson
         };
 
+        // VideoCompileStepExecutor resolves the source video by reading the referenced
+        // VideoAnalyze step's OWN VideoAnalyzeConfigJson.Source (never a StepOutputHistory
+        // heuristic — see ResolveSourceStorageKeyAsync) — so a real analyze step, matching
+        // AnalysisStepOrder, must be present in AllSteps. Source=PreviousStepOutput here mirrors
+        // the shipped video-derush-edit template chaining off a render step at StepOrder 0.
+        VideoAnalyzeStepConfig analyzeConfig = new(
+            Version: 1,
+            Source: new VideoSourceRef(VideoSourceKind.PreviousStepOutput));
+        var analyzeStep = new WorkflowStep
+        {
+            Id = Guid.NewGuid(),
+            StepOrder = 1,
+            StepType = StepType.VideoAnalyze,
+            VideoAnalyzeConfigJson = JsonSerializer.Serialize(analyzeConfig, ConfigOptions())
+        };
+
         List<StepOutputHistoryEntry> history =
         [
             new StepOutputHistoryEntry(0, "Render", "{}", OutputStorageKey: SourceVideoKey, ArtifactStorageKey: null),
@@ -496,7 +608,7 @@ public class VideoCompileStepExecutorTests
         {
             Execution = new WorkflowExecution { Id = Guid.NewGuid(), ProjectId = ProjectId },
             Step = step,
-            AllSteps = [step],
+            AllSteps = [analyzeStep, step],
             AccumulatedOutput = decisionJson,
             StepOutputHistory = history,
             CurrentStepIndex = 2,

@@ -433,9 +433,16 @@ public class ProjectFilesController : ControllerBase
             file.StorageFileName = storageFileName;
             file.StorageKey = nextStorageKey;
             file.StoragePrefix = ProjectFilePath.BuildStoragePrefix(projectId, file.Category);
-            file.IndexingStatus = FileIndexingStatus.Pending;
-            file.IndexedAt = null;
-            file.IndexingError = null;
+            // R22: a moved video/audio file must not be re-queued for vector indexing —
+            // ProjectFileIndexingConsumer reads the object as UTF8 text before chunking it,
+            // which is exactly the "binary handed to the text pipeline" failure mode R22 exists
+            // to prevent, just reached via Move instead of Upload.
+            if (!IsVideoOrAudioMimeType(file.MimeType))
+            {
+                file.IndexingStatus = FileIndexingStatus.Pending;
+                file.IndexedAt = null;
+                file.IndexingError = null;
+            }
             file.UploadedAt = DateTime.UtcNow;
         }
 
@@ -443,6 +450,9 @@ public class ProjectFilesController : ControllerBase
 
         foreach (ProjectFile file in files)
         {
+            if (IsVideoOrAudioMimeType(file.MimeType))
+                continue;
+
             await _publishEndpoint.Publish(new ProjectFileIndexingRequested
             {
                 ProjectId = projectId,
@@ -606,7 +616,11 @@ public class ProjectFilesController : ControllerBase
 
         IQueryable<ProjectFile> eligibleQuery = _db.ProjectFiles
             .Where(f => f.ProjectId == projectId)
-            .Where(f => f.IndexingStatus != FileIndexingStatus.Pending && f.IndexingStatus != FileIndexingStatus.Processing);
+            .Where(f => f.IndexingStatus != FileIndexingStatus.Pending && f.IndexingStatus != FileIndexingStatus.Processing)
+            // R22: video/audio uploads sit at IndexingStatus.NotIndexed by design (see Upload) —
+            // without this filter a bulk reindex would sweep them right back into the text
+            // chunker/embedder, the exact failure mode R22 exists to prevent.
+            .Where(f => !(f.MimeType.StartsWith("video/") || f.MimeType.StartsWith("audio/")));
 
         if (!includeIndexed)
             eligibleQuery = eligibleQuery.Where(f => f.IndexingStatus != FileIndexingStatus.Indexed);
