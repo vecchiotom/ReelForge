@@ -76,6 +76,35 @@ public static class FfmpegArgvBuilder
     }
 
     /// <summary>
+    /// Decimates/downscales to a raw RGB24 pixel grid for <see cref="IFrameGridSampler"/>:
+    /// <c>-vf fps={sampleFps},scale={gridWidth}:{gridHeight}:flags=area,format=rgb24</c>, written
+    /// as headerless <c>-f rawvideo -pix_fmt rgb24</c>. <c>flags=area</c> is load-bearing — a true
+    /// box-average downscale, so each output pixel is the exact mean of its source block. No audio
+    /// or subtitle streams are decoded (<c>-an -sn</c>).
+    /// </summary>
+    public static string[] BuildGridSampleArgs(
+        string inputPath, string outputRawPath, double sampleFps, int gridWidth, int gridHeight)
+    {
+        List<string> args = new(BaseFlags) { "-loglevel", "error" };
+        args.AddRange(ProtocolWhitelist);
+        args.Add("-i");
+        args.Add(inputPath);
+        args.Add("-an");
+        args.Add("-sn");
+        args.Add("-vf");
+        args.Add(
+            $"fps={FfmpegArgvFormat.Number(sampleFps)}," +
+            $"scale={FfmpegArgvFormat.Number(gridWidth)}:{FfmpegArgvFormat.Number(gridHeight)}:flags=area," +
+            "format=rgb24");
+        args.Add("-f");
+        args.Add("rawvideo");
+        args.Add("-pix_fmt");
+        args.Add("rgb24");
+        args.Add(outputRawPath);
+        return args.ToArray();
+    }
+
+    /// <summary>
     /// Extracts 16 kHz mono signed-16-bit PCM WAV — the fixed format both silence detection and
     /// WS3's ASR expect. An optional <c>[startSec, startSec+durationSec)</c> range restricts the
     /// extraction to a chunk (used for ASR chunk splitting); <c>-ss</c> is placed before

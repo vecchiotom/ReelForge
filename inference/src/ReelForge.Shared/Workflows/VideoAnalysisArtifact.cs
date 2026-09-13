@@ -13,6 +13,15 @@ namespace ReelForge.Shared.Workflows;
 /// which ids made it into the prompt view that was actually shown to the model — the compile
 /// step must reject any id that is merely present in this artifact but was never offered
 /// (see plan §4.3, "not merely in the artifact — in the set actually shown to the model").
+///
+/// <para>
+/// Phase 1 ("scene/visual analysis") bumps <see cref="Version"/> to 2 and appends
+/// <see cref="DuplicateGroups"/> and <see cref="Pacing"/> at the end of this record, and
+/// <see cref="VideoAnalysisShot"/> gains optional <c>Visual</c>/<c>Audio</c> descriptors. Every
+/// Phase 1 addition is optional/nullable/default-valued and strictly appended — an artifact
+/// persisted with <c>Version: 1</c> (no visual/audio descriptors at all) still deserializes into
+/// this same record with those new fields simply absent/null.
+/// </para>
 /// </remarks>
 public sealed record VideoAnalysisArtifact(
     int Version,
@@ -22,7 +31,9 @@ public sealed record VideoAnalysisArtifact(
     IReadOnlyList<VideoAnalysisSegment> Segments,
     IReadOnlyList<VideoAnalysisWord> Words,
     IReadOnlyList<string> OfferedIds,
-    VideoAnalysisProvenance Provenance);
+    VideoAnalysisProvenance Provenance,
+    IReadOnlyList<VideoAnalysisDuplicateGroup>? DuplicateGroups = null,
+    VideoAnalysisPacing? Pacing = null);
 
 /// <summary>
 /// Probed media characteristics. Fps is carried as an exact rational (ffprobe's
@@ -36,11 +47,19 @@ public sealed record VideoAnalysisMedia(
     int Width,
     int Height);
 
-/// <summary>A detected shot/scene. Id: <c>s{n}</c>, assigned by index in scene-detection order.</summary>
+/// <summary>
+/// A detected shot/scene. Id: <c>s{n}</c>, assigned by index in scene-detection order.
+/// <see cref="Visual"/>/<see cref="Audio"/> are Phase 1 additions — deterministic, ffmpeg+pure-C#
+/// derived descriptors, populated only when <c>VideoAnalyzeStepConfig.AnalyzeVisuals</c>/
+/// <c>AnalyzeAudioLevels</c> are on AND analysis did not degrade (see
+/// <see cref="VideoAnalysisProvenance.VisualAnalysisDegraded"/>).
+/// </summary>
 public sealed record VideoAnalysisShot(
     string Id,
     double StartSec,
-    double EndSec);
+    double EndSec,
+    VideoAnalysisShotVisual? Visual = null,
+    VideoAnalysisShotAudio? Audio = null);
 
 /// <summary>
 /// A detected silence gap. Id: <c>g{n}</c>. <see cref="AfterShot"/> links each gap to the shot
@@ -76,8 +95,9 @@ public sealed record VideoAnalysisWord(
 
 /// <summary>
 /// Records how this artifact was produced, for audit and as the basis for the
-/// <c>meta.transcription</c> block surfaced in the bounded prompt view (including the
-/// "degraded" signal when <see cref="VideoTranscriptionMode.Optional"/> fell back to no ASR).
+/// <c>meta.transcription</c>/<c>meta.visual</c>/<c>meta.audioLevels</c> blocks surfaced in the
+/// bounded prompt view (including the "degraded" signal when a best-effort analysis stage fell
+/// back to producing no data rather than failing the whole step).
 /// </summary>
 public sealed record VideoAnalysisProvenance(
     VideoTranscriptionMode TranscriptionMode,
@@ -85,4 +105,107 @@ public sealed record VideoAnalysisProvenance(
     bool TranscriptionDegraded,
     string? TranscriptionProvider = null,
     string? TranscriptionLanguage = null,
-    DateTime? AnalyzedAt = null);
+    DateTime? AnalyzedAt = null,
+    bool VisualAnalysisApplied = false,
+    bool VisualAnalysisDegraded = false,
+    bool AudioLevelsApplied = false,
+    bool SharpnessAvailable = false);
+
+// =============================================================================================
+// Phase 1: visual/audio scene descriptors (grid-sampling based, deterministic, no LLM call).
+// See docs/video-editing.md "Scene/visual analysis (Phase 1)" for the full design.
+// =============================================================================================
+
+/// <summary>
+/// A calm/motionless window within a shot: a run of consecutive sampled grid frames whose
+/// per-frame motion stayed below <c>VideoAnalyzeStepConfig.StillMotionThreshold</c> for at least
+/// <c>MinStillWindowMs</c>. Useful to a downstream cutter/story-editor for "land the cut here,
+/// not mid-motion".
+/// </summary>
+public sealed record VideoAnalysisStillWindow(double StartSec, double EndSec, double MeanMotion);
+
+/// <summary>One of a shot's top-3 dominant colors, from a 64-bin (4 levels/channel) RGB histogram.</summary>
+public sealed record VideoAnalysisColor(string Hex, double Share);
+
+/// <summary>A normalized (0..1 of frame width/height) rectangle — resolution-independent.</summary>
+public sealed record VideoAnalysisRect(double X, double Y, double W, double H);
+
+/// <summary>
+/// One spatial region of a shot (either a 3x3 grid cell, named <c>R0</c>..<c>R8</c> row-major, or
+/// one of the three named overlay-candidate bands <c>LowerThird</c>/<c>UpperThird</c>/
+/// <c>CenterBand</c>) with descriptors relevant to placing a text/graphic overlay there in a
+/// later phase. See <c>FrameGridAnalyzer</c> for the exact <see cref="Suitability"/> formula.
+/// </summary>
+public sealed record VideoAnalysisRegion(
+    string Name,
+    VideoAnalysisRect Rect,
+    double LumaMean,
+    double LumaStdDev,
+    double TemporalMotion,
+    double Suitability,
+    string TextColor);
+
+/// <summary>
+/// Deterministic, ffmpeg+pure-C#-derived visual descriptors for one shot, computed by
+/// <c>FrameGridAnalyzer</c> from a single low-res raw-frame grid pass over the source video (see
+/// docs/video-editing.md). <see cref="CameraMove"/>/<see cref="CameraMoveConfidence"/> is a
+/// documented heuristic (1-D SAD pixel-shift search), not ground truth — always read alongside
+/// its confidence.
+/// </summary>
+public sealed record VideoAnalysisShotVisual(
+    double MotionMean,
+    double MotionPeak,
+    double MotionStdDev,
+    string MotionClass,
+    string CameraMove,
+    double CameraMoveConfidence,
+    double HeadMotion,
+    double TailMotion,
+    IReadOnlyList<VideoAnalysisStillWindow> StillWindows,
+    double BrightnessMean,
+    double BrightnessStdDev,
+    double ContrastRms,
+    double ClippedHighlightRatio,
+    double CrushedBlackRatio,
+    double SaturationMean,
+    IReadOnlyList<VideoAnalysisColor> DominantColors,
+    IReadOnlyList<VideoAnalysisRegion> Regions,
+    string? BestOverlayRegion,
+    VideoAnalysisRect? ActiveCrop,
+    double? Sharpness,
+    bool KenBurnsCandidate,
+    string? KenBurnsReason,
+    string? DuplicateGroupId,
+    int? GroupRank,
+    bool IsBestTake);
+
+/// <summary>
+/// Deterministic audio-level descriptors for one shot, derived from <c>WavRmsSampler</c> windows
+/// over the (already-extracted-for-transcription, or freshly-extracted) full-track WAV, plus the
+/// already-detected silence spans for <see cref="SpeechRatio"/> — no new audio analysis pass.
+/// </summary>
+public sealed record VideoAnalysisShotAudio(
+    double RmsDbfs,
+    double PeakDbfs,
+    double SpeechRatio,
+    string LoudnessClass);
+
+/// <summary>
+/// A group of near-duplicate/multi-take shots (single-linkage clustered over a sliding time
+/// window — see <c>FrameGridAnalyzer.GroupDuplicates</c>), so a downstream editor can prefer the
+/// best take instead of keeping every attempt. <see cref="ShotIds"/> is in original chronological
+/// (shot-index) order; <see cref="BestShotId"/> is the member with <c>GroupRank == 0</c>.
+/// </summary>
+public sealed record VideoAnalysisDuplicateGroup(
+    string Id,
+    IReadOnlyList<string> ShotIds,
+    string BestShotId,
+    double MeanSimilarity);
+
+/// <summary>Whole-video pacing summary, computed once at the artifact level from the shot list.</summary>
+public sealed record VideoAnalysisPacing(
+    double MeanShotSeconds,
+    double MedianShotSeconds,
+    double CutsPerMinute,
+    IReadOnlyList<double> MotionTimeline,
+    double TimelineBinSeconds);

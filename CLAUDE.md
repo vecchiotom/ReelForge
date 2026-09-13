@@ -302,7 +302,14 @@ compilation. Full design in [`docs/video-editing.md`](docs/video-editing.md); su
   first-class kind), detects silence/shots via ffmpeg, optionally transcribes via
   `ITranscriptionClient` (`VideoTranscriptionMode`: `Off`/`Optional`/`Required`), and emits a
   `{view, meta}` envelope (same shape as `Extract`) plus a full analysis artifact
-  (`WorkflowStepResult.ArtifactStorageKey`).
+  (`WorkflowStepResult.ArtifactStorageKey`). **Phase 1** (`AnalyzeVisuals`/`AnalyzeAudioLevels`,
+  both default `true`) adds deterministic per-shot visual/audio descriptors — motion, camera-move
+  classification, exposure/color, overlay-safe-zone regions, near-duplicate/best-take grouping,
+  audio loudness — derived from one low-res raw-frame grid ffmpeg pass (`IFrameGridSampler`) plus a
+  pure C# analyzer (`FrameGridAnalyzer`, `WavRmsSampler`); zero LLM calls, purely additive
+  (`VideoAnalysisArtifact.Version` 1→2, old artifacts still deserialize). `VisualDetail`
+  (`None`/`Compact`/`Full`) degrades per-shot richness *before* the bounded view ever drops an
+  offered item. See `docs/video-editing.md` § "Scene/visual analysis (Phase 1)".
 - **`StepType.Agent` + `AgentType.VideoStoryEditor`** — an LLM decides which offered ids to KEEP
   (`VideoEditDecisionOutput`); no existing step type is duplicated for this, `AgentStepExecutor`
   already provides structured output, retry-with-feedback, and tool scoping.

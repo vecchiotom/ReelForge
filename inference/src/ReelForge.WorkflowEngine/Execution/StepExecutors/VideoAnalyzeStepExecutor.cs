@@ -14,9 +14,10 @@ namespace ReelForge.WorkflowEngine.Execution.StepExecutors;
 
 /// <summary>
 /// Executes <see cref="StepType.VideoAnalyze"/> steps: deterministic, non-LLM derushing of a
-/// source video into shots/silence gaps/(optional) transcript, persisted as a full analysis
-/// artifact plus a bounded, id-anchored "{view, meta}" prompt envelope for the downstream
-/// VideoStoryEditor agent step. See plan §4.1/§3.
+/// source video into shots/silence gaps/(optional) transcript, plus (Phase 1) deterministic
+/// visual/audio scene descriptors, persisted as a full analysis artifact plus a bounded,
+/// id-anchored "{view, meta}" prompt envelope for the downstream VideoStoryEditor agent step.
+/// See plan §4.1/§3 and docs/video-editing.md "Scene/visual analysis (Phase 1)".
 ///
 /// Purity/safety discipline mirrors <see cref="ExtractStepExecutor"/> exactly: this executor
 /// never throws — every path, including an unexpected exception, returns a
@@ -24,7 +25,10 @@ namespace ReelForge.WorkflowEngine.Execution.StepExecutors;
 /// a jsonb column). The one piece of network I/O (ASR) gets its own small bounded retry
 /// internally; the whole step is never retried by the outer executor-retry mechanism
 /// (see WorkflowExecutorService.ResolveMaxRetries) since re-running it just reproduces the same
-/// deterministic failure at the cost of minutes of decode.
+/// deterministic failure at the cost of minutes of decode. Phase 1's visual/audio-level analysis
+/// stages follow the exact same "degrade, never fail the step" discipline as transcription: each
+/// gets its own try/catch that can never let an exception escape, and on failure the step
+/// continues with shots/silences/transcript exactly as if that stage were off.
 /// </summary>
 public class VideoAnalyzeStepExecutor : IStepExecutor
 {
@@ -44,11 +48,13 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
     private static readonly JsonSerializerOptions EnvelopeJsonOptions = new(JsonSerializerDefaults.Web);
 
     private const int AsrMaxAttempts = 3;
+    private const int AudioWindowMs = 250;
 
     private readonly IMediaProbe _mediaProbe;
     private readonly ISilenceDetector _silenceDetector;
     private readonly IShotDetector _shotDetector;
     private readonly IAudioExtractor _audioExtractor;
+    private readonly IFrameGridSampler _frameGridSampler;
     private readonly IProjectFileWorkspace _workspace;
     private readonly ITranscriptionClientFactory _transcriptionClientFactory;
     private readonly IInferenceProviderResolver _providerResolver;
@@ -60,6 +66,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         ISilenceDetector silenceDetector,
         IShotDetector shotDetector,
         IAudioExtractor audioExtractor,
+        IFrameGridSampler frameGridSampler,
         IProjectFileWorkspace workspace,
         ITranscriptionClientFactory transcriptionClientFactory,
         IInferenceProviderResolver providerResolver,
@@ -70,6 +77,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         _silenceDetector = silenceDetector;
         _shotDetector = shotDetector;
         _audioExtractor = audioExtractor;
+        _frameGridSampler = frameGridSampler;
         _workspace = workspace;
         _transcriptionClientFactory = transcriptionClientFactory;
         _providerResolver = providerResolver;
@@ -201,11 +209,135 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                 }
             }
 
-            // ---- Assign deterministic ids by index and build the full artifact ----
+            // ---- Assign deterministic ids by index and build the shot list ----
 
             List<VideoAnalysisShot> shots = shotSpans
                 .Select((s, i) => new VideoAnalysisShot($"s{i}", s.StartSec, s.EndSec))
                 .ToList();
+
+            // ---- Phase 1: audio-level sampling (reuses the WAV already extracted for
+            // transcription, or extracts it fresh) — never lets an exception escape the step. ----
+            bool audioLevelsApplied = false;
+            if (config.AnalyzeAudioLevels)
+            {
+                try
+                {
+                    string fullWavPath = scratch.GetPath("audio-full.wav");
+                    if (!File.Exists(fullWavPath))
+                    {
+                        await _audioExtractor.ExtractWavAsync(localVideoPath, fullWavPath, context.CancellationToken);
+                    }
+
+                    byte[] wavBytes = await File.ReadAllBytesAsync(fullWavPath, context.CancellationToken);
+                    IReadOnlyList<WavRmsSampler.RmsWindow> windows = WavRmsSampler.Sample(wavBytes, AudioWindowMs);
+
+                    for (int i = 0; i < shots.Count; i++)
+                    {
+                        VideoAnalysisShotAudio? audio = ComputeShotAudio(shots[i], windows, silenceSpans);
+                        if (audio is not null)
+                            shots[i] = shots[i] with { Audio = audio };
+                    }
+
+                    audioLevelsApplied = true;
+                }
+                catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "VideoAnalyze step {StepOrder}: audio-level sampling failed; degrading.", step.StepOrder);
+                    audioLevelsApplied = false;
+                }
+            }
+
+            // ---- Phase 1: visual scene analysis — one grid ffmpeg pass + pure C# analyzer.
+            // The ENTIRE block (grid sampling + FrameGridAnalyzer calls) is wrapped so an
+            // exception anywhere in here can never fail the step; shots/silences/transcript are
+            // used exactly as if this stage were off. ----
+            bool visualApplied = false;
+            bool visualDegraded = false;
+            List<VideoAnalysisDuplicateGroup> duplicateGroups = [];
+
+            if (config.AnalyzeVisuals)
+            {
+                try
+                {
+                    FrameGridResult grid = await _frameGridSampler.SampleAsync(
+                        localVideoPath, config.VisualSampleFps, config.VisualGridWidth, config.VisualGridHeight,
+                        probe.DurationSec, config.MaxVisualSampleFrames, context.CancellationToken);
+
+                    if (grid.FrameCount <= 0)
+                        throw new InvalidOperationException("Grid sampler produced zero sampled frames.");
+
+                    var analyzerOptions = new FrameGridAnalyzer.Options(
+                        config.StillMotionThreshold, config.MinStillWindowMs, config.MaxStillWindowsPerShot);
+
+                    var signatures = new List<FrameGridAnalyzer.ShotSignature>();
+                    var signatureShotIds = new List<string>();
+                    var takeQualities = new List<double>();
+
+                    for (int i = 0; i < shots.Count; i++)
+                    {
+                        VideoAnalysisShot shot = shots[i];
+                        List<byte[]> frames = FrameGridAnalyzer.SliceShotFrames(
+                            grid.PixelData, grid.FrameCount, grid.GridWidth, grid.GridHeight, grid.EffectiveFps,
+                            shot.StartSec, shot.EndSec);
+
+                        VideoAnalysisShotVisual visual = FrameGridAnalyzer.AnalyzeShot(
+                            frames, grid.GridWidth, grid.GridHeight, grid.EffectiveFps, analyzerOptions);
+
+                        shots[i] = shot with { Visual = visual };
+
+                        if (config.DetectNearDuplicates)
+                        {
+                            signatures.Add(FrameGridAnalyzer.ComputeSignature(frames, grid.GridWidth, grid.GridHeight));
+                            signatureShotIds.Add(shot.Id);
+                            takeQualities.Add(FrameGridAnalyzer.ComputeTakeQuality(
+                                visual.MotionStdDev, shots[i].Audio?.RmsDbfs, visual.BrightnessMean, shot.EndSec - shot.StartSec));
+                        }
+                    }
+
+                    if (config.DetectNearDuplicates && signatures.Count > 0)
+                    {
+                        IReadOnlyList<VideoAnalysisDuplicateGroup> groups = FrameGridAnalyzer.GroupDuplicates(
+                            signatureShotIds, signatures, takeQualities, config.DuplicateSimilarityThreshold,
+                            config.DuplicateWindowShots,
+                            out IReadOnlyDictionary<string, (string GroupId, int GroupRank, bool IsBestTake)> assignments);
+
+                        for (int i = 0; i < shots.Count; i++)
+                        {
+                            if (shots[i].Visual is null || !assignments.TryGetValue(shots[i].Id, out (string GroupId, int GroupRank, bool IsBestTake) a))
+                                continue;
+
+                            shots[i] = shots[i] with
+                            {
+                                Visual = shots[i].Visual! with
+                                {
+                                    DuplicateGroupId = a.GroupId,
+                                    GroupRank = a.GroupRank,
+                                    IsBestTake = a.IsBestTake
+                                }
+                            };
+                        }
+
+                        duplicateGroups = groups.ToList();
+                    }
+
+                    visualApplied = true;
+                }
+                catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "VideoAnalyze step {StepOrder}: visual analysis failed; degrading.", step.StepOrder);
+                    visualDegraded = true;
+                }
+            }
+
+            VideoAnalysisPacing pacing = FrameGridAnalyzer.ComputePacing(shots, probe.DurationSec);
 
             List<VideoAnalysisSilenceSpan> silences = silenceSpans
                 .Select((s, i) => new VideoAnalysisSilenceSpan($"g{i}", s.StartSec, s.EndSec, FindAfterShot(shots, s.StartSec)))
@@ -220,10 +352,10 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                 .ToList();
 
             // A preliminary artifact to hand to BuildBoundedView below (it reads Shots/SilenceSpans/
-            // Media/counts only, never OfferedIds, so a placeholder here is safe — see the
-            // corrected artifact constructed after the view is built).
+            // Media/counts/Pacing/DuplicateGroups only, never OfferedIds, so a placeholder here is
+            // safe — see the corrected artifact constructed after the view is built).
             VideoAnalysisArtifact draftArtifact = new(
-                Version: 1,
+                Version: 2,
                 Media: new VideoAnalysisMedia(probe.DurationSec, probe.FpsNum, probe.FpsDen, probe.Width, probe.Height),
                 Shots: shots,
                 SilenceSpans: silences,
@@ -236,7 +368,13 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                     TranscriptionDegraded: transcriptionDegraded,
                     TranscriptionProvider: transcriptionProviderName,
                     TranscriptionLanguage: config.Language,
-                    AnalyzedAt: DateTime.UtcNow));
+                    AnalyzedAt: DateTime.UtcNow,
+                    VisualAnalysisApplied: visualApplied,
+                    VisualAnalysisDegraded: visualDegraded,
+                    AudioLevelsApplied: audioLevelsApplied,
+                    SharpnessAvailable: false),
+                DuplicateGroups: duplicateGroups.Count > 0 ? duplicateGroups : null,
+                Pacing: pacing);
 
             // ---- Build the bounded, id-anchored prompt view FIRST, so we know exactly which ids
             // were actually shown before persisting the artifact's OfferedIds. ----
@@ -252,7 +390,8 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             // copy is patched in below once it is.
             (JsonObject view, JsonObject meta, List<string> viewOfferedIds) = BuildBoundedView(
                 draftArtifact, viewSegments, config, artifactStorageKey: string.Empty,
-                transcriptionApplied, transcriptionDegraded, transcriptionProviderName);
+                transcriptionApplied, transcriptionDegraded, transcriptionProviderName,
+                visualApplied, visualDegraded, audioLevelsApplied);
 
             // The persisted artifact's OfferedIds must be exactly the ids that survived view
             // truncation — VideoCompileStepExecutor validates the model's Keep spans against this
@@ -485,8 +624,73 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         shots.LastOrDefault(s => s.StartSec <= timeSec)?.Id;
 
     // ---------------------------------------------------------------------
-    // Bounded view construction (Extract's exact truncation discipline)
+    // Phase 1: per-shot audio levels (energy-weighted mean over overlapping WavRmsSampler windows)
     // ---------------------------------------------------------------------
+
+    private static VideoAnalysisShotAudio? ComputeShotAudio(
+        VideoAnalysisShot shot,
+        IReadOnlyList<WavRmsSampler.RmsWindow> windows,
+        IReadOnlyList<(double StartSec, double EndSec)> silenceSpans)
+    {
+        double duration = shot.EndSec - shot.StartSec;
+        if (duration <= 0)
+            return null;
+
+        double energySum = 0, weightSum = 0, peakDbfs = -96.0;
+        foreach (WavRmsSampler.RmsWindow w in windows)
+        {
+            double overlap = Overlap(w.StartSec, w.EndSec, shot.StartSec, shot.EndSec);
+            if (overlap <= 0)
+                continue;
+
+            double linearEnergy = Math.Pow(10, w.RmsDbfs / 10.0);
+            energySum += linearEnergy * overlap;
+            weightSum += overlap;
+            if (w.PeakDbfs > peakDbfs)
+                peakDbfs = w.PeakDbfs;
+        }
+
+        if (weightSum <= 0)
+            return null;
+
+        double avgEnergy = energySum / weightSum;
+        double rmsDbfs = avgEnergy > 0 ? 10 * Math.Log10(avgEnergy) : -96.0;
+
+        double silenceSec = silenceSpans.Sum(s => Overlap(s.StartSec, s.EndSec, shot.StartSec, shot.EndSec));
+        double speechRatio = Math.Clamp(1 - silenceSec / duration, 0, 1);
+
+        string loudnessClass = rmsDbfs switch
+        {
+            > -15 => "Loud",
+            > -30 => "Normal",
+            _ => "Quiet"
+        };
+
+        return new VideoAnalysisShotAudio(rmsDbfs, peakDbfs, speechRatio, loudnessClass);
+    }
+
+    private static double Overlap(double aStart, double aEnd, double bStart, double bEnd) =>
+        Math.Max(0, Math.Min(aEnd, bEnd) - Math.Max(aStart, bStart));
+
+    // ---------------------------------------------------------------------
+    // Bounded view construction (Extract's exact truncation discipline, plus Phase 1's
+    // detail-degrades-before-items-drop discipline)
+    // ---------------------------------------------------------------------
+
+    private sealed record OfferedItem(
+        string Kind, string Id, VideoAnalysisShot? Shot, VideoAnalysisSilenceSpan? Silence, VideoAnalysisSegment? Segment);
+
+    private static List<OfferedItem> BuildOfferedItems(VideoAnalysisArtifact artifact, List<VideoAnalysisSegment> viewSegments)
+    {
+        var list = new List<OfferedItem>();
+        foreach (VideoAnalysisShot s in artifact.Shots)
+            list.Add(new OfferedItem("shot", s.Id, s, null, null));
+        foreach (VideoAnalysisSilenceSpan s in artifact.SilenceSpans)
+            list.Add(new OfferedItem("silence", s.Id, null, s, null));
+        foreach (VideoAnalysisSegment s in viewSegments)
+            list.Add(new OfferedItem("segment", s.Id, null, null, s));
+        return list;
+    }
 
     private static (JsonObject View, JsonObject Meta, List<string> OfferedIds) BuildBoundedView(
         VideoAnalysisArtifact artifact,
@@ -495,18 +699,12 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         string artifactStorageKey,
         bool transcriptionApplied,
         bool transcriptionDegraded,
-        string? transcriptionProviderName)
+        string? transcriptionProviderName,
+        bool visualApplied,
+        bool visualDegraded,
+        bool audioLevelsApplied)
     {
-        // Combined offer order: shots, then silences, then segments — matches the order ids are
-        // assigned in the full artifact and the order the view example in the plan renders them.
-        var offered = new List<(string Kind, string Id, JsonObject Node)>();
-        foreach (VideoAnalysisShot s in artifact.Shots)
-            offered.Add(("shot", s.Id, ShotNode(s)));
-        foreach (VideoAnalysisSilenceSpan s in artifact.SilenceSpans)
-            offered.Add(("silence", s.Id, SilenceNode(s)));
-        foreach (VideoAnalysisSegment s in viewSegments)
-            offered.Add(("segment", s.Id, SegmentNode(s)));
-
+        List<OfferedItem> offered = BuildOfferedItems(artifact, viewSegments);
         int totalItemCount = offered.Count;
 
         int maxViewSegments = Math.Max(0, config.MaxViewSegments);
@@ -515,23 +713,41 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
 
         int maxOutputChars = Math.Clamp(config.MaxOutputChars, 256, 200_000);
 
-        JsonObject BuildView(IReadOnlyList<(string Kind, string Id, JsonObject Node)> items) => new()
+        // Detail degrades BEFORE items drop (the most important correctness property of Phase 1):
+        // try the configured level, then each lower level in turn, re-serializing the SAME item
+        // set at each level — only once at None does the item-dropping loop below ever run. This
+        // guarantees offeredIdCount can never be smaller than a plain AnalyzeVisuals=false run at
+        // the same MaxOutputChars would produce, since None's shot node is byte-identical to the
+        // pre-Phase-1 shape.
+        bool haveVisualOrAudioData = artifact.Shots.Any(s => s.Visual is not null || s.Audio is not null);
+        VideoVisualDetail startDetail = haveVisualOrAudioData ? config.VisualDetail : VideoVisualDetail.None;
+        List<VideoVisualDetail> levelsToTry = startDetail switch
         {
-            ["media"] = MediaNode(artifact.Media),
-            ["shots"] = ToArray(items.Where(i => i.Kind == "shot")),
-            ["silences"] = ToArray(items.Where(i => i.Kind == "silence")),
-            ["segments"] = ToArray(items.Where(i => i.Kind == "segment"))
+            VideoVisualDetail.Full => [VideoVisualDetail.Full, VideoVisualDetail.Compact, VideoVisualDetail.None],
+            VideoVisualDetail.Compact => [VideoVisualDetail.Compact, VideoVisualDetail.None],
+            _ => [VideoVisualDetail.None]
         };
 
-        JsonObject view = BuildView(offered);
-        string serialized = view.ToJsonString(EnvelopeJsonOptions);
+        JsonObject view = new();
+        string serialized = string.Empty;
+        VideoVisualDetail detailApplied = levelsToTry[^1];
+
+        foreach (VideoVisualDetail detail in levelsToTry)
+        {
+            view = BuildView(artifact, offered, detail, config);
+            serialized = view.ToJsonString(EnvelopeJsonOptions);
+            detailApplied = detail;
+            if (serialized.Length <= maxOutputChars)
+                break;
+        }
 
         // Never truncate mid-JSON: drop whole trailing items (from the end of the combined,
-        // priority-ordered list) and re-serialize until the view fits the char budget.
+        // priority-ordered list) and re-serialize until the view fits the char budget. Only
+        // reached once the lowest-tried detail level still doesn't fit.
         while (serialized.Length > maxOutputChars && offered.Count > 0)
         {
             offered.RemoveAt(offered.Count - 1);
-            view = BuildView(offered);
+            view = BuildView(artifact, offered, detailApplied, config);
             serialized = view.ToJsonString(EnvelopeJsonOptions);
         }
 
@@ -553,6 +769,17 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                 ["provider"] = transcriptionProviderName,
                 ["degraded"] = transcriptionDegraded
             },
+            ["visual"] = new JsonObject
+            {
+                ["applied"] = visualApplied,
+                ["degraded"] = visualDegraded,
+                ["sampleFps"] = config.VisualSampleFps,
+                ["gridWidth"] = config.VisualGridWidth,
+                ["gridHeight"] = config.VisualGridHeight,
+                ["detail"] = detailApplied.ToString()
+            },
+            ["visualDetailApplied"] = detailApplied.ToString(),
+            ["audioLevels"] = new JsonObject { ["applied"] = audioLevelsApplied },
             ["sourceChars"] = artifact.Shots.Count + artifact.SilenceSpans.Count + artifact.Segments.Count + artifact.Words.Count,
             ["outputChars"] = serialized.Length
         };
@@ -560,11 +787,40 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         return (view, meta, offeredIds);
     }
 
-    private static JsonArray ToArray(IEnumerable<(string Kind, string Id, JsonObject Node)> items)
+    private static JsonObject BuildView(
+        VideoAnalysisArtifact artifact, List<OfferedItem> items, VideoVisualDetail detail, VideoAnalyzeStepConfig config)
+    {
+        var view = new JsonObject
+        {
+            ["media"] = MediaNode(artifact.Media),
+            ["shots"] = ToArray(items.Where(i => i.Kind == "shot").Select(i => ShotNode(i.Shot!, detail, config.StillMotionThreshold))),
+            ["silences"] = ToArray(items.Where(i => i.Kind == "silence").Select(i => SilenceNode(i.Silence!))),
+            ["segments"] = ToArray(items.Where(i => i.Kind == "segment").Select(i => SegmentNode(i.Segment!)))
+        };
+
+        // Gated on detail != None (rather than unconditionally): at None-detail, this view must
+        // be byte-identical regardless of whether visual data exists internally but was merely
+        // suppressed by budget-driven degradation vs. never computed at all (AnalyzeVisuals=false)
+        // — otherwise a non-empty Pacing.MotionTimeline (which only exists when visual analysis
+        // ran) would silently reintroduce a byte-size difference the detail-degrades-before-drop
+        // guarantee is supposed to eliminate.
+        if (detail != VideoVisualDetail.None)
+        {
+            if (artifact.Pacing is not null)
+                view["pacing"] = PacingNode(artifact.Pacing);
+
+            if (artifact.DuplicateGroups is { Count: > 0 })
+                view["duplicateGroups"] = DuplicateGroupsNode(artifact.DuplicateGroups, config.MaxViewDuplicateGroups);
+        }
+
+        return view;
+    }
+
+    private static JsonArray ToArray(IEnumerable<JsonObject> items)
     {
         var array = new JsonArray();
-        foreach ((string _, string _, JsonObject node) in items)
-            array.Add(node.DeepClone());
+        foreach (JsonObject node in items)
+            array.Add(node);
         return array;
     }
 
@@ -577,13 +833,133 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         ["height"] = media.Height
     };
 
-    private static JsonObject ShotNode(VideoAnalysisShot s) => new()
+    /// <summary>
+    /// <c>detail == None</c> produces exactly today's (pre-Phase-1) shot shape — no <c>v</c>/<c>a</c>
+    /// key at all — so existing golden-output-shaped tests never need updating for the
+    /// "no visual data" case. The four base fields are deliberately left unrounded at every detail
+    /// level (only the new visual/audio numbers inside <c>v</c>/<c>a</c> get rounded), so this node
+    /// is byte-identical to the original across the board.
+    /// </summary>
+    private static JsonObject ShotNode(VideoAnalysisShot s, VideoVisualDetail detail, double stillMotionThreshold)
     {
-        ["id"] = s.Id,
-        ["startSec"] = s.StartSec,
-        ["endSec"] = s.EndSec,
-        ["durationSec"] = s.EndSec - s.StartSec
+        var node = new JsonObject
+        {
+            ["id"] = s.Id,
+            ["startSec"] = s.StartSec,
+            ["endSec"] = s.EndSec,
+            ["durationSec"] = s.EndSec - s.StartSec
+        };
+
+        if (detail == VideoVisualDetail.None)
+            return node;
+
+        if (s.Visual is not null)
+            node["v"] = VisualNode(s.Visual, detail, stillMotionThreshold);
+
+        if (s.Audio is not null)
+            node["a"] = AudioNode(s.Audio);
+
+        return node;
+    }
+
+    private static JsonObject VisualNode(VideoAnalysisShotVisual v, VideoVisualDetail detail, double stillMotionThreshold)
+    {
+        var node = new JsonObject
+        {
+            ["motion"] = Score(v.MotionMean),
+            ["move"] = v.CameraMove,
+            ["cutIn"] = v.HeadMotion < stillMotionThreshold ? "still" : "moving",
+            ["cutOut"] = v.TailMotion < stillMotionThreshold ? "still" : "moving"
+        };
+
+        List<VideoAnalysisStillWindow> stillWindowsToShow = detail == VideoVisualDetail.Full
+            ? v.StillWindows.ToList()
+            : v.StillWindows.OrderByDescending(w => w.EndSec - w.StartSec).Take(1).ToList();
+        if (stillWindowsToShow.Count > 0)
+        {
+            node["still"] = new JsonArray(stillWindowsToShow
+                .Select(w => (JsonNode)new JsonObject { ["startSec"] = Round2(w.StartSec), ["endSec"] = Round2(w.EndSec) })
+                .ToArray());
+        }
+
+        node["bright"] = Score(v.BrightnessMean);
+        node["contrast"] = Score(v.ContrastRms);
+
+        List<VideoAnalysisColor> colorsToShow = detail == VideoVisualDetail.Full
+            ? v.DominantColors.ToList()
+            : v.DominantColors.Take(2).ToList();
+        if (colorsToShow.Count > 0)
+            node["colors"] = new JsonArray(colorsToShow.Select(c => (JsonNode)c.Hex).ToArray());
+
+        if (v.BestOverlayRegion is not null)
+        {
+            VideoAnalysisRegion? region = v.Regions.FirstOrDefault(r => r.Name == v.BestOverlayRegion);
+            if (region is not null)
+            {
+                node["safe"] = new JsonObject
+                {
+                    ["region"] = region.Name,
+                    ["fit"] = Score(region.Suitability),
+                    ["text"] = region.TextColor
+                };
+            }
+        }
+
+        if (v.DuplicateGroupId is not null)
+        {
+            node["dup"] = v.DuplicateGroupId;
+            node["best"] = v.IsBestTake;
+        }
+
+        if (v.KenBurnsCandidate)
+            node["kenBurns"] = true;
+
+        if (detail == VideoVisualDetail.Full)
+        {
+            node["motionStdDev"] = Score(v.MotionStdDev);
+            node["motionPeak"] = Score(v.MotionPeak);
+            node["cameraConfidence"] = Score(v.CameraMoveConfidence);
+
+            if (v.Regions.Count > 0)
+            {
+                node["regions"] = new JsonArray(v.Regions.Select(r => (JsonNode)new JsonObject
+                {
+                    ["name"] = r.Name,
+                    ["luma"] = Score(r.LumaMean),
+                    ["clutter"] = Score(r.LumaStdDev),
+                    ["motion"] = Score(r.TemporalMotion),
+                    ["fit"] = Score(r.Suitability),
+                    ["text"] = r.TextColor
+                }).ToArray());
+            }
+        }
+
+        return node;
+    }
+
+    private static JsonObject AudioNode(VideoAnalysisShotAudio a) => new()
+    {
+        ["rms"] = (int)Math.Round(a.RmsDbfs),
+        ["speech"] = Score(a.SpeechRatio)
     };
+
+    private static JsonObject PacingNode(VideoAnalysisPacing p) => new()
+    {
+        ["meanShotSec"] = Round2(p.MeanShotSeconds),
+        ["medianShotSec"] = Round2(p.MedianShotSeconds),
+        ["cutsPerMinute"] = Round2(p.CutsPerMinute),
+        ["motionTimeline"] = new JsonArray(p.MotionTimeline.Select(m => (JsonNode)Score(m)).ToArray()),
+        ["timelineBinSec"] = Round2(p.TimelineBinSeconds)
+    };
+
+    private static JsonArray DuplicateGroupsNode(IReadOnlyList<VideoAnalysisDuplicateGroup> groups, int max) =>
+        new(groups.Take(Math.Max(0, max)).Select(g => (JsonNode)new JsonObject
+        {
+            ["id"] = g.Id,
+            ["shotIds"] = new JsonArray(g.ShotIds.Select(id => (JsonNode)id).ToArray()),
+            ["bestShotId"] = g.BestShotId,
+            ["similarity"] = Score(g.MeanSimilarity)
+        }).ToArray());
 
     private static JsonObject SilenceNode(VideoAnalysisSilenceSpan s) => new()
     {
@@ -602,6 +978,12 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         ["endSec"] = s.EndSec,
         ["text"] = s.Text
     };
+
+    /// <summary>Seconds rounded to 2dp — used only for the new Phase 1 visual/pacing numbers.</summary>
+    private static double Round2(double seconds) => Math.Round(seconds, 2);
+
+    /// <summary>A 0..1 score rounded to a 0..100 integer — used only for the new Phase 1 visual/pacing numbers.</summary>
+    private static int Score(double value01) => (int)Math.Round(Math.Clamp(value01, 0, 1) * 100);
 
     // ---------------------------------------------------------------------
     // Expectation / failure / descriptor helpers
@@ -631,6 +1013,16 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             }
         }
 
+        if (expect.MinShotsWithVisuals.HasValue)
+        {
+            int withVisuals = artifact.Shots.Count(s => s.Visual is not null);
+            if (withVisuals < expect.MinShotsWithVisuals.Value)
+            {
+                return $"expect.minShotsWithVisuals={expect.MinShotsWithVisuals.Value} but only " +
+                       $"{withVisuals} shots have visual descriptors.";
+            }
+        }
+
         return null;
     }
 
@@ -645,7 +1037,8 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             },
             ["detectSilence"] = config.DetectSilence,
             ["detectShots"] = config.DetectShots,
-            ["transcription"] = config.Transcription.ToString()
+            ["transcription"] = config.Transcription.ToString(),
+            ["analyzeVisuals"] = config.AnalyzeVisuals
         };
 
         if (offeredIdCount.HasValue)

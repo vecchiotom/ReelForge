@@ -14,6 +14,7 @@ executors, agents in general) see `CLAUDE.md`.
 - [The id-anchored decision contract](#the-id-anchored-decision-contract)
 - [Where artifacts live](#where-artifacts-live)
 - [Config reference](#config-reference)
+- [Scene/visual analysis (Phase 1)](#scenevisual-analysis-phase-1)
 - [Transcription (ASR)](#transcription-asr)
 - [Security: why ffmpeg is not in the sandbox](#security-why-ffmpeg-is-not-in-the-sandbox)
 - [Explicitly not built](#explicitly-not-built)
@@ -241,7 +242,22 @@ before chunking it — wasted compute at best, a very large in-memory string at 
 | `MaxOutputChars` | `24,000` | Prompt-view budget — trimming drops whole trailing items and re-serializes, never truncates mid-JSON (same rule as `ExtractStepConfig`) |
 | `MaxViewSegments` | `400` | |
 | `MaxSegmentTextChars` | `160` | |
-| `Expect` | `null` | Optional structural checks (`MinShots`, `MinTranscriptSegments`, `MaxSilenceRatio`) |
+| `AnalyzeVisuals` | `true` | Phase 1: one low-res grid ffmpeg pass + pure C# analyzer — see [Scene/visual analysis (Phase 1)](#scenevisual-analysis-phase-1) |
+| `VisualSampleFps` | `2.0` | Grid sample rate, clamped downward by `MaxVisualSampleFrames` for long videos |
+| `VisualGridWidth` / `VisualGridHeight` | `32` / `18` | Downscaled grid resolution the analyzer runs against |
+| `MaxVisualSampleFrames` | `4000` | Caps the grid buffer size: `effectiveFps = min(VisualSampleFps, MaxVisualSampleFrames / durationSec)` |
+| `StillMotionThreshold` | `0.02` | Per-frame motion (0..1) below which a moment counts as "still" |
+| `MinStillWindowMs` | `400` | Minimum duration for a still run to be reported as a `StillWindow` |
+| `MaxStillWindowsPerShot` | `3` | Longest still windows kept per shot |
+| `DetectLetterbox` | `false` | Opt-in, not implemented in Phase 1 — reserved for a future `cropdetect` pass |
+| `DetectSharpness` | `false` | Opt-in, not implemented in Phase 1 — reserved for a future sharpness/blur metric |
+| `AnalyzeAudioLevels` | `true` | Phase 1: `WavRmsSampler` over the WAV already extracted for transcription, or extracted fresh if transcription is off |
+| `DetectNearDuplicates` | `true` | Phase 1: near-duplicate/best-take grouping via `FrameGridAnalyzer.GroupDuplicates` |
+| `DuplicateSimilarityThreshold` | `0.90` | Minimum signature similarity (0..1) for two shots to be grouped |
+| `DuplicateWindowShots` | `20` | Single-linkage grouping only compares a shot against the previous N shots (multi-take shots are temporally adjacent) |
+| `VisualDetail` | `Compact` | `None` / `Compact` / `Full` — how much per-shot visual/audio detail the bounded view includes; degrades toward `None` before any item is ever dropped — see below |
+| `MaxViewDuplicateGroups` | `20` | Caps `view.duplicateGroups` |
+| `Expect` | `null` | Optional structural checks (`MinShots`, `MinTranscriptSegments`, `MaxSilenceRatio`, `MinShotsWithVisuals`) |
 
 ### `VideoCompileStepConfig`
 
@@ -273,6 +289,163 @@ An opt-in workflow template (`AutoCreateOnProject: false`, seeded in
 against the real config types in
 `WorkflowTemplateCatalogConfigDeserializationTests.cs`, so a future field-name drift between the
 template and the config records it targets fails CI rather than a live workflow run.
+
+---
+
+## Scene/visual analysis (Phase 1)
+
+Phase 1 adds deterministic (no LLM, no new external dependency) visual and audio descriptors per
+shot on top of the shipped `VideoAnalyze` step, which until now only knew about cut points
+(silence gaps, shot-change timestamps) and speech. It is purely additive: nothing existing changes
+behavior when the new config defaults are used, other than the artifact and bounded view gaining
+new optional fields (`VideoAnalysisArtifact.Version` moves to `2`, but a `Version: 1` artifact
+still deserializes unchanged — every new field is optional/nullable/default-valued and appended,
+never inserted or reordered).
+
+### The technique: one low-res raw-frame grid pass
+
+A single new ffmpeg invocation decimates and downscales the source video to a raw RGB pixel grid
+file (`FfmpegFrameGridSampler`, `FfmpegArgvBuilder.BuildGridSampleArgs`):
+
+```
+ffmpeg -nostdin -hide_banner -y -loglevel error -protocol_whitelist file
+       -i {input}
+       -an -sn
+       -vf fps={sampleFps},scale={gw}:{gh}:flags=area,format=rgb24
+       -f rawvideo -pix_fmt rgb24
+       {scratch}/grid.rgb
+```
+
+`flags=area` is load-bearing — it's a true box-average downscale, so each output pixel is the
+exact mean of its source block, which is what makes per-region statistics meaningful. Default grid
+is `32x18` at `2.0` fps; `MaxVisualSampleFrames` (default `4000`) clamps the effective fps downward
+for very long videos: `effectiveFps = min(VisualSampleFps, MaxVisualSampleFrames / durationSec)`.
+Sample time of raw frame `i` is exactly `i / effectiveFps` (the `fps` filter emits CFR from t=0),
+so no timestamp parsing is needed anywhere downstream — just byte-offset math
+(`frameSizeBytes = gridWidth * gridHeight * 3`).
+
+`FrameGridAnalyzer` (`WorkflowEngine/Services/Video/FrameGridAnalyzer.cs`) is a pure,
+unit-testable static class that derives everything below from this one grid buffer — no ffmpeg
+stderr scraping for any of it:
+
+- **Motion** — mean absolute luma delta between consecutive sampled frames within a shot,
+  normalized 0..1: `MotionMean`/`MotionPeak`/`MotionStdDev`, bucketed into a `MotionClass`
+  (`Static`/`Subtle`/`Moderate`/`Dynamic`).
+- **Camera move** — a 1-D SAD (sum-of-absolute-differences) integer pixel-shift search
+  (`dx`/`dy` in `[-4, 4]`) between consecutive frames' column-sum and row-sum luma profiles. A
+  consistent same-sign shift ⇒ `Pan`/`Tilt`; a high-variance alternating-sign shift ⇒ `Handheld`;
+  more motion near the frame center than the border ⇒ `Zoom`; near-zero shift and near-zero motion
+  ⇒ `Static`; otherwise `Unknown`. Reported as `CameraMove` + `CameraMoveConfidence` (0..1) — this
+  is a **documented heuristic, not ground truth**, and is always paired with its confidence.
+- **Still windows / head-tail motion** — runs where per-frame motion stays below
+  `StillMotionThreshold` for at least `MinStillWindowMs` (capped to `MaxStillWindowsPerShot`,
+  longest kept), plus `HeadMotion`/`TailMotion` (mean motion over the shot's first/last 250ms) —
+  "will a cut here land mid-motion?"
+- **Exposure/color** — Rec.709 luma per pixel, shot-averaged into `BrightnessMean`/
+  `BrightnessStdDev` (temporal flicker), `ContrastRms` (intra-frame luma std-dev, shot-averaged),
+  `ClippedHighlightRatio`/`CrushedBlackRatio`, `SaturationMean` (HSV). `DominantColors`: the top 3
+  bins of a 64-bin (4 levels/channel) RGB histogram, each as a hex color + population share.
+- **Regions / safe zones** — the grid's 3x3 spatial cells (`R0`..`R8`) plus three named
+  overlay-candidate bands (`LowerThird`, `UpperThird`, `CenterBand`). Per region: `LumaMean`,
+  `LumaStdDev` (clutter proxy), `TemporalMotion`, `TextColor` (`Light`/`Dark`, from `LumaMean`),
+  and `Suitability` (0..1) — `0.5*clutterScore + 0.3*motionScore + 0.2*extremeScore`, favoring an
+  uncluttered (low luma std-dev), low-motion region whose brightness isn't at a 0/1 extreme.
+  `BestOverlayRegion` on the shot is the highest-`Suitability` name among the three named bands.
+- **Near-duplicate / best-take grouping** — per shot, a signature (`FrameGridAnalyzer.ShotSignature`):
+  a z-normalized, time-averaged luma grid (`LumaSig`, 576 floats for 32x18) plus the L1-normalized
+  64-bin color histogram (`ColorHist`). `Distance = 0.7*(1-cosine(LumaSig)) + 0.3*(0.5*L1(ColorHist))`,
+  `Similarity = 1 - Distance`. Groups form via **single-linkage clustering over a sliding time
+  window** (`DuplicateWindowShots`, default 20 — only the previous N shots are compared, both
+  faster and more correct since multi-take shots are temporally adjacent) at
+  `DuplicateSimilarityThreshold` (default `0.90`). Each group gets an id `d{n}`; members are ranked
+  by a heuristic `TakeQuality` (documented in `FrameGridAnalyzer.ComputeTakeQuality`: 35% inverse
+  motion jitter, 25% audio level, 20% exposure, 10% duration, 10% neutral sharpness placeholder) —
+  rank 0 is `IsBestTake`. A singleton shot gets no group (`DuplicateGroupId = null`).
+- **Ken-Burns candidate** — `KenBurnsCandidate = true` when the shot is `Static`, `MotionMean <
+  0.02`, duration `>= 2.5s`, and at least one named band has decent `Suitability`; identifies
+  candidates only — no zoompan is ever applied (out of scope, as always).
+- **Audio levels** — `WavRmsSampler` (pure, `WorkflowEngine/Services/Video/WavRmsSampler.cs`)
+  windows the canonical 16kHz mono s16 WAV `FfmpegAudioExtractor` already produces into 250ms
+  RMS/peak windows (`20*log10(rms/32768)`, floored at -96 dBFS instead of `-Infinity`); reuses the
+  WAV already extracted for transcription, or extracts it fresh if transcription is off/degraded.
+  Per shot: `AudioRmsDbfs` (energy-weighted mean of overlapping windows), `AudioPeakDbfs`, and
+  `SpeechRatio` (from the already-detected silence spans — no new audio pass), bucketed into a
+  `LoudnessClass` (`Quiet`/`Normal`/`Loud`).
+- **Not implemented in Phase 1** (opt-in, default `false`, lower priority than the core grid
+  pipeline): `DetectLetterbox`/`ActiveCrop` and `DetectSharpness`/`Sharpness` — the config fields
+  and artifact columns exist (always `null`/`false`) so a future phase can fill them in without
+  another schema migration; `MetadataPrintOutputParser`/`CropDetectOutputParser` (generic
+  `ffmpeg ... metadata=print:file=-` / `cropdetect` stderr parsers, mirroring
+  `SilenceDetectOutputParser`/`ShowinfoOutputParser`'s style) were likewise left unimplemented.
+
+### `VisualDetail`: degrade before drop
+
+`VideoAnalyzeStepExecutor.BuildBoundedView` treats "how many shots/silences/segments the model
+sees" as higher priority than "how much visual/audio detail each one carries". Before ever
+dropping an offered item to fit `MaxOutputChars`, it tries the configured `VisualDetail` level,
+then each lower level in turn — `Full → Compact → None` — **re-serializing the same set of offered
+items** at each level. Only once `None` (which renders a shot exactly as it looked before Phase 1
+— no `v`/`a` key at all) still doesn't fit does the pre-existing item-dropping loop run. This
+guarantees `meta.offeredIdCount` can never be smaller than what a plain `AnalyzeVisuals: false` run
+would produce at the same `MaxOutputChars` — richer per-shot data can only ever cost detail, never
+cost coverage. `meta.visual.detail` (and the top-level `meta.visualDetailApplied`) records whichever
+level actually got used.
+
+- **`None`** — identical to the pre-Phase-1 shot shape.
+- **`Compact`** (default) — `motion`, `move`, `cutIn`/`cutOut`, the single longest still window,
+  `bright`, `contrast`, the top 2 dominant colors, `safe` (best overlay region), `dup`/`best`,
+  `kenBurns` (only when true), plus `a: {rms, speech}` when audio levels are available.
+- **`Full`** — everything `Compact` has, plus the full region list, the full still-window list,
+  `motionStdDev`/`motionPeak`/`cameraConfidence`, and all (up to 3) dominant colors.
+
+Every visual/audio number in the view is rounded before serialization — seconds to 2 decimal
+places, 0..1 scores to 0..100 integers (`Round2`/`Score` helpers) — since a raw `double` can
+serialize as 15-17 characters of floating-point noise, which adds up fast across hundreds of
+shots. The four base shot fields (`id`/`startSec`/`endSec`/`durationSec`) are deliberately left
+unrounded at every detail level, matching the pre-Phase-1 output exactly.
+
+### View/artifact shape additions
+
+```jsonc
+{
+  "view": {
+    "shots": [{
+      "id": "s4", "startSec": 12.4, "endSec": 16.8, "durationSec": 4.4,
+      "v": {
+        "motion": 12, "move": "Pan", "cutIn": "still", "cutOut": "moving",
+        "still": [{ "startSec": 12.4, "endSec": 12.9 }],
+        "bright": 41, "contrast": 22, "colors": ["#2b3a4f", "#c9b48a"],
+        "safe": { "region": "LowerThird", "fit": 88, "text": "Light" },
+        "dup": "d2", "best": true, "kenBurns": true
+      },
+      "a": { "rms": -21, "speech": 82 }
+    }],
+    "pacing": { "meanShotSec": 4.1, "medianShotSec": 3.8, "cutsPerMinute": 14.6, "motionTimeline": [12, 30, 8], "timelineBinSec": 5.0 },
+    "duplicateGroups": [{ "id": "d2", "shotIds": ["s4", "s7"], "bestShotId": "s7", "similarity": 94 }]
+  },
+  "meta": {
+    "visual": { "applied": true, "degraded": false, "sampleFps": 2.0, "gridWidth": 32, "gridHeight": 18, "detail": "Compact" },
+    "audioLevels": { "applied": true }
+  }
+}
+```
+
+`Pacing` (`FrameGridAnalyzer.ComputePacing`) is a whole-artifact summary — `MeanShotSeconds`/
+`MedianShotSeconds`/`CutsPerMinute` from shot timing alone, plus a `MotionTimeline` (mean
+`MotionMean` per `TimelineBinSeconds`-wide bin, empty when no shot has visual data). `pacing`/
+`duplicateGroups` are only surfaced in the view at `Compact`/`Full` detail — never at `None` — so
+that a budget-forced collapse to `None` (whether from `AnalyzeVisuals: false` or from a degraded
+visual-analysis stage) is always byte-identical regardless of whether visual data merely got
+suppressed by degradation vs. never computed at all.
+
+### Failure handling: degrade, never fail the step
+
+Both the visual-analysis block (grid sampling + every `FrameGridAnalyzer` call) and the
+audio-level block (WAV sampling) are wrapped in their own try/catch, exactly like the existing
+transcription-degrade pattern: on any exception, `Provenance.VisualAnalysisApplied`/
+`AudioLevelsApplied` become `false`, `VisualAnalysisDegraded` becomes `true`, a warning is logged,
+and the step continues with shots/silences/transcript exactly as if that stage were configured
+off. Nothing in Phase 1 can fail a `VideoAnalyze` step.
 
 ---
 

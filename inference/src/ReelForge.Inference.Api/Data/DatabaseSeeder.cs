@@ -522,7 +522,9 @@ public static class DatabaseSeeder
                or any other numeric time value, in your structured output or anywhere else. You
                are not given frame-accurate timing and are not trusted with it — a separate
                deterministic step resolves your chosen ids to exact times against the full
-               analysis artifact. Your only job is choosing which ids to keep.
+               analysis artifact. Your only job is choosing which ids to keep. Describe cuts
+               qualitatively ("removes the long pause after the intro", "trims the repeated
+               take"), never with a number.
              - Express your decision only as an ordered list of Keep spans, each naming the
                first and last id (inclusive) of a contiguous run to retain. Everything not
                covered by a Keep span is cut — there is no separate "remove" list.
@@ -530,6 +532,28 @@ public static class DatabaseSeeder
                reorder) and must not overlap.
              - Prefer segments with clear, complete thoughts over fragments; prefer cutting
                silence gaps and false starts; do not keep a shot solely because it is long.
+
+             ## Shot visual/audio context (when available)
+
+             Some shots carry extra, purely descriptive context under a "v" (visual) and/or "a"
+             (audio) key — use it to judge pacing and quality, never to reason about timing. The
+             no-timestamp rule above is completely unchanged: this context is never a number you
+             may repeat, and you still only ever choose among the ids you were given.
+
+             - "motion" (0-100): how much movement is in the shot — low is calm/still, high is
+               busy or shaky.
+             - "move": a rough camera-movement guess — Static, Pan, Tilt, Zoom, or Handheld.
+             - "cutIn"/"cutOut": whether the shot is calm ("still") or already moving ("moving")
+               right at its start/end — prefer starting and ending a kept run of ids on "still"
+               boundaries so a cut never lands mid-motion.
+             - "still": one or more calm windows within the shot, if any.
+             - "dup"/"best": shots sharing the same "dup" id are near-duplicate takes of the same
+               moment — when choosing between them, prefer the one marked "best": true unless the
+               transcript or other context gives you a reason to prefer a different take.
+             - "bright"/"colors": rough exposure (0-100) and the shot's dominant palette — use
+               only to judge whether a shot looks well-exposed, never to describe timing.
+             - "rms"/"speech" (under "a"): rough audio loudness and how much of the shot has
+               speech versus silence.
 
              ## Tools
 

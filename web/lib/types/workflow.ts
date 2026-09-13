@@ -202,7 +202,15 @@ export interface VideoAnalyzeExpectation {
   minShots?: number | null;
   minTranscriptSegments?: number | null;
   maxSilenceRatio?: number | null;
+  minShotsWithVisuals?: number | null;
 }
+
+/**
+ * How much per-shot visual/audio detail (Phase 1 descriptors) the bounded view includes per shot.
+ * `VideoAnalyzeStepExecutor.BuildBoundedView` degrades Full -> Compact -> None to fit
+ * `maxOutputChars` BEFORE ever dropping an offered shot/silence/segment.
+ */
+export type VideoVisualDetail = 'None' | 'Compact' | 'Full';
 
 export interface VideoAnalyzeStepConfig {
   version: number;
@@ -227,6 +235,28 @@ export interface VideoAnalyzeStepConfig {
   maxOutputChars: number;
   maxViewSegments: number;
   maxSegmentTextChars: number;
+  // -- Phase 1: visual scene analysis (one low-res raw-frame grid ffmpeg pass + pure C#) --
+  analyzeVisuals: boolean;
+  visualSampleFps: number;
+  visualGridWidth: number;
+  visualGridHeight: number;
+  maxVisualSampleFrames: number;
+  stillMotionThreshold: number;
+  minStillWindowMs: number;
+  maxStillWindowsPerShot: number;
+  /** Opt-in, lower priority than the core grid pipeline — see docs/video-editing.md. */
+  detectLetterbox: boolean;
+  /** Opt-in, lower priority than the core grid pipeline — see docs/video-editing.md. */
+  detectSharpness: boolean;
+  // -- Phase 1: audio loudness (reuses the WAV already extracted for transcription, or extracts it) --
+  analyzeAudioLevels: boolean;
+  // -- Phase 1: near-duplicate / best-take grouping --
+  detectNearDuplicates: boolean;
+  duplicateSimilarityThreshold: number;
+  duplicateWindowShots: number;
+  // -- Phase 1: bounded-view detail level --
+  visualDetail: VideoVisualDetail;
+  maxViewDuplicateGroups: number;
   expect?: VideoAnalyzeExpectation | null;
 }
 

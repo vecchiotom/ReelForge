@@ -61,6 +61,15 @@ public class WorkflowTemplateCatalogConfigDeserializationTests
         config.Transcription.Should().Be(VideoTranscriptionMode.Optional);
         config.MaxDurationSeconds.Should().Be(1800);
         config.MaxOutputChars.Should().Be(24_000);
+
+        // Phase 1 (scene/visual analysis) defaults — the seeded literal predates these fields, so
+        // this confirms they fall back to sane, on-by-default values rather than being silently
+        // nulled/zeroed by a future property-name mismatch.
+        config.AnalyzeVisuals.Should().BeTrue();
+        config.VisualDetail.Should().Be(VideoVisualDetail.Compact);
+        config.AnalyzeAudioLevels.Should().BeTrue();
+        config.DetectNearDuplicates.Should().BeTrue();
+        config.DuplicateSimilarityThreshold.Should().Be(0.90);
     }
 
     [Fact]
