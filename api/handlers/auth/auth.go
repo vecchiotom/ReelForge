@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	"github.com/vecchiotom/reelforge/config"
 	"github.com/vecchiotom/reelforge/middleware"
 	"github.com/vecchiotom/reelforge/services"
 	"golang.org/x/crypto/bcrypt"
@@ -65,6 +66,7 @@ func handleToken(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   86400,
 		HttpOnly: true,
+		Secure:   config.Cfg.CookieSecure,
 		SameSite: http.SameSiteLaxMode,
 	})
 
@@ -77,6 +79,7 @@ func handleToken(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   86400,
 		HttpOnly: false,
+		Secure:   config.Cfg.CookieSecure,
 		SameSite: http.SameSiteLaxMode,
 	})
 
