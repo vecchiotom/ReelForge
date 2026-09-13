@@ -246,6 +246,14 @@ public class ReactRemotionSandboxTools
         if (string.IsNullOrWhiteSpace(outputFileName))
             throw new InvalidOperationException("outputFileName is required.");
 
+        // Sanitize outputFileName to prevent path traversal attacks
+        outputFileName = Path.GetFileName(outputFileName);
+        if (string.IsNullOrWhiteSpace(outputFileName) ||
+            !Regex.IsMatch(outputFileName, @"^[A-Za-z0-9._-]+$"))
+        {
+            throw new InvalidOperationException("outputFileName must be a simple filename (alphanumeric, dots, hyphens, underscores only; no path separators or directory traversal).");
+        }
+
         WorkflowExecutionContext ctx = RequireContext();
         string executionId = ctx.ExecutionId.ToString();
         _logger.LogInformation(

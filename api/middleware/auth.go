@@ -13,9 +13,10 @@ type contextKey string
 const UserContextKey contextKey = "user"
 
 type UserContext struct {
-	UserID  string
-	Email   string
-	IsAdmin bool
+	UserID             string
+	Email              string
+	IsAdmin            bool
+	MustChangePassword bool
 }
 
 func Auth(next http.Handler) http.Handler {
@@ -40,9 +41,15 @@ func Auth(next http.Handler) http.Handler {
 		}
 
 		uc := UserContext{
-			UserID:  claims.UserID,
-			Email:   claims.Email,
-			IsAdmin: claims.IsAdmin,
+			UserID:             claims.UserID,
+			Email:              claims.Email,
+			IsAdmin:            claims.IsAdmin,
+			MustChangePassword: claims.MustChangePassword,
+		}
+
+		if uc.MustChangePassword && r.URL.Path != "/api/v1/auth/change-password" {
+			http.Error(w, `{"error":"password change required"}`, http.StatusForbidden)
+			return
 		}
 
 		ctx := context.WithValue(r.Context(), UserContextKey, uc)

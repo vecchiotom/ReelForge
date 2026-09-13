@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -32,7 +33,8 @@ func handleCreateUser(w http.ResponseWriter, r *http.Request) {
 
 	user, otp, err := services.CreateUser(req.Email, req.DisplayName, req.IsAdmin)
 	if err != nil {
-		http.Error(w, `{"error":"failed to create user: `+err.Error()+`"}`, http.StatusInternalServerError)
+		log.Printf("failed to create user %s: %v", req.Email, err)
+		http.Error(w, `{"error":"failed to create user"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -41,7 +43,7 @@ func handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(CreateUserResponse{
-		User:             toUserResponse(user),
+		User:              toUserResponse(user),
 		TemporaryPassword: otp,
 	})
 }

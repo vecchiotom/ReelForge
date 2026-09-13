@@ -1,0 +1,25 @@
+server {
+    listen 443 ssl http2;
+    server_name _;
+    client_max_body_size 100M;
+
+    ssl_certificate     ${SSL_CERT};
+    ssl_certificate_key ${SSL_KEY};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    set $go_api http://go-api:8080;
+    set $inference_api http://inference:8080;
+    set $workflow_engine http://workflow-engine:8080;
+    set $web_app http://web:3000;
+
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+
+    include /etc/nginx/locations.conf;
+}

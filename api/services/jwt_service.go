@@ -10,17 +10,19 @@ import (
 )
 
 type TokenClaims struct {
-	UserID  string `json:"sub"`
-	Email   string `json:"email"`
-	IsAdmin bool   `json:"isAdmin"`
+	UserID             string `json:"sub"`
+	Email              string `json:"email"`
+	IsAdmin            bool   `json:"isAdmin"`
+	MustChangePassword bool   `json:"mustChangePassword"`
 	jwt.RegisteredClaims
 }
 
 func GenerateToken(user *models.ApplicationUser) (string, error) {
 	claims := TokenClaims{
-		UserID:  user.ID.String(),
-		Email:   user.Email,
-		IsAdmin: user.IsAdmin,
+		UserID:             user.ID.String(),
+		Email:              user.Email,
+		IsAdmin:            user.IsAdmin,
+		MustChangePassword: user.MustChangePassword,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    config.Cfg.JWTIssuer,
 			Audience:  jwt.ClaimStrings{config.Cfg.JWTAudience},

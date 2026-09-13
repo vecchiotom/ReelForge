@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -29,19 +30,22 @@ public class InferenceProvidersController : ControllerBase
     private readonly ISecretProtector _secretProtector;
     private readonly IChatClientFactory _chatClientFactory;
     private readonly ITranscriptionClientFactory _transcriptionClientFactory;
+    private readonly ILogger<InferenceProvidersController> _logger;
 
     public InferenceProvidersController(
         InferenceApiDbContext db,
         ICurrentUser currentUser,
         ISecretProtector secretProtector,
         IChatClientFactory chatClientFactory,
-        ITranscriptionClientFactory transcriptionClientFactory)
+        ITranscriptionClientFactory transcriptionClientFactory,
+        ILogger<InferenceProvidersController> logger)
     {
         _db = db;
         _currentUser = currentUser;
         _secretProtector = secretProtector;
         _chatClientFactory = chatClientFactory;
         _transcriptionClientFactory = transcriptionClientFactory;
+        _logger = logger;
     }
 
     [HttpGet]
@@ -81,6 +85,11 @@ public class InferenceProvidersController : ControllerBase
         if (string.IsNullOrWhiteSpace(request.Endpoint))
         {
             return BadRequest(new { error = "Endpoint is required." });
+        }
+
+        if (IsDisallowedEndpoint(request.Endpoint))
+        {
+            return BadRequest(new { error = "Endpoint must be a public https/http URL; internal/private/loopback addresses are not allowed." });
         }
 
         if (string.IsNullOrWhiteSpace(request.ModelName))
@@ -225,6 +234,10 @@ public class InferenceProvidersController : ControllerBase
             {
                 return BadRequest(new { error = "Endpoint cannot be empty." });
             }
+            if (IsDisallowedEndpoint(request.Endpoint))
+            {
+                return BadRequest(new { error = "Endpoint must be a public https/http URL; internal/private/loopback addresses are not allowed." });
+            }
             entity.Endpoint = request.Endpoint;
         }
         if (request.ModelName != null)
@@ -364,14 +377,16 @@ public class InferenceProvidersController : ControllerBase
                 return NotFound(new { error = "Referenced provider not found." });
             }
 
-            kindStr ??= saved.Kind.ToString();
-            capabilityStr ??= saved.Capability.ToString();
-            if (request.Endpoint == null) endpoint = saved.Endpoint;
-            if (request.ModelName == null) modelName = saved.ModelName;
-            timeoutSeconds = saved.TimeoutSeconds ?? timeoutSeconds;
-
             if (request.ApiKey == null)
             {
+                // When reusing the stored key, also use the stored endpoint, kind, and model name.
+                // Only accept caller-supplied endpoint/kind/modelName when providing a fresh apiKey.
+                kindStr = saved.Kind.ToString();
+                capabilityStr = saved.Capability.ToString();
+                endpoint = saved.Endpoint;
+                modelName = saved.ModelName;
+                timeoutSeconds = saved.TimeoutSeconds ?? timeoutSeconds;
+
                 // Reuse the stored, decrypted key instead of requiring the caller to resend it.
                 if (!string.IsNullOrEmpty(saved.ApiKeyEncrypted))
                 {
@@ -382,6 +397,16 @@ public class InferenceProvidersController : ControllerBase
 
                     apiKey = storedKey;
                 }
+            }
+            else
+            {
+                // When caller supplies a fresh apiKey, allow caller-supplied endpoint/kind/modelName
+                // (for testing an updated config), but use saved values as fallback if omitted.
+                kindStr ??= saved.Kind.ToString();
+                capabilityStr ??= saved.Capability.ToString();
+                if (request.Endpoint == null) endpoint = saved.Endpoint;
+                if (request.ModelName == null) modelName = saved.ModelName;
+                timeoutSeconds = saved.TimeoutSeconds ?? timeoutSeconds;
             }
         }
 
@@ -440,7 +465,8 @@ public class InferenceProvidersController : ControllerBase
             // Never let a bad endpoint/model/key escape as a 500 — the whole point of this
             // endpoint is to let an admin validate a config before (or after) saving it.
             stopwatch.Stop();
-            return new TestInferenceProviderResponse(false, stopwatch.ElapsedMilliseconds, ex.Message, null);
+            _logger.LogError(ex, "Inference provider test failed");
+            return new TestInferenceProviderResponse(false, stopwatch.ElapsedMilliseconds, "Provider test failed.", null);
         }
     }
 
@@ -473,7 +499,8 @@ public class InferenceProvidersController : ControllerBase
         {
             // Same discipline as RunTestAsync: never let a bad endpoint/model/key escape as a 500.
             stopwatch.Stop();
-            return new TestInferenceProviderResponse(false, stopwatch.ElapsedMilliseconds, ex.Message, null);
+            _logger.LogError(ex, "Transcription provider test failed");
+            return new TestInferenceProviderResponse(false, stopwatch.ElapsedMilliseconds, "Provider test failed.", null);
         }
     }
 
@@ -562,6 +589,37 @@ public class InferenceProvidersController : ControllerBase
 
         entity.ApiKeyEncrypted = _secretProtector.Protect(apiKey);
         entity.ApiKeyLastFour = apiKey.Length <= 4 ? apiKey : apiKey[^4..];
+    }
+
+    private static bool IsDisallowedEndpoint(string endpoint)
+    {
+        if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp))
+        {
+            return true;
+        }
+
+        if (!IPAddress.TryParse(uri.Host, out var ip))
+        {
+            try
+            {
+                var addresses = Dns.GetHostAddresses(uri.Host);
+                if (addresses.Length == 0) return true;
+                ip = addresses[0];
+            }
+            catch
+            {
+                return true;
+            }
+        }
+
+        return IPAddress.IsLoopback(ip) ||
+            ip.IsIPv6LinkLocal ||
+            (ip.GetAddressBytes() is { Length: 4 } b && (
+                b[0] == 10 ||
+                (b[0] == 172 && b[1] >= 16 && b[1] <= 31) ||
+                (b[0] == 192 && b[1] == 168) ||
+                (b[0] == 169 && b[1] == 254)));
     }
 
     private static bool TryParseKind(string? value, out InferenceProviderKind kind) =>

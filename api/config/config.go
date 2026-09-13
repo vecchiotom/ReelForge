@@ -1,6 +1,10 @@
 package config
 
-import "os"
+import (
+	"log"
+	"os"
+	"strconv"
+)
 
 var Version = "dev"
 
@@ -25,6 +29,13 @@ type AppConfig struct {
 	RabbitMQPort     string
 	RabbitMQUsername string
 	RabbitMQPassword string
+
+	// CookieSecure sets the Secure flag on the reelforge_token/reelforge_user
+	// cookies. Leave false for http://localhost development — browsers
+	// silently drop Secure cookies over plain HTTP, which would break login
+	// entirely. Set COOKIE_SECURE=true once nginx is actually serving TLS
+	// (see docs/tls.md).
+	CookieSecure bool
 }
 
 var Cfg AppConfig
@@ -51,6 +62,12 @@ func Load() {
 		RabbitMQPort:     getEnv("RABBITMQ_PORT", "5672"),
 		RabbitMQUsername: getEnv("RABBITMQ_USER", "guest"),
 		RabbitMQPassword: getEnv("RABBITMQ_PASSWORD", "guest"),
+
+		CookieSecure: getBoolEnv("COOKIE_SECURE", false),
+	}
+
+	if len(Cfg.JWTSigningKey) < 32 {
+		log.Fatalf("JWT_SIGNING_KEY must be set to a random value of at least 32 characters (got %d); generate one with: openssl rand -hex 32", len(Cfg.JWTSigningKey))
 	}
 }
 
@@ -61,6 +78,15 @@ func SMTPConfigured() bool {
 func getEnv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func getBoolEnv(key string, fallback bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			return parsed
+		}
 	}
 	return fallback
 }

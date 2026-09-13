@@ -118,6 +118,9 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             // Cheapest guardrail we can actually apply given IProjectFileWorkspace's surface (no
             // HEAD/size-without-download primitive): check the downloaded size against
             // MaxInputBytes before any decode (probe/silence/shot/ASR) runs.
+            // TODO: Ideal fix would check size BEFORE download via a lightweight HEAD-style API
+            // (e.g., GetObjectMetadataAsync), but IProjectFileWorkspace does not expose such a method.
+            // A pre-download guard would require adding that API to the storage abstraction layer.
             long fileSizeBytes = new FileInfo(localVideoPath).Length;
             if (fileSizeBytes > config.MaxInputBytes)
             {

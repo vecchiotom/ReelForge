@@ -59,6 +59,10 @@ public class ExpressionEvaluator
             .Replace(" and ", " && ")
             .Replace(" or ", " || ");
 
+        // Security: Reject expressions that are too long or deeply nested to prevent StackOverflowException
+        if (ncalcExpression.Length > 2000 || ExceedsMaxParenDepth(ncalcExpression, 20))
+            return false;
+
         try
         {
             Expression e = new(ncalcExpression);
@@ -248,6 +252,28 @@ public class ExpressionEvaluator
         catch { }
 
         return [];
+    }
+
+    /// <summary>
+    /// Checks if the expression's maximum parenthesis nesting depth exceeds <paramref name="maxDepth"/>.
+    /// Returns true if exceeded, false otherwise.
+    /// </summary>
+    private static bool ExceedsMaxParenDepth(string expression, int maxDepth)
+    {
+        int depth = 0;
+        foreach (char c in expression)
+        {
+            if (c == '(')
+            {
+                depth++;
+                if (depth > maxDepth) return true;
+            }
+            else if (c == ')')
+            {
+                depth--;
+            }
+        }
+        return false;
     }
 
     private static bool IsTruthy(object? result) => result switch

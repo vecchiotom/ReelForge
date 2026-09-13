@@ -393,8 +393,8 @@ web/
 
 ### Nginx Reverse Proxy
 
-**Config:** `nginx/nginx.conf` + `nginx/auth.js` (njs module)
-**Single entry:** Port 80 (configurable via `APP_PORT` env var)
+**Config:** `nginx/nginx.conf` (+ `nginx/locations.conf`, `nginx/http-server-dev.conf`/`http-server-redirect.conf`, `nginx/https-server.conf.template`, assembled at container start by `nginx/docker-entrypoint.sh`) + `nginx/auth.js` (njs module)
+**Single entry:** Port 80 (`APP_PORT`) and 443 (`HTTPS_PORT`) — nginx terminates TLS itself; see [`docs/tls.md`](docs/tls.md) for the self-signed-by-default / Caddy-issued-once-you-have-a-domain design and the `caddy` sidecar that obtains and auto-renews the certificate.
 
 | Path | Upstream | Auth |
 |------|----------|------|
@@ -463,7 +463,8 @@ All services have Dockerfiles and are orchestrated via `docker-compose.yml` at t
 
 | Service | Image | Host Port | Internal Port | Notes |
 |---------|-------|-----------|---------------|-------|
-| `nginx` | `nginx:alpine` | 80 (`APP_PORT`) | 80 | Single entry point, njs cookie↔header translation |
+| `nginx` | Built from `./nginx` (`nginx:alpine` + openssl/gettext) | 80 (`APP_PORT`), 443 (`HTTPS_PORT`) | 80, 443 | Single entry point, njs cookie↔header translation, TLS termination (self-signed by default; see [`docs/tls.md`](docs/tls.md)) |
+| `caddy` | `caddy:2-alpine` | — (internal) | 80, 443 | ACME client only — obtains/renews the Let's Encrypt cert nginx reads off the shared `caddy_certs` volume; never serves traffic. Opt-in via the `tls` compose profile, requires `DOMAIN`/`ACME_EMAIL`. See [`docs/tls.md`](docs/tls.md) |
 | `web` | Built from `./web` | — (internal) | 3000 | Next.js frontend |
 | `go-api` | Built from `./api` | — (internal) | 8080 | Depends on postgres (healthy) |
 | `inference` | Built from `./inference` | — (internal) | 8080 | Inference API, depends on go-api + rabbitmq; mounts `dpkeys` at `/keys` (Data Protection key ring) |
@@ -481,6 +482,7 @@ docker compose up --build -d <service>    # Rebuild single service
 docker compose logs -f [service-name]     # View logs
 docker compose down                       # Stop everything
 docker compose down -v                    # Full reset
+docker compose --profile tls up -d caddy  # Obtain/renew a real cert once DOMAIN is set (docs/tls.md)
 ```
 
 **Health endpoints (via nginx):**
@@ -514,7 +516,12 @@ All configuration is driven by `.env` at the repo root (copy `.env.example` to `
 | `AZURE_OPENAI_ENDPOINT` | — | Azure OpenAI endpoint URL. **Fallback only** — used for chat completions when no `inference_providers` row exists or none is marked default for the `Chat` capability; configure providers at runtime via `/admin/inference-providers` instead. Embeddings for vector search always use this. There is no equivalent fallback for transcription — see `VideoEditing` below. |
 | `AZURE_OPENAI_API_KEY` | — | Azure OpenAI API key (see fallback note above) |
 | `AZURE_OPENAI_DEPLOYMENT` | `gpt-4o-mini` | Azure OpenAI deployment/model name (see fallback note above) |
-| `APP_PORT` | `80` | Nginx reverse proxy host port |
+| `APP_PORT` | `80` | Nginx reverse proxy host port (HTTP) |
+| `HTTPS_PORT` | `443` | Nginx reverse proxy host port (HTTPS) |
+| `DOMAIN` | — | Real domain for a Let's Encrypt certificate. Leave empty for local development (nginx falls back to a self-signed cert). See [`docs/tls.md`](docs/tls.md) |
+| `ACME_EMAIL` | — | Contact email for Let's Encrypt, required by the `caddy` service once `DOMAIN` is set |
+| `FORCE_HTTPS` | `false` | Redirect `http://` to `https://` in nginx. Only enable after confirming `https://<DOMAIN>` works — see [`docs/tls.md`](docs/tls.md) |
+| `COOKIE_SECURE` | `false` | Sets `Secure` on the `reelforge_token`/`reelforge_user` cookies. Only enable once real TLS is serving `https://` — browsers silently drop `Secure` cookies over plain HTTP, breaking login |
 | `ASPNETCORE_ENVIRONMENT` | `Development` | ASP.NET environment (`Development` / `Production`) |
 | `RABBITMQ_USER` | `guest` | RabbitMQ username |
 | `RABBITMQ_PASSWORD` | `guest` | RabbitMQ password |

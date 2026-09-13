@@ -1,0 +1,17 @@
+# This container's only job is obtaining and auto-renewing a Let's Encrypt
+# certificate for {$DOMAIN} — it never serves real traffic. nginx (the
+# actual public entry point on :80/:443) forwards Let's Encrypt's HTTP-01
+# challenge requests to this container over the internal `reelforge`
+# network, and reads the certificate Caddy stores under /data straight off
+# the shared `caddy_certs` volume. See docs/tls.md.
+#
+# Requires DOMAIN (a real domain already pointed at this host's public IP)
+# and ACME_EMAIL to be set — see docker-compose.yml's `caddy` service and
+# .env.example. Only started via `docker compose --profile tls up -d caddy`.
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	respond "reelforge cert manager — not a real endpoint" 200
+}

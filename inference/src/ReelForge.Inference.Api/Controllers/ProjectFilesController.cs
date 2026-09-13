@@ -83,10 +83,21 @@ public class ProjectFilesController : ControllerBase
         if (project.OwnerId != _currentUser.UserId) return Forbid();
 
         // catch optional relative path that the client may send when uploading a folder
-        string? relativePath = null;
+        string? normalizedRelativePath = null;
         if (Request.Form.TryGetValue("relativePath", out var values))
         {
-            relativePath = values.FirstOrDefault();
+            string? rawPath = values.FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(rawPath))
+            {
+                try
+                {
+                    normalizedRelativePath = ProjectFilePath.NormalizeRelativePath(rawPath);
+                }
+                catch
+                {
+                    return BadRequest(new { error = "Invalid file path." });
+                }
+            }
         }
 
         Guid fileId = Guid.NewGuid();
@@ -108,7 +119,7 @@ public class ProjectFilesController : ControllerBase
             storageMetadata,
             ct,
             category: "userFiles",
-            originalPath: relativePath ?? file.FileName);
+            originalPath: normalizedRelativePath ?? file.FileName);
 
         // R22: video/audio uploads (raw source footage for the video-editing workflow) must never
         // be handed to the text summarizer or the vector/embedding chunker — both assume text

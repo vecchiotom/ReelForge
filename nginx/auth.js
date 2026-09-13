@@ -24,9 +24,10 @@ function getAuthHeader(r) {
 
 // Handle logout: clear cookies and return 200
 function handleLogout(r) {
+    var secure = r.variables.scheme === 'https' ? ' Secure;' : '';
     r.headersOut['Set-Cookie'] = [
-        'reelforge_token=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0',
-        'reelforge_user=; Path=/; SameSite=Lax; Max-Age=0'
+        'reelforge_token=; Path=/; HttpOnly;' + secure + ' SameSite=Lax; Max-Age=0',
+        'reelforge_user=; Path=/;' + secure + ' SameSite=Lax; Max-Age=0'
     ];
     r.headersOut['Content-Type'] = 'application/json';
     r.return(200, '{"ok":true}');

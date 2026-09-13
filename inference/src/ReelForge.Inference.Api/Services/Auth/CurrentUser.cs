@@ -21,7 +21,9 @@ public class CurrentUser : ICurrentUser
         {
             string? sub = _httpContextAccessor.HttpContext?.User.FindFirstValue(ClaimTypes.NameIdentifier)
                        ?? _httpContextAccessor.HttpContext?.User.FindFirstValue("sub");
-            return Guid.TryParse(sub, out Guid id) ? id : Guid.Empty;
+            if (!Guid.TryParse(sub, out Guid id))
+                throw new InvalidOperationException("Authenticated request is missing a valid user id claim.");
+            return id;
         }
     }
 
