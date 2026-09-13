@@ -312,13 +312,15 @@ compilation. Full design in [`docs/video-editing.md`](docs/video-editing.md); su
   with ffmpeg.
 
 **Why ffmpeg runs inside the WorkflowEngine container, not the Remotion sandbox
-(`/sandbox`):** the sandbox's command allowlist and container hardening exist to contain
-*untrusted, model-authored* code (arbitrary TSX, arbitrary npm packages). Video editing's ffmpeg
+(`/sandbox`):** the sandbox's container and network isolation exists to contain
+*untrusted, model-authored* code (arbitrary TSX, arbitrary npm packages) — note that its
+command allowlist is input hygiene, not containment, since `npm run build` executes a
+caller-written `package.json` (see `docs/sandbox-service.md`). Video editing's ffmpeg
 argv is built entirely by first-party C# from a validated, typed cut list — the model contributes
 only opaque ids it was actually offered, never a path, flag, or timestamp — so there is nothing
 untrusted for the sandbox's containment to protect against, while admitting `ffmpeg` to the
 sandbox's allowlist would open one of the richest argv-injection surfaces in common Unix tooling
-(`-i http://…` SSRF into the sandbox's bridge network, `concat:`/`subfile:` arbitrary file read,
+(`-i http://…` SSRF, `concat:`/`subfile:` arbitrary file read,
 `-f lavfi` with `movie=`) for zero containment benefit. The sandbox's mechanics are also simply
 wrong for large binary media: containers are `--read-only` with a 256 MB tmpfs `/tmp`, file I/O is
 base64-over-JSON (doubling memory for a large file in both directions), and sandbox containers
@@ -400,6 +402,7 @@ web/
 | `/api/v1/auth/*` | `go-api:8080` | Cookie → Authorization header |
 | `/api/v1/admin/*` | `go-api:8080` | Cookie → Authorization header |
 | `/api/v1/workflow-engine/*` | `workflow-engine:8080` | Cookie → Authorization header |
+| *(not routed)* `/api/v1/sandboxes/*` | — | **Deliberately not proxied.** The sandbox executor API is in-cluster only, reached by the workflow engine with a bearer token (`SANDBOX_API_TOKEN`). It was previously proxied here with no auth, which exposed unauthenticated RCE against the container holding the Docker socket — do not re-add it |
 | `/api/v1/*` | `inference:8080` | Cookie → Authorization header |
 | `/health` | `go-api:8080` | None |
 | `/api/auth/logout` | — | Nginx clears cookies |
@@ -465,10 +468,12 @@ All services have Dockerfiles and are orchestrated via `docker-compose.yml` at t
 | `go-api` | Built from `./api` | — (internal) | 8080 | Depends on postgres (healthy) |
 | `inference` | Built from `./inference` | — (internal) | 8080 | Inference API, depends on go-api + rabbitmq; mounts `dpkeys` at `/keys` (Data Protection key ring) |
 | `workflow-engine` | Built from `./inference` | — (internal) | 8080 | Workflow engine, depends on inference + rabbitmq; mounts `dpkeys` at `/keys` (Data Protection key ring) and `videoscratch` at `/var/tmp/reelforge-video` (per-execution ffmpeg scratch space, `VideoEditing:ScratchPath`); image includes `ffmpeg`/`ffprobe` (see Video Editing above) |
-| `postgres` | `postgres:16-alpine` | 5432 | 5432 | Volume `pgdata`, healthcheck via `pg_isready` |
-| `minio` | `minio/minio:latest` | 9000/9001 | 9000/9001 | Volume `miniodata`, console on 9001 |
+| `sandbox-runtime` | Built from `./sandbox` (target `sandbox-runtime`) | — | — | One-shot: builds the **minimal untrusted image** each sandbox container runs, then exits. `network_mode: none` |
+| `sandbox-executor` | Built from `./sandbox` (target `control-plane`) | — (internal) | 8080 | Sandbox control plane. Mounts the Docker socket, so compromise = host root. On the `reelforge` network **only** — never on the sandbox network. Requires `SANDBOX_API_TOKEN`; not proxied by nginx |
+| `postgres` | `postgres:16-alpine` | 5432 (**loopback only**) | 5432 | Volume `pgdata`, healthcheck via `pg_isready` |
+| `minio` | `minio/minio:latest` | 9000/9001 (**loopback only**) | 9000/9001 | Volume `miniodata`, console on 9001 |
 | `minio-init` | `minio/mc:latest` | — | — | One-shot: creates the `reelforge` bucket, then exits |
-| `rabbitmq` | `rabbitmq:3-management-alpine` | 5672/15672 | 5672/15672 | Volume `rabbitmqdata`, management UI on 15672 |
+| `rabbitmq` | `rabbitmq:3-management-alpine` | 5672/15672 (**loopback only**) | 5672/15672 | Volume `rabbitmqdata`, management UI on 15672 |
 
 ```bash
 docker compose up --build -d              # Start full stack
@@ -516,6 +521,8 @@ All configuration is driven by `.env` at the repo root (copy `.env.example` to `
 | `RABBITMQ_PORT` | `5672` | RabbitMQ AMQP port |
 | `RABBITMQ_MGMT_PORT` | `15672` | RabbitMQ management UI port |
 | `WORKFLOW_MAX_CONCURRENCY` | `4` | Max parallel workflow executions |
+| `SANDBOX_API_TOKEN` | — | **Required.** Shared secret for the sandbox executor API (`Sandbox__ApiToken` on the WorkflowEngine). The sandbox service exits at startup if unset — it can start containers and holds the Docker socket, so it never runs unauthenticated |
+| `SANDBOX_NETWORK_EGRESS` | `false` | When `false`, the sandbox docker network is created `--internal`: sandboxed code has no route to the internet **or to the host gateway** (and therefore none of the host-published ports). Setting `true` re-enables runtime `npm install` via `POST /packages` and simultaneously gives untrusted code a network — see [`docs/sandbox-service.md`](docs/sandbox-service.md) |
 | `SMTP_HOST` | — | SMTP server hostname (optional) |
 | `SMTP_PORT` | `587` | SMTP server port |
 | `SMTP_USERNAME` | — | SMTP auth username |

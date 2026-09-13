@@ -7,8 +7,11 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-reelforge}
+    # Loopback-only. A published port binds 0.0.0.0 by default, which puts it on
+    # the host gateway address that every container — including a sandbox — can
+    # route to, as well as on the LAN. Only nginx is meant to be reachable.
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -29,8 +32,8 @@ services:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
     ports:
-      - "${MINIO_API_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - miniodata:/data
     depends_on:
@@ -69,8 +72,8 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
     ports:
-      - "${RABBITMQ_PORT:-5672}:5672"
-      - "${RABBITMQ_MGMT_PORT:-15672}:15672"
+      - "127.0.0.1:${RABBITMQ_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_MGMT_PORT:-15672}:15672"
     volumes:
       - rabbitmqdata:/var/lib/rabbitmq
     healthcheck:
@@ -162,6 +165,7 @@ services:
       RabbitMQ__Password: ${RABBITMQ_PASSWORD:-guest}
       InferenceApi__BaseUrl: http://inference:8080
       Sandbox__BaseUrl: http://sandbox-executor:8080
+      Sandbox__ApiToken: ${SANDBOX_API_TOKEN:?set SANDBOX_API_TOKEN in .env to a long random value}
       WorkflowEngine__MaxConcurrency: ${WORKFLOW_MAX_CONCURRENCY:-4}
       DataProtection__KeysPath: /keys
       VideoEditing__ScratchPath: /var/tmp/reelforge-video
@@ -191,10 +195,25 @@ services:
     networks:
       - reelforge
 
+  # Builds the minimal image that untrusted, model-authored code runs in, then
+  # exits. It is a build-and-exit service (same pattern as minio-init) because
+  # the image has to exist on the daemon before sandbox-executor can `docker run`
+  # it — nothing pulls it, and the executor never builds images itself.
+  sandbox-runtime:
+    build:
+      context: ./sandbox
+      dockerfile: Dockerfile
+      target: sandbox-runtime
+    image: reelforge-sandbox-runtime:local
+    command: ["true"]
+    restart: "no"
+    network_mode: none
+
   sandbox-executor:
     build:
       context: ./sandbox
       dockerfile: Dockerfile
+      target: control-plane
       args:
         GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
         GOSUMDB: ${GOSUMDB:-sum.golang.org}
@@ -202,9 +221,21 @@ services:
     restart: unless-stopped
     environment:
       PORT: 8080
-      SANDBOX_IMAGE: reelforge-sandbox-executor:local
+      # The untrusted runtime image, NOT this service's own image. Reusing the
+      # control-plane image here would hand every sandbox a Docker CLI.
+      SANDBOX_IMAGE: reelforge-sandbox-runtime:local
       SANDBOX_ROOT: /var/lib/reelforge/sandboxes
+      # Owned and created by this service (with --internal), not by compose —
+      # see the note under `networks:` at the bottom of this file.
       SANDBOX_NETWORK: sandbox-net
+      # false => the sandbox network is created --internal: no internet, and no
+      # route to the host gateway, which is the only thing that keeps sandboxed
+      # code away from every port published on the host. Turning this on also
+      # re-enables POST /packages. Read docs/sandbox-service.md before you do.
+      SANDBOX_NETWORK_EGRESS: ${SANDBOX_NETWORK_EGRESS:-false}
+      # No default on purpose: the service refuses to start without it rather
+      # than silently exposing an API that can start containers and write files.
+      SANDBOX_API_TOKEN: ${SANDBOX_API_TOKEN:?set SANDBOX_API_TOKEN in .env to a long random value}
       SANDBOX_TTL: ${SANDBOX_TTL:-1h}
       SANDBOX_EXEC_TIMEOUT: ${SANDBOX_EXEC_TIMEOUT:-5m}
       SANDBOX_MEMORY_LIMIT: ${SANDBOX_MEMORY_LIMIT:-2g}
@@ -213,14 +244,21 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /var/lib/reelforge/sandboxes:/var/lib/reelforge/sandboxes
+    depends_on:
+      sandbox-runtime:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "wget -qO/dev/null http://localhost:8080/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 20s
+    # Deliberately NOT attached to sandbox-net. This service reaches sandbox
+    # containers through the Docker socket (`docker exec`) and the bind-mounted
+    # workspace, never over TCP, so it has no reason to be routable from the
+    # network untrusted code sits on — and every reason not to be, since it holds
+    # the Docker socket.
     networks:
-      - sandbox-net
       - reelforge
 
   go-api:
@@ -281,11 +319,16 @@ services:
     # ───────────────────────────────────────────────────────
     environment:
       - NODE_ENV=${WEB_NODE_ENV:-development}
-      - NODE_OPTIONS=--inspect=0.0.0.0:9229
+      # The Node inspector is unauthenticated arbitrary code execution for anyone
+      # who can open the port. It must stay bound to loopback on the host (below)
+      # and should be empty in any deployment that is not a developer's machine.
+      - NODE_OPTIONS=${WEB_NODE_OPTIONS:---inspect=0.0.0.0:9229}
       - PORT=3000
+    # Loopback-only: 3000 bypasses nginx and therefore every auth check nginx
+    # performs, and 9229 is remote code execution in this container.
     ports:
-      - "3000:3000"
-      - "9229:9229"
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:9229:9229"
     restart: unless-stopped
     depends_on:
       inference:
@@ -356,5 +399,11 @@ volumes:
 
 networks:
   reelforge:
-  sandbox-net:
-    driver: bridge
+
+# `sandbox-net` is intentionally NOT declared here. Compose would create it as
+# `<project>_sandbox-net`, but sandbox containers are started by the executor via
+# the Docker API with `--network sandbox-net` — an unprefixed name — so a compose
+# declaration is a different network that nothing ever joins. Declaring it looked
+# like it applied isolation settings to the sandbox while applying them to
+# nothing at all. The executor creates the real network itself, with --internal,
+# and refuses to start if an existing network of that name lacks it.

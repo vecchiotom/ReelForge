@@ -1,0 +1,17 @@
+# The repository currently has template/node_modules committed (~560 MB). Without
+# this exclusion it is copied into the build context twice, and worse, the
+# `COPY template/ ./` in the runtime stage overwrites the node_modules that the
+# image's own controlled `npm install` just produced — so the image would ship
+# whatever happens to be checked in, including prebuilt binaries for other
+# platforms (e.g. @remotion/compositor-win32-x64-msvc/*.dll). Dependencies must
+# come from npm install against package.json, not from the working tree.
+template/node_modules/
+**/node_modules/
+
+# Local scratch and build output — never belongs in an image.
+temp/
+sandbox
+sandbox-executor
+*.log
+.env
+.git/
