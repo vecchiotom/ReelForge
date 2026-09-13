@@ -85,6 +85,8 @@ builder.Services.AddSingleton<ISilenceDetector, FfmpegSilenceDetector>();
 builder.Services.AddSingleton<IShotDetector, FfmpegShotDetector>();
 builder.Services.AddSingleton<IAudioExtractor, FfmpegAudioExtractor>();
 builder.Services.AddSingleton<IFrameGridSampler, FfmpegFrameGridSampler>();
+builder.Services.AddSingleton<IKeyframeExtractor, FfmpegKeyframeExtractor>();
+builder.Services.AddSingleton<IShotCaptioner, VisionShotCaptioner>();
 
 // --- MinIO / S3 ---
 builder.Services.AddSingleton<IAmazonS3>(sp =>

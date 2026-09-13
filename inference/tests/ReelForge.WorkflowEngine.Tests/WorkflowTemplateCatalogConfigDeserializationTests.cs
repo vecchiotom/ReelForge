@@ -70,6 +70,20 @@ public class WorkflowTemplateCatalogConfigDeserializationTests
         config.AnalyzeAudioLevels.Should().BeTrue();
         config.DetectNearDuplicates.Should().BeTrue();
         config.DuplicateSimilarityThreshold.Should().Be(0.90);
+
+        // Phase 2 (vision shot captioning) defaults — the seeded literal predates these fields
+        // too. Vision must default OFF (unlike Transcription's Optional default — see
+        // VideoVisionMode's doc comment) so this opt-in template's cost/behavior doesn't change
+        // until a workflow author explicitly turns captioning on.
+        config.Vision.Should().Be(VideoVisionMode.Off);
+        config.VisionProviderId.Should().BeNull();
+        config.CaptionSelection.Should().Be(VideoCaptionSelection.PerDuplicateGroup);
+        config.MaxCaptionedShots.Should().Be(24);
+        config.MinCaptionShotSeconds.Should().Be(1.0);
+        config.KeyframeMaxWidth.Should().Be(512);
+        config.VisionTimeoutSeconds.Should().Be(120);
+        config.MaxCaptionChars.Should().Be(320);
+        config.PersistKeyframes.Should().BeFalse();
     }
 
     [Fact]

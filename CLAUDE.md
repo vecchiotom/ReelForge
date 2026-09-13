@@ -193,7 +193,7 @@ inference/
 - **System prompts** are read from `appsettings.json` key `Agents:<AgentName>:SystemPrompt` with hardcoded fallback defaults.
 - **MassTransit** handles RabbitMQ messaging. Inference API publishes `WorkflowExecutionRequested`, WorkflowEngine consumes it.
 - **Step Executors** implement `IStepExecutor` strategy pattern: `AgentStepExecutor`, `ConditionalStepExecutor`, `ForEachStepExecutor`, `ReviewLoopStepExecutor`, `ParallelStepExecutor`, `ExtractStepExecutor`, `VideoAnalyzeStepExecutor`, `VideoCompileStepExecutor` (all four non-`Agent` deterministic types are non-LLM — no `IChatClient`/`IAgentRegistry` dependency, always retried at most once; the video pair also never throws, always emitting valid JSON even on failure, since `output_json` is `jsonb`).
-- **Inference providers** are resolved per agent via `IAgentChatClientProvider` → `IInferenceProviderResolver` (60s TTL-cached, `Inference:ProviderCacheSeconds`) → `IChatClientFactory`. Chat precedence: per-agent `AgentDefinition.InferenceProviderId` override → the single `inference_providers` row with `IsDefault = true AND Capability = Chat` → the legacy `AzureOpenAI:*` config keys as a final fallback. Transcription precedence (used by `VideoAnalyze` steps via `ITranscriptionClientFactory`): `VideoAnalyzeStepConfig.TranscriptionProviderId` → the single row with `IsDefault = true AND Capability = Transcription` → none (no legacy config fallback — silently sending audio to a chat deployment would 404 confusingly). The two capabilities' defaults are fully independent (composite unique index), and each resolution path filters on its own `Capability` explicitly rather than picking "any `IsDefault` row". API keys are encrypted at rest with ASP.NET Core Data Protection (`ISecretProtector`), keyed on a shared `dpkeys` volume mounted at `/keys` in both services so either can decrypt what the other wrote.
+- **Inference providers** are resolved per agent via `IAgentChatClientProvider` → `IInferenceProviderResolver` (60s TTL-cached, `Inference:ProviderCacheSeconds`) → `IChatClientFactory`. Chat precedence: per-agent `AgentDefinition.InferenceProviderId` override → the single `inference_providers` row with `IsDefault = true AND Capability = Chat` → the legacy `AzureOpenAI:*` config keys as a final fallback. Transcription precedence (used by `VideoAnalyze` steps via `ITranscriptionClientFactory`): `VideoAnalyzeStepConfig.TranscriptionProviderId` → the single row with `IsDefault = true AND Capability = Transcription` → none (no legacy config fallback — silently sending audio to a chat deployment would 404 confusingly). Vision precedence (Phase 2 of video editing, `VideoAnalyze` shot captioning via `IShotCaptioner`/reused `IChatClientFactory`): `VideoAnalyzeStepConfig.VisionProviderId` → the single row with `IsDefault = true AND Capability = Vision` → none (same no-legacy-fallback rationale as transcription). All three capabilities' defaults are fully independent (composite unique index), and each resolution path filters on its own `Capability` explicitly rather than picking "any `IsDefault` row". API keys are encrypted at rest with ASP.NET Core Data Protection (`ISecretProtector`), keyed on a shared `dpkeys` volume mounted at `/keys` in both services so either can decrypt what the other wrote.
 - **ExpressionEvaluator** uses NCalc for condition evaluation with JSON parameter extraction.
 - **OpenTelemetry** provides distributed tracing and metrics via `ActivitySource` and `Meter`.
 - **All controllers** require `[Authorize]` except `HealthController`. `ICurrentUser` extracts user identity from JWT claims.
@@ -201,7 +201,7 @@ inference/
 
 ### Enhanced Data Model
 
-**New enums:** `StepType` (Agent, Conditional, ForEach, ReviewLoop, Parallel, Extract, **VideoAnalyze**, **VideoCompile**), `StepStatus` (Pending, Running, Completed, Failed, Skipped), `InferenceProviderKind` (AzureOpenAI, OpenAICompatible), **`InferenceProviderCapability`** (**Chat**, **Transcription** — what a provider row can be used for; see below)
+**New enums:** `StepType` (Agent, Conditional, ForEach, ReviewLoop, Parallel, Extract, **VideoAnalyze**, **VideoCompile**), `StepStatus` (Pending, Running, Completed, Failed, Skipped), `InferenceProviderKind` (AzureOpenAI, OpenAICompatible), **`InferenceProviderCapability`** (**Chat**, **Transcription**, **Vision** — what a provider row can be used for; see below)
 
 **WorkflowStep** enhanced with: `StepType`, `ConditionExpression`, `LoopSourceExpression`, `LoopTargetStepOrder`, `MaxIterations`, `MinScore`, `InputMappingJson`, `TrueBranchStepOrder`, `FalseBranchStepOrder`, `ParallelAgentIdsJson` (`StepType.Parallel` — JSON array of agent GUIDs run concurrently), `ExtractConfigJson` (`extract_config_json` column, `StepType.Extract` — JSON-serialized `ExtractStepConfig`: closed to three operations, `Project`/`Resolve`/`Files`, always emitting a `{view, meta}` envelope), **`VideoAnalyzeConfigJson`** (`video_analyze_config_json`, jsonb, `StepType.VideoAnalyze` — JSON-serialized `VideoAnalyzeStepConfig`), **`VideoCompileConfigJson`** (`video_compile_config_json`, jsonb, `StepType.VideoCompile` — JSON-serialized `VideoCompileStepConfig`)
 
@@ -211,7 +211,7 @@ inference/
 
 **AgentDefinition** enhanced with: `InferenceProviderId` (nullable FK to `inference_providers`, `OnDelete(SetNull)`) + `InferenceProviderName` (denormalized on the response DTO only) — the per-agent inference-provider override.
 
-**InferenceProvider** (new entity, table `inference_providers`): `Id`, `Name` (unique), `Kind` (`InferenceProviderKind`), **`Capability`** (`InferenceProviderCapability`, default `Chat`), `Endpoint`, `ModelName`, `ApiKeyEncrypted`/`ApiKeyLastFour` (never returned in plaintext), `IsDefault` (**composite unique partial index on `(capability, is_default)` where `is_default`** — at most one default row *per capability*, so a Transcription default and a Chat default coexist independently), `IsEnabled`, `TimeoutSeconds`, `ExtraHeadersJson`, `LastTestAt`/`LastTestOk`/`LastTestError`. Chat-completion resolution (`IInferenceProviderResolver`) and transcription resolution each filter on their own `Capability` explicitly — never "any `IsDefault` row" — since the two default rows are independent.
+**InferenceProvider** (new entity, table `inference_providers`): `Id`, `Name` (unique), `Kind` (`InferenceProviderKind`), **`Capability`** (`InferenceProviderCapability`, default `Chat`), `Endpoint`, `ModelName`, `ApiKeyEncrypted`/`ApiKeyLastFour` (never returned in plaintext), `IsDefault` (**composite unique partial index on `(capability, is_default)` where `is_default`** — at most one default row *per capability*, so a Transcription default, a Vision default, and a Chat default all coexist independently; the index is generic over any `capability` value, so adding `Vision` needed no schema migration), `IsEnabled`, `TimeoutSeconds`, `ExtraHeadersJson`, `LastTestAt`/`LastTestOk`/`LastTestError`. Chat-completion resolution (`IInferenceProviderResolver.ResolveAsync`), transcription resolution (`ResolveTranscriptionAsync`), and vision resolution (`ResolveVisionAsync`) each filter on their own `Capability` explicitly — never "any `IsDefault` row" — since the three default rows are independent.
 
 ### Integration Events (MassTransit)
 
@@ -240,13 +240,15 @@ to the Go API — see the Nginx table below.
 | `POST` | `/api/v1/inference-providers/test` | Admin | Tests an unsaved config; reuses the stored key when `id` is supplied and `apiKey` is omitted |
 | `PUT` | `/api/v1/agents/{id}/inference-provider` | Admin | Set/clear the per-agent provider override (`{ "inferenceProviderId": "<guid>" \| null }`) — unlike `PUT /api/v1/agents/{id}`, this is allowed for built-in agents, since overriding a built-in's provider is the primary use case |
 
-Every create/update/test request above also accepts a `capability` field (`"Chat"` or `"Transcription"`,
-defaults to `"Chat"` when omitted for backward compatibility). `POST /{id}/test` and `POST /test`
-branch on it: `Chat` runs the existing 1-token chat ping, `Transcription` transcribes a ~0.3s
-in-memory-synthesized silent WAV through `ITranscriptionClient`. The admin UI (`InferenceProviderForm`)
-exposes Capability as a field on create/edit, and the per-agent provider override picker
-(`AgentInferenceProviderSelect`) filters out `Transcription` rows, since that override feeds chat
-resolution only.
+Every create/update/test request above also accepts a `capability` field (`"Chat"`, `"Transcription"`,
+or `"Vision"` — defaults to `"Chat"` when omitted for backward compatibility). `POST /{id}/test` and
+`POST /test` branch on it: `Chat` runs the existing 1-token chat ping, `Transcription` transcribes a
+~0.3s in-memory-synthesized silent WAV through `ITranscriptionClient`, `Vision` (Phase 2 of video
+editing — shot captioning, see `docs/video-editing.md`) sends a trivial embedded 1x1 JPEG through
+`IChatClientFactory` with a "reply ok" prompt. The admin UI (`InferenceProviderForm`) exposes
+Capability as a field on create/edit, and the per-agent provider override picker
+(`AgentInferenceProviderSelect`) filters to `Chat` rows only (an allowlist — "not Transcription"
+alone would have silently admitted `Vision` rows too), since that override feeds chat resolution only.
 
 ### Video Editing Endpoints (Inference API)
 
@@ -309,7 +311,18 @@ compilation. Full design in [`docs/video-editing.md`](docs/video-editing.md); su
   pure C# analyzer (`FrameGridAnalyzer`, `WavRmsSampler`); zero LLM calls, purely additive
   (`VideoAnalysisArtifact.Version` 1→2, old artifacts still deserialize). `VisualDetail`
   (`None`/`Compact`/`Full`) degrades per-shot richness *before* the bounded view ever drops an
-  offered item. See `docs/video-editing.md` § "Scene/visual analysis (Phase 1)".
+  offered item. See `docs/video-editing.md` § "Scene/visual analysis (Phase 1)". **Phase 2**
+  (`Vision`, default `Off` — deliberately *not* `Optional` like `Transcription`, since captioning
+  can cost up to `MaxCaptionedShots` vision chat calls per step, not one) adds optional vision-LLM
+  shot captioning: `KeyframeSelector` picks which shots to caption (`PerDuplicateGroup`/
+  `LongestShots`/`EvenlySpaced`), `IKeyframeExtractor` (new `FfmpegArgvBuilder.BuildKeyframeArgs`)
+  extracts one representative frame per selected shot, and `IShotCaptioner`/`VisionShotCaptioner`
+  sends it through the reused `IChatClientFactory` with `ChatResponseFormat.ForJsonSchema<VideoShotCaption>()`
+  for a structured scene description, surfaced as a `"c"` key in the bounded view (same
+  degrade-before-drop discipline as `"v"`/`"a"`). The shot-id↔caption binding is never
+  model-controlled — the executor always overwrites the model-returned `ShotId` with the id it
+  actually requested. `VideoAnalysisArtifact.Version` stays at 2 (purely additive optional fields).
+  See `docs/video-editing.md` § "Vision captioning (Phase 2)".
 - **`StepType.Agent` + `AgentType.VideoStoryEditor`** — an LLM decides which offered ids to KEEP
   (`VideoEditDecisionOutput`); no existing step type is duplicated for this, `AgentStepExecutor`
   already provides structured output, retry-with-feedback, and tool scoping.

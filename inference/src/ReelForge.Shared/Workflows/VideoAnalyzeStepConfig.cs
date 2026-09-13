@@ -34,6 +34,52 @@ public enum VideoVisualDetail
 }
 
 /// <summary>
+/// Controls whether/how a <c>VideoAnalyze</c> step attempts Phase 2 vision-LLM shot captioning
+/// (see docs/video-editing.md "Vision captioning"). Structurally mirrors
+/// <see cref="VideoTranscriptionMode"/> (<c>Off</c>/<c>Optional</c>/<c>Required</c> with the same
+/// degrade-vs-fail semantics), with one deliberate deviation: the default here is <c>Off</c>, not
+/// <c>Optional</c>.
+/// </summary>
+/// <remarks>
+/// <c>Transcription</c> defaults to <c>Optional</c> because it costs at most one ASR network call
+/// per step. Captioning is structurally different: it can cost up to
+/// <see cref="VideoAnalyzeStepConfig.MaxCaptionedShots"/> separate vision chat-completion calls
+/// (each carrying an image) per <c>VideoAnalyze</c> step. If this defaulted to <c>Optional</c>,
+/// then the moment any admin configured a <c>Vision</c>-capability default provider — for some
+/// unrelated workflow that actually wants captioning — every OTHER existing or future
+/// <c>VideoAnalyze</c> step in the system would silently start making real, billed vision calls
+/// with no config change of its own. Defaulting to <c>Off</c> keeps every step's cost/latency
+/// unchanged unless its author explicitly opts in by setting <see cref="VideoAnalyzeStepConfig.Vision"/>.
+/// </remarks>
+public enum VideoVisionMode
+{
+    Off,
+    Optional,
+    Required
+}
+
+/// <summary>
+/// Which shots <c>KeyframeSelector.SelectShotsToCaption</c> picks for Phase 2 vision captioning,
+/// up to <see cref="VideoAnalyzeStepConfig.MaxCaptionedShots"/>. See
+/// docs/video-editing.md "Vision captioning" for the exact selection algorithm of each strategy.
+/// </summary>
+public enum VideoCaptionSelection
+{
+    /// <summary>
+    /// Default. Captions each near-duplicate group's best-take shot first (so N takes of one
+    /// setup cost one call, not N), then fills any remaining budget with the longest
+    /// not-yet-selected shots.
+    /// </summary>
+    PerDuplicateGroup,
+
+    /// <summary>Simply the N longest eligible shots.</summary>
+    LongestShots,
+
+    /// <summary>Shots at roughly even index/time intervals across the whole shot list.</summary>
+    EvenlySpaced
+}
+
+/// <summary>
 /// Cheap, in-process structural checks run against the produced analysis before the step is
 /// considered successful. No model call. Mirrors <see cref="ExtractExpectation"/>'s role for
 /// Extract steps.
@@ -108,4 +154,20 @@ public sealed record VideoAnalyzeStepConfig(
     // -- Phase 1: bounded-view detail level, and the degrade-before-drop budget it governs --
     VideoVisualDetail VisualDetail = VideoVisualDetail.Compact,
     int MaxViewDuplicateGroups = 20,
+    // -- Phase 2: vision-LLM shot captioning (default OFF — see VideoVisionMode's doc comment
+    //    for why this deviates from Transcription's Optional-by-default) --
+    VideoVisionMode Vision = VideoVisionMode.Off,
+    Guid? VisionProviderId = null,
+    VideoCaptionSelection CaptionSelection = VideoCaptionSelection.PerDuplicateGroup,
+    int MaxCaptionedShots = 24,
+    double MinCaptionShotSeconds = 1.0,
+    int KeyframeMaxWidth = 512,
+    int VisionTimeoutSeconds = 120,
+    int MaxCaptionChars = 320,
+    /// <summary>
+    /// When <c>false</c> (default), keyframe JPEGs extracted for captioning are scratch-only and
+    /// deleted with the rest of the step's scratch space when it completes — never uploaded
+    /// anywhere. Uploading them for later inspection is explicitly out of scope for Phase 2.
+    /// </summary>
+    bool PersistKeyframes = false,
     VideoAnalyzeExpectation? Expect = null);

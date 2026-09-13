@@ -22,6 +22,15 @@ namespace ReelForge.Shared.Workflows;
 /// persisted with <c>Version: 1</c> (no visual/audio descriptors at all) still deserializes into
 /// this same record with those new fields simply absent/null.
 /// </para>
+/// <para>
+/// Phase 2 ("vision shot captioning") stays at <see cref="Version"/> 2 rather than bumping to 3:
+/// it appends exactly one more optional/nullable field (<see cref="VideoAnalysisShot.Caption"/>)
+/// plus optional/default-valued fields on <see cref="VideoAnalysisProvenance"/>, and a
+/// Version-2-without-captions artifact and a Version-2-with-captions artifact are both valid
+/// under the identical shape — no consumer needs to structurally distinguish them (a consumer
+/// that cares simply checks whether <c>Caption</c> is null). A version bump is reserved for a
+/// change that breaks or reshapes existing fields, not for another purely-additive optional one.
+/// </para>
 /// </remarks>
 public sealed record VideoAnalysisArtifact(
     int Version,
@@ -59,7 +68,14 @@ public sealed record VideoAnalysisShot(
     double StartSec,
     double EndSec,
     VideoAnalysisShotVisual? Visual = null,
-    VideoAnalysisShotAudio? Audio = null);
+    VideoAnalysisShotAudio? Audio = null,
+    /// <summary>
+    /// Phase 2 addition — a short, AI-generated scene description, populated only when this shot
+    /// was selected for captioning by <c>KeyframeSelector.SelectShotsToCaption</c> AND captioning
+    /// did not fail/degrade for it. Absence is normal (captioning is budget-limited and opt-in via
+    /// <c>VideoAnalyzeStepConfig.Vision</c>), never a signal the shot is empty or unimportant.
+    /// </summary>
+    VideoShotCaption? Caption = null);
 
 /// <summary>
 /// A detected silence gap. Id: <c>g{n}</c>. <see cref="AfterShot"/> links each gap to the shot
@@ -109,7 +125,20 @@ public sealed record VideoAnalysisProvenance(
     bool VisualAnalysisApplied = false,
     bool VisualAnalysisDegraded = false,
     bool AudioLevelsApplied = false,
-    bool SharpnessAvailable = false);
+    bool SharpnessAvailable = false,
+    // -- Phase 2: vision shot captioning (see docs/video-editing.md "Vision captioning") --
+    VideoVisionMode VisionMode = VideoVisionMode.Off,
+    bool VisionApplied = false,
+    bool VisionDegraded = false,
+    string? VisionProvider = null,
+    int CaptionedShotCount = 0,
+    /// <summary>
+    /// True when the aggregate <c>VideoAnalyzeStepConfig.VisionTimeoutSeconds</c> wall-clock
+    /// budget was exceeded mid-pass, so captioning stopped early with whatever succeeded so far
+    /// (as opposed to <see cref="VisionDegraded"/>, which covers "no vision provider resolved" or
+    /// "zero captions obtained at all").
+    /// </summary>
+    bool VisionPartial = false);
 
 // =============================================================================================
 // Phase 1: visual/audio scene descriptors (grid-sampling based, deterministic, no LLM call).
@@ -209,3 +238,35 @@ public sealed record VideoAnalysisPacing(
     double CutsPerMinute,
     IReadOnlyList<double> MotionTimeline,
     double TimelineBinSeconds);
+
+// =============================================================================================
+// Phase 2: optional vision-LLM shot captioning (see docs/video-editing.md "Vision captioning").
+// Purely additive on top of Phase 1's schema — Version stays 2 (see VideoAnalyzeStepExecutor's
+// doc comment for why no Version 3 bump is needed).
+// =============================================================================================
+
+/// <summary>
+/// A short, structured scene description of one shot's representative keyframe, produced by a
+/// single vision-capable chat-completions call (<c>IShotCaptioner</c>). Every field is
+/// model-authored prose/tags — deliberately no numeric or time-bearing property, same discipline
+/// as <c>VideoEditDecisionOutput</c>, though for a different reason here: a caption describes one
+/// still frame, so it has nothing meaningful to say about timing at all.
+/// </summary>
+/// <remarks>
+/// <b>Safety property, enforced by the caller, not by this type:</b> <see cref="ShotId"/> as
+/// returned by the model must never be trusted for binding a caption to a shot.
+/// <c>VideoAnalyzeStepExecutor</c> always overwrites this field with the id it actually requested
+/// before attaching the caption to a shot — see <c>IShotCaptioner.CaptionAsync</c>'s remarks.
+/// </remarks>
+public sealed record VideoShotCaption(
+    string ShotId,
+    string Summary,
+    IReadOnlyList<string> Subjects,
+    string Action,
+    string Setting,
+    string Mood,
+    /// <summary>Free-text shot-scale guess, typically one of "Wide", "Medium", "CloseUp" — not enum-constrained since a vision model's own wording is more robust than forcing an exact enum match.</summary>
+    string ShotScale,
+    string CameraAngle,
+    IReadOnlyList<string> OnScreenText,
+    IReadOnlyList<string> Tags);

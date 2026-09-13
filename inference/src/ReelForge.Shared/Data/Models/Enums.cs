@@ -168,14 +168,26 @@ public enum InferenceProviderKind
 
 /// <summary>
 /// What an <see cref="InferenceProvider"/> row is used for. A single row's <c>ModelName</c>
-/// cannot serve both roles (a Whisper deployment is a different deployment from a chat
+/// cannot serve more than one role (a Whisper deployment is a different deployment from a chat
 /// deployment, and many OpenAI-compatible chat gateways have no <c>/audio/transcriptions</c>
 /// endpoint at all), so this discriminator is load-bearing, not cosmetic: it determines which
-/// resolution path (chat vs. transcription) a provider is eligible for, and which "one default
-/// row" uniqueness constraint it participates in.
+/// resolution path (chat vs. transcription vs. vision) a provider is eligible for, and which
+/// "one default row" uniqueness constraint it participates in — each capability's default is
+/// fully independent (a composite unique index on <c>(capability, is_default)</c>).
 /// </summary>
+/// <remarks>
+/// <see cref="Vision"/> (Phase 2 of the video-editing feature — see docs/video-editing.md
+/// "Vision captioning") reuses the exact same chat-completions machinery as <see cref="Chat"/>
+/// (a vision call is just a chat call with an image content part), so it resolves via
+/// <c>IInferenceProviderResolver.ResolveVisionAsync</c> into the same <c>ResolvedInferenceProvider</c>
+/// type <see cref="Chat"/> uses — it is kept as a separate capability rather than folded into
+/// <see cref="Chat"/> only so a Vision-capable deployment (which may differ from the agent chat
+/// deployment) can be configured and defaulted independently, and so a Vision default never
+/// silently answers an agent chat-completion resolution or vice versa.
+/// </remarks>
 public enum InferenceProviderCapability
 {
     Chat,
-    Transcription
+    Transcription,
+    Vision
 }

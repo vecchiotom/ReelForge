@@ -71,6 +71,15 @@ public class VideoStoryEditorAgent : ReelForgeAgentBase
         - "rms"/"speech" (under "a"): rough audio loudness and how much of the shot has
           speech versus silence.
 
+        Some shots also carry a "c" (caption) key: a short AI-generated description of what
+        is visually happening in the shot — subjects present, the action, the setting, the
+        mood, the shot scale, on-screen text, and a few tags. Use it as extra context for
+        judging pacing and quality (e.g. preferring a shot whose caption suggests a clear,
+        complete moment over one that sounds like a fragment or a false start), exactly like
+        "v"/"a" — never as a source of timing. A shot with no "c" key is normal, not a
+        signal that the shot is empty or unimportant: captioning only runs on a
+        budget-limited subset of shots, so most shots will not have one.
+
         ## Tools
 
         Use `ListProjectFiles` and `ReadProjectFile` if you need to check other project

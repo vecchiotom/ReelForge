@@ -23,6 +23,7 @@ const KIND_OPTIONS: { value: InferenceProviderKind; label: string }[] = [
 const CAPABILITY_OPTIONS: { value: InferenceProviderCapability; label: string }[] = [
   { value: 'Chat', label: 'Chat' },
   { value: 'Transcription', label: 'Transcription (ASR)' },
+  { value: 'Vision', label: 'Vision (shot captioning)' },
 ];
 
 export function InferenceProviderForm({ opened, onClose, onSuccess, provider }: InferenceProviderFormProps) {
@@ -169,7 +170,7 @@ export function InferenceProviderForm({ opened, onClose, onSuccess, provider }: 
           />
           <Select
             label="Capability"
-            description="Chat providers serve agent completions; Transcription providers serve ASR for VideoAnalyze steps. Each has its own independent default."
+            description="Chat providers serve agent completions; Transcription providers serve ASR for VideoAnalyze steps; Vision providers serve VideoAnalyze's optional shot captioning. Each has its own independent default."
             data={CAPABILITY_OPTIONS}
             allowDeselect={false}
             {...form.getInputProps('capability')}
@@ -190,7 +191,13 @@ export function InferenceProviderForm({ opened, onClose, onSuccess, provider }: 
             {...form.getInputProps('timeoutSeconds')}
           />
           <Switch
-            label={`Set as default ${form.values.capability === 'Transcription' ? 'transcription' : 'chat'} provider`}
+            label={`Set as default ${
+              form.values.capability === 'Transcription'
+                ? 'transcription'
+                : form.values.capability === 'Vision'
+                  ? 'vision'
+                  : 'chat'
+            } provider`}
             {...form.getInputProps('isDefault', { type: 'checkbox' })}
           />
           <Switch label="Enabled" {...form.getInputProps('isEnabled', { type: 'checkbox' })} />

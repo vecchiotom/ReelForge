@@ -145,4 +145,33 @@ public static class FfmpegArgvBuilder
         args.Add(outputWavPath);
         return args.ToArray();
     }
+
+    /// <summary>
+    /// Extracts a single representative frame as a JPEG for Phase 2 vision captioning:
+    /// <c>-ss {atSec} -i {inputPath} -frames:v 1 -vf scale='min({maxWidth},iw)':-2 -f image2
+    /// -c:v mjpeg -q:v 4 {outputJpgPath}</c>. <c>-ss</c> is placed before <c>-i</c> for fast input
+    /// seeking, matching <see cref="BuildExtractAudioArgs"/>'s convention. The scale expression
+    /// never upscales (<c>min(maxWidth, iw)</c>) and preserves aspect ratio (<c>-2</c> on height).
+    /// </summary>
+    public static string[] BuildKeyframeArgs(string inputPath, string outputJpgPath, double atSec, int maxWidth)
+    {
+        List<string> args = new(BaseFlags) { "-loglevel", "error" };
+        args.AddRange(ProtocolWhitelist);
+        args.Add("-ss");
+        args.Add(FfmpegArgvFormat.Number(Math.Max(0, atSec)));
+        args.Add("-i");
+        args.Add(inputPath);
+        args.Add("-frames:v");
+        args.Add("1");
+        args.Add("-vf");
+        args.Add($"scale='min({FfmpegArgvFormat.Number(maxWidth)},iw)':-2");
+        args.Add("-f");
+        args.Add("image2");
+        args.Add("-c:v");
+        args.Add("mjpeg");
+        args.Add("-q:v");
+        args.Add("4");
+        args.Add(outputJpgPath);
+        return args.ToArray();
+    }
 }

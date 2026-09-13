@@ -44,16 +44,19 @@ export function AgentInferenceProviderSelect({
     );
   }
 
-  // This override feeds IAgentChatClientProvider (chat resolution only) — a Transcription-
-  // capability provider must never be selectable here, since it has no chat completions
-  // endpoint (e.g. a whisper.cpp-server/faster-whisper-server deployment). A disabled provider
-  // is also excluded from new selections, since resolving to one would only fail every chat
-  // call made through it — but the currently-assigned provider stays listed even if it has
-  // since been disabled, so the Select can still show its name instead of a blank/raw id.
+  // This override feeds IAgentChatClientProvider (chat resolution only) — a Transcription- or
+  // Vision-capability provider must never be selectable here, since neither has a chat
+  // completions endpoint suitable for an agent run (e.g. a whisper.cpp-server deployment, or a
+  // vision-only deployment). Filtered as "capability === Chat" (an allowlist), not "capability
+  // !== Transcription" (a denylist) — a denylist silently admits every future capability, which
+  // is exactly the bug a Vision row would have hit here otherwise. A disabled provider is also
+  // excluded from new selections, since resolving to one would only fail every chat call made
+  // through it — but the currently-assigned provider stays listed even if it has since been
+  // disabled, so the Select can still show its name instead of a blank/raw id.
   const data = [
     { value: DEFAULT_VALUE, label: 'Default provider' },
     ...(providers ?? [])
-      .filter((p) => p.capability !== 'Transcription' && (p.isEnabled || p.id === inferenceProviderId))
+      .filter((p) => p.capability === 'Chat' && (p.isEnabled || p.id === inferenceProviderId))
       .map((p) => ({ value: p.id, label: p.name })),
   ];
 

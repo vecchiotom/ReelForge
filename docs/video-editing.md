@@ -15,6 +15,7 @@ executors, agents in general) see `CLAUDE.md`.
 - [Where artifacts live](#where-artifacts-live)
 - [Config reference](#config-reference)
 - [Scene/visual analysis (Phase 1)](#scenevisual-analysis-phase-1)
+- [Vision captioning (Phase 2)](#vision-captioning-phase-2)
 - [Transcription (ASR)](#transcription-asr)
 - [Security: why ffmpeg is not in the sandbox](#security-why-ffmpeg-is-not-in-the-sandbox)
 - [Explicitly not built](#explicitly-not-built)
@@ -257,6 +258,15 @@ before chunking it — wasted compute at best, a very large in-memory string at 
 | `DuplicateWindowShots` | `20` | Single-linkage grouping only compares a shot against the previous N shots (multi-take shots are temporally adjacent) |
 | `VisualDetail` | `Compact` | `None` / `Compact` / `Full` — how much per-shot visual/audio detail the bounded view includes; degrades toward `None` before any item is ever dropped — see below |
 | `MaxViewDuplicateGroups` | `20` | Caps `view.duplicateGroups` |
+| `Vision` | `Off` | Phase 2: `Off` / `Optional` / `Required` — vision-LLM shot captioning, **off by default** (unlike `Transcription`) — see [Vision captioning (Phase 2)](#vision-captioning-phase-2) |
+| `VisionProviderId` | `null` | Explicit override; otherwise resolved via the default `Vision`-capability provider |
+| `CaptionSelection` | `PerDuplicateGroup` | `PerDuplicateGroup` / `LongestShots` / `EvenlySpaced` — which shots get captioned |
+| `MaxCaptionedShots` | `24` | Hard cap on vision chat-completion calls per step |
+| `MinCaptionShotSeconds` | `1.0` | Shots shorter than this are never selected for captioning |
+| `KeyframeMaxWidth` | `512` | Max width (px) of the extracted keyframe JPEG sent to the vision model; never upscaled |
+| `VisionTimeoutSeconds` | `120` | Aggregate wall-clock budget for the whole captioning pass (not per-shot) |
+| `MaxCaptionChars` | `320` | Caption `summary` field is truncated to this length |
+| `PersistKeyframes` | `false` | When `false` (default), extracted keyframe JPEGs are scratch-only and deleted with the rest of scratch space; no storage upload in Phase 2 either way |
 | `Expect` | `null` | Optional structural checks (`MinShots`, `MinTranscriptSegments`, `MaxSilenceRatio`, `MinShotsWithVisuals`) |
 
 ### `VideoCompileStepConfig`
@@ -446,6 +456,193 @@ transcription-degrade pattern: on any exception, `Provenance.VisualAnalysisAppli
 `AudioLevelsApplied` become `false`, `VisualAnalysisDegraded` becomes `true`, a warning is logged,
 and the step continues with shots/silences/transcript exactly as if that stage were configured
 off. Nothing in Phase 1 can fail a `VideoAnalyze` step.
+
+---
+
+## Vision captioning (Phase 2)
+
+Optional vision-LLM shot captioning on top of Phase 1's deterministic descriptors: extract one
+representative keyframe per selected shot, send it to a vision-capable chat model, and get back a
+short structured scene description (subjects, action, setting, mood, shot scale, camera angle,
+on-screen text, tags). Unlike every other stage in this document, this one is **off by default**
+and makes real LLM calls — see [Why `Off`, not `Optional`](#why-off-not-optional) below.
+
+### `InferenceProviderCapability.Vision`
+
+A third `InferenceProvider` capability, alongside `Chat` and `Transcription`. It reuses the
+**exact same chat-completions machinery** `Chat` does — `IChatClientFactory`/`ResolvedInferenceProvider`
+gained no new members — since a vision call is just an ordinary chat-completions call with an
+image content part alongside the text prompt. It is still a separate capability (not folded into
+`Chat`) so a vision-capable deployment (which may differ from the deployment an agent's chat
+resolution uses) can be configured and defaulted independently: `Vision` participates in its own
+"at most one default" bucket via the same composite `(capability, is_default)` partial unique
+index `Chat`/`Transcription` already share — no schema migration was needed to add the third
+value, since that index is generic over any `capability` value, not hardcoded to two.
+
+`IInferenceProviderResolver.ResolveVisionAsync(explicitProviderId, ct)` mirrors
+`ResolveTranscriptionAsync`'s precedence and null-when-nothing-resolves contract exactly
+(`explicitProviderId` if it resolves to an enabled `Vision`-capability row → the single enabled
+`IsDefault && Capability == Vision` row → `null`), but returns `ResolvedInferenceProvider?` (not a
+dedicated vision type) and resolves through the same `ResolveFromProvider` helper `ResolveAsync`
+(chat) uses. Like transcription, there is deliberately no fallback to the legacy `AzureOpenAI:*`
+config keys — silently sending an image to a deployment that may not support vision would fail
+confusingly.
+
+`POST /api/v1/inference-providers/{id}/test` and `POST /api/v1/inference-providers/test` gained a
+`Vision` arm alongside the existing `Transcription` arm: it sends a trivial embedded 1x1 JPEG
+through `IChatClientFactory` with a "reply with the word ok" prompt and treats any non-empty
+response as success — mirroring the existing synthesized-silent-WAV transcription ping. The admin
+UI (`InferenceProviderForm`) exposes `Vision` as a third `Capability` option; the per-agent
+provider override picker (`AgentInferenceProviderSelect`) filters to `Chat` rows only (an
+allowlist, not merely "not Transcription" — a denylist would have silently admitted `Vision` rows
+here too), since that override feeds chat resolution only.
+
+### Why `Off`, not `Optional`
+
+`VideoAnalyzeStepConfig.Transcription` defaults to `Optional` because it costs at most **one** ASR
+network call per step. Captioning is structurally different: it can cost up to `MaxCaptionedShots`
+(default 24) separate vision chat-completion calls — each carrying an image — per `VideoAnalyze`
+step. If `Vision` defaulted to `Optional`, then the moment any admin configured a
+`Vision`-capability default provider for some unrelated workflow that actually wants captioning,
+**every other** existing or future `VideoAnalyze` step in the system would silently start making
+real, billed vision calls with no config change of its own. Defaulting to `Off` keeps every step's
+cost/latency unchanged unless its author explicitly opts in by setting `Vision` on that step.
+`Optional`/`Required` otherwise carry the same degrade-vs-fail semantics `Transcription` does.
+
+### Keyframe selection
+
+`KeyframeSelector` (`WorkflowEngine/Services/Video/KeyframeSelector.cs`) is pure — no ffmpeg, no
+I/O:
+
+- **`ChooseKeyframeSec(shot)`** — the midpoint of the shot's longest `StillWindow` (Phase 1) when
+  at least one exists (a calm moment makes a cleaner, less motion-blurred frame), else the shot's
+  own midpoint. Falls back to the shot midpoint when `Visual` is `null` (visual analysis off,
+  degraded, or simply no still windows).
+- **`SelectShotsToCaption(shots, duplicateGroups, strategy, maxCaptionedShots, minCaptionShotSeconds)`**
+  implements three strategies (`VideoCaptionSelection`), excluding any shot shorter than
+  `minCaptionShotSeconds`, and always returning ids in shot-chronological order regardless of
+  selection order:
+  - **`PerDuplicateGroup`** (default) — captions each near-duplicate group's best-take shot first
+    (Phase 1's `DuplicateGroups`), so N takes of one setup cost one vision call, not N; fills any
+    remaining budget with the longest not-yet-selected shots.
+  - **`LongestShots`** — simply the N longest eligible shots.
+  - **`EvenlySpaced`** — shots at roughly even index intervals across the whole shot list.
+
+### Keyframe extraction
+
+`FfmpegArgvBuilder.BuildKeyframeArgs(inputPath, outputJpgPath, atSec, maxWidth)` — a new ffmpeg
+invocation alongside Phase 1's grid-sample/audio-extract builders, following the exact same
+`IVideoToolRunner` calling convention via a new `IKeyframeExtractor`/`FfmpegKeyframeExtractor` pair
+(mirroring `IAudioExtractor`/`FfmpegAudioExtractor`):
+
+```
+ffmpeg -nostdin -hide_banner -y -loglevel error -protocol_whitelist file
+       -ss {atSec} -i {inputPath}
+       -frames:v 1
+       -vf scale='min({maxWidth},iw)':-2
+       -f image2 -c:v mjpeg -q:v 4
+       {outputJpgPath}
+```
+
+`-ss` before `-i` for fast input seeking (same convention as `BuildExtractAudioArgs`); the scale
+expression never upscales and preserves aspect ratio. `IKeyframeExtractor` is deliberately its own
+small interface (not folded into `IFrameGridSampler`) so Phase 3 (motion-graphics overlay
+planning, applied at compile time) has a single established pattern to follow for its own new
+ffmpeg operations.
+
+### The captioner
+
+`IShotCaptioner`/`VisionShotCaptioner` (`WorkflowEngine/Services/Video/`) build one chat message
+per shot — a text prompt plus the keyframe JPEG as a `DataContent("image/jpeg")` content part —
+and call `IChatClient.GetResponseAsync` with `ChatResponseFormat.ForJsonSchema<VideoShotCaption>()`,
+the exact same structured-output mechanism `AgentStepExecutor`/`ReelForgeAgentBase` use for agent
+steps. `IChatClientFactory` is reused unchanged.
+
+```csharp
+public sealed record VideoShotCaption(
+    string ShotId, string Summary, IReadOnlyList<string> Subjects,
+    string Action, string Setting, string Mood,
+    string ShotScale, string CameraAngle,
+    IReadOnlyList<string> OnScreenText, IReadOnlyList<string> Tags);
+```
+
+**Critical safety property:** the shot-id ↔ caption binding is never model-controlled. The model is
+called once per shot; `VideoAnalyzeStepExecutor` — never the captioner — always overwrites the
+returned `VideoShotCaption.ShotId` with the id it actually requested (`ShotCaptionRequest.ShotId`)
+before attaching the caption to a shot. This mirrors the id-anchored discipline
+`VideoEditDecisionOutput`/`VideoCompileStepExecutor` already use: never trust an identifier the
+model echoes back for anything that matters. Covered by a dedicated test asserting the executor
+ignores a deliberately-wrong model-returned `ShotId`.
+
+Captioning retries up to 2 attempts per shot with a short linear backoff (mirrors
+`TranscribeWithRetryAsync`'s shape); a captioning failure on one shot never aborts captioning of
+the rest — the executor's per-shot loop catches, counts it in `meta.vision.failedShots`, and moves
+on.
+
+### Executor wiring
+
+Captioning runs **last** among `VideoAnalyze`'s analysis stages, strictly after every deterministic
+stage (silence/shot detection, transcription, Phase 1 visual/audio analysis, near-duplicate
+grouping) — so a vision failure can never put anything deterministic at risk:
+
+1. `Vision == Off` → skipped entirely, `meta.vision = {mode: "Off", applied: false, ...}`. Every
+   other field in the view/artifact is byte-identical to a pre-Phase-2 run — the single most
+   important regression test in this phase, mirroring Phase 1's degrade-before-drop test's
+   importance.
+2. Else, resolve via `ResolveVisionAsync`. `null` + `Required` ⇒ fail with `VISION_UNAVAILABLE`.
+   `null` + `Optional` ⇒ degrade (`meta.vision.degraded = true`), continue with no captions.
+3. Resolved ⇒ select shots via `KeyframeSelector`, extract each keyframe to scratch, caption each
+   with the 2-attempt retry. An aggregate `VisionTimeoutSeconds` wall-clock budget covers the
+   *whole* captioning pass (not per-shot) via a linked, timed `CancellationTokenSource`; exceeding
+   it mid-pass stops captioning further shots, keeps whatever already succeeded, and sets
+   `meta.vision.partial = true`.
+4. If zero captions were obtained after all that: `Required` ⇒ fail with `VISION_FAILED`;
+   `Optional` ⇒ degrade and continue with zero (or partial) captions.
+
+### View/artifact shape addition
+
+A shot with a caption gains a `"c"` key in the bounded view, gated on `VisualDetail` exactly like
+Phase 1's `"v"`/`"a"` keys — same degrade-before-drop discipline, never bypassed:
+
+```jsonc
+{
+  "view": {
+    "shots": [{
+      "id": "s4", "startSec": 12.4, "endSec": 16.8, "durationSec": 4.4,
+      "c": {
+        "summary": "A presenter gestures at a whiteboard while explaining a diagram.",
+        "scale": "Medium", "mood": "Focused", "tags": ["presenter", "whiteboard", "explaining"],
+        "subjects": ["presenter"], "action": "gesturing at a diagram",
+        "setting": "office whiteboard", "cameraAngle": "Eye level", "onScreenText": []
+      }
+    }]
+  },
+  "meta": {
+    "vision": { "mode": "Optional", "applied": true, "provider": "gpt-4o-mini-vision", "degraded": false, "partial": false, "captionedShots": 6, "failedShots": 0 }
+  }
+}
+```
+
+`Compact` detail shows `summary`/`scale`/`mood`/`tags`; `Full` adds `subjects`/`action`/`setting`/
+`cameraAngle`/`onScreenText`. A shot with no `"c"` key is normal — not selected for captioning, or
+captioning off/failed/degraded — never a signal the shot is empty or unimportant; the
+`VideoStoryEditor` prompt says so explicitly.
+
+`VideoAnalysisArtifact.Version` **stays at 2**, not 3: Phase 2 appends exactly one more
+optional/nullable field (`VideoAnalysisShot.Caption`) plus optional/default-valued fields on
+`VideoAnalysisProvenance`, and a Version-2-without-captions artifact and a
+Version-2-with-captions artifact are both valid under the identical shape — no consumer needs to
+structurally distinguish them (a consumer that cares simply checks whether `Caption` is null).
+
+### Explicitly out of scope for Phase 2
+
+`PersistKeyframes` exists as a config field but is unused — the default (`false`, scratch-only,
+deleted with the rest of scratch space) is the only wired behavior; uploading keyframes for later
+inspection was deliberately deferred rather than adding an unvalidated storage path this late in
+the phase. No UI was added to the workflow step-config builder for the new `Vision*` fields
+(`InferenceProviderForm`'s capability picker and the admin provider table were updated; the
+per-step `VideoAnalyze` config panel was not) — a workflow author can still set them via the raw
+step JSON today.
 
 ---
 

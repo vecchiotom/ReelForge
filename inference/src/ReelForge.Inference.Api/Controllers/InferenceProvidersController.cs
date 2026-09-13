@@ -112,7 +112,7 @@ public class InferenceProvidersController : ControllerBase
         InferenceProviderCapability capability = InferenceProviderCapability.Chat;
         if (!string.IsNullOrWhiteSpace(request.Capability) && !TryParseCapability(request.Capability, out capability))
         {
-            return BadRequest(new { error = $"Invalid capability '{request.Capability}'. Expected 'Chat' or 'Transcription'." });
+            return BadRequest(new { error = $"Invalid capability '{request.Capability}'. Expected 'Chat', 'Transcription', or 'Vision'." });
         }
 
         bool nameTaken = await _db.InferenceProviders.AnyAsync(p => p.Name == request.Name, ct);
@@ -203,7 +203,7 @@ public class InferenceProvidersController : ControllerBase
         {
             if (!TryParseCapability(request.Capability, out InferenceProviderCapability capability))
             {
-                return BadRequest(new { error = $"Invalid capability '{request.Capability}'. Expected 'Chat' or 'Transcription'." });
+                return BadRequest(new { error = $"Invalid capability '{request.Capability}'. Expected 'Chat', 'Transcription', or 'Vision'." });
             }
 
             // Changing capability on a row that is currently the default is ambiguous: it would
@@ -344,6 +344,13 @@ public class InferenceProvidersController : ControllerBase
                 apiKey, entity.TimeoutSeconds ?? DefaultTimeoutSeconds);
             result = await RunTranscriptionTestAsync(resolvedTranscription, ct);
         }
+        else if (entity.Capability == InferenceProviderCapability.Vision)
+        {
+            ResolvedInferenceProvider resolvedVision = new(
+                entity.Id, entity.Name, entity.Kind, entity.Endpoint, entity.ModelName,
+                apiKey, entity.TimeoutSeconds ?? DefaultTimeoutSeconds);
+            result = await RunVisionTestAsync(resolvedVision, ct);
+        }
         else
         {
             ResolvedInferenceProvider resolved = new(
@@ -418,7 +425,7 @@ public class InferenceProvidersController : ControllerBase
         InferenceProviderCapability capability = InferenceProviderCapability.Chat;
         if (!string.IsNullOrWhiteSpace(capabilityStr) && !TryParseCapability(capabilityStr, out capability))
         {
-            return BadRequest(new { error = $"Invalid capability '{capabilityStr}'. Expected 'Chat' or 'Transcription'." });
+            return BadRequest(new { error = $"Invalid capability '{capabilityStr}'. Expected 'Chat', 'Transcription', or 'Vision'." });
         }
 
         TestInferenceProviderResponse result;
@@ -427,6 +434,12 @@ public class InferenceProvidersController : ControllerBase
             ResolvedTranscriptionProvider resolvedTranscription = new(
                 request.Id, "test", kind, endpoint, modelName, apiKey, timeoutSeconds);
             result = await RunTranscriptionTestAsync(resolvedTranscription, ct);
+        }
+        else if (capability == InferenceProviderCapability.Vision)
+        {
+            ResolvedInferenceProvider resolvedVision = new(
+                request.Id, "test", kind, endpoint, modelName, apiKey, timeoutSeconds);
+            result = await RunVisionTestAsync(resolvedVision, ct);
         }
         else
         {
@@ -503,6 +516,60 @@ public class InferenceProvidersController : ControllerBase
             return new TestInferenceProviderResponse(false, stopwatch.ElapsedMilliseconds, "Provider test failed.", null);
         }
     }
+
+    /// <summary>
+    /// Sends <see cref="TinyTestJpeg"/> through a Vision-capability provider as a 1-shot
+    /// connectivity ping — mirrors <see cref="RunTestAsync"/>'s chat-side "ping" message and
+    /// <see cref="RunTranscriptionTestAsync"/>'s synthesized-audio ping. Reuses
+    /// <see cref="IChatClientFactory"/> unchanged (a vision call is just a chat call with an
+    /// image content part — see <c>IInferenceProviderResolver.ResolveVisionAsync</c>), so no new
+    /// client factory is needed for this test path either.
+    /// </summary>
+    private async Task<TestInferenceProviderResponse> RunVisionTestAsync(ResolvedInferenceProvider provider, CancellationToken ct)
+    {
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        try
+        {
+            IChatClient chatClient = _chatClientFactory.Get(provider);
+            ChatMessage message = new(
+                ChatRole.User,
+                new List<AIContent>
+                {
+                    new TextContent("Reply with only the word ok."),
+                    new DataContent(TinyTestJpeg, "image/jpeg")
+                });
+            ChatOptions options = new() { MaxOutputTokens = 8 };
+
+            ChatResponse response = await chatClient.GetResponseAsync(new[] { message }, options, ct);
+            stopwatch.Stop();
+
+            string? preview = response.Text;
+            if (!string.IsNullOrEmpty(preview) && preview.Length > 200)
+            {
+                preview = preview[..200];
+            }
+
+            bool ok = !string.IsNullOrWhiteSpace(preview);
+            return new TestInferenceProviderResponse(ok, stopwatch.ElapsedMilliseconds, ok ? null : "Provider returned an empty response.", preview);
+        }
+        catch (Exception ex)
+        {
+            // Same discipline as RunTestAsync/RunTranscriptionTestAsync: never let a bad
+            // endpoint/model/key/non-vision-capable-model escape as a 500.
+            stopwatch.Stop();
+            _logger.LogError(ex, "Vision provider test failed");
+            return new TestInferenceProviderResponse(false, stopwatch.ElapsedMilliseconds, "Provider test failed.", null);
+        }
+    }
+
+    /// <summary>
+    /// A trivial, structurally valid 1x1-pixel baseline JPEG (SOI/APP0/.../EOI), embedded as a
+    /// literal rather than generated (this API service has no image-encoding dependency and
+    /// shouldn't gain one just for a health-check) — used only as the image content part of
+    /// <see cref="RunVisionTestAsync"/>'s connectivity ping.
+    /// </summary>
+    private static readonly byte[] TinyTestJpeg = Convert.FromBase64String(
+        "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=");
 
     /// <summary>
     /// Builds a ~0.3 second, 16 kHz mono 16-bit PCM WAV of all-zero (silent) samples, with a
