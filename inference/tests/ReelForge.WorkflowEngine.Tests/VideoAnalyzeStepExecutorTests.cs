@@ -73,6 +73,69 @@ public class VideoAnalyzeStepExecutorTests
     }
 
     [Fact]
+    public async Task Persisted_artifact_OfferedIds_matches_the_truncated_view_not_the_full_analysis()
+    {
+        // Regression test (found by Copilot review): the persisted artifact's OfferedIds must be
+        // exactly the ids that survived MaxOutputChars/MaxViewSegments truncation, since
+        // VideoCompileStepExecutor validates a Keep span's ids against this exact list. If the
+        // full pre-truncation id set were persisted instead, the story-editor agent could
+        // reference an id it was never actually shown, defeating the id-anchored contract.
+        var shots = Enumerable.Range(0, 500)
+            .Select(i => ((double)i * 2, (double)(i * 2 + 1)))
+            .ToArray();
+
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out _, out _,
+            configOverride: cfg => cfg with { DetectSilence = false, MaxOutputChars = 800, MaxViewSegments = 1000, Transcription = VideoTranscriptionMode.Off });
+
+        probe.Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MediaProbeResult(1000, 30, 1, 1920, 1080, "h264", "aac", 48000));
+        shotDetector
+            .Setup(s => s.DetectShotsAsync(It.IsAny<string>(), It.IsAny<double>(), It.IsAny<double>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(shots);
+
+        VideoAnalyzeStepExecutor executor = CreateExecutor(workspace, probe, silence, shotDetector, out _, out _);
+
+        // Added AFTER CreateExecutor's own default UploadArtifactAsync setup so this capturing
+        // setup is the most recently defined one and wins the match.
+        string? capturedArtifactJson = null;
+        workspace
+            .Setup(w => w.UploadArtifactAsync(
+                It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<CancellationToken>(), It.IsAny<string>()))
+            .Callback<Guid, string, string, string, CancellationToken, string>((_, path, _, _, _, _) =>
+                capturedArtifactJson = File.ReadAllText(path))
+            .ReturnsAsync("projects/p/agentFiles/video-analysis/e/step-1-analysis.json");
+
+        StepExecutionResult result = await executor.ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+
+        using JsonDocument outputDoc = JsonDocument.Parse(result.Output);
+        JsonElement view = outputDoc.RootElement.GetProperty("view");
+        JsonElement meta = outputDoc.RootElement.GetProperty("meta");
+        int viewItemCount = view.GetProperty("shots").GetArrayLength()
+            + view.GetProperty("silences").GetArrayLength()
+            + view.GetProperty("segments").GetArrayLength();
+
+        meta.GetProperty("truncated").GetBoolean().Should().BeTrue("500 shots must not fit an 800-char budget");
+        viewItemCount.Should().BeLessThan(500);
+
+        capturedArtifactJson.Should().NotBeNull();
+        using JsonDocument artifactDoc = JsonDocument.Parse(capturedArtifactJson!);
+        int persistedOfferedIdCount = artifactDoc.RootElement.GetProperty("offeredIds").GetArrayLength();
+
+        // The bug: this used to be 500 (every shot in the full analysis) regardless of truncation.
+        persistedOfferedIdCount.Should().Be(viewItemCount,
+            "the persisted OfferedIds must match exactly what the model was shown, not the full pre-truncation analysis");
+        persistedOfferedIdCount.Should().BeLessThan(500);
+    }
+
+    [Fact]
     public async Task OfferedIdCount_matches_exactly_what_made_it_into_the_trimmed_view()
     {
         var shots = Enumerable.Range(0, 200)

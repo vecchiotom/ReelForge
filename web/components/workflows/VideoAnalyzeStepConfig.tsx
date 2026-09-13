@@ -13,6 +13,7 @@ import type {
 } from '@/lib/types/workflow';
 import { useProjectFiles } from '@/lib/hooks/use-files';
 import { useInferenceProviders } from '@/lib/hooks/use-inference-providers';
+import { useAuth } from '@/lib/hooks/use-auth';
 import type { StepData } from './WorkflowStepList';
 
 /** Builds a sensible default config for a freshly-added VideoAnalyze step. Mirrors the C# record defaults exactly. */
@@ -114,8 +115,12 @@ export function VideoAnalyzeStepConfig({
   config, onChange, allSteps = [], currentStepIndex = 0, projectId,
 }: VideoAnalyzeStepConfigProps) {
   const [expectOpen, setExpectOpen] = useState(Boolean(config.expect));
-  const { data: providers } = useInferenceProviders();
-  const transcriptionProviders = (providers ?? []).filter((p) => p.capability === 'Transcription');
+  const { isAdmin } = useAuth();
+  // /api/v1/inference-providers is admin-only — this step config is reachable by any project
+  // member building a workflow, so a non-admin must never trigger this fetch (it would just 403).
+  const { data: providers } = useInferenceProviders(isAdmin);
+  const transcriptionProviders = (providers ?? [])
+    .filter((p) => p.capability === 'Transcription' && (p.isEnabled || p.id === config.transcriptionProviderId));
 
   const priorStepOptions = allSteps
     .slice(0, currentStepIndex)
@@ -202,12 +207,14 @@ export function VideoAnalyzeStepConfig({
             value={config.transcriptionProviderId ?? null}
             onChange={(v) => patch({ transcriptionProviderId: v })}
             placeholder={
-              transcriptionProviders.length > 0
+              !isAdmin
+                ? 'Default transcription provider (admin required to pick a specific one)'
+                : transcriptionProviders.length > 0
                 ? 'Default transcription provider'
                 : 'No transcription-capable provider configured'
             }
             clearable
-            disabled={transcriptionProviders.length === 0}
+            disabled={!isAdmin || transcriptionProviders.length === 0}
           />
           <Group grow>
             <TextInput

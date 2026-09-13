@@ -78,6 +78,21 @@ public class InferenceProvidersController : ControllerBase
             return BadRequest(new { error = "Name is required." });
         }
 
+        if (string.IsNullOrWhiteSpace(request.Endpoint))
+        {
+            return BadRequest(new { error = "Endpoint is required." });
+        }
+
+        if (string.IsNullOrWhiteSpace(request.ModelName))
+        {
+            return BadRequest(new { error = "ModelName is required." });
+        }
+
+        if (request.TimeoutSeconds.HasValue && request.TimeoutSeconds.Value <= 0)
+        {
+            return BadRequest(new { error = "TimeoutSeconds must be a positive number when provided." });
+        }
+
         if (!TryParseKind(request.Kind, out InferenceProviderKind kind))
         {
             return BadRequest(new { error = $"Invalid kind '{request.Kind}'. Expected 'AzureOpenAI' or 'OpenAICompatible'." });
@@ -182,15 +197,53 @@ public class InferenceProvidersController : ControllerBase
                 return BadRequest(new { error = $"Invalid capability '{request.Capability}'. Expected 'Chat' or 'Transcription'." });
             }
 
+            // Changing capability on a row that is currently the default is ambiguous: it would
+            // silently move the "default" flag to a different capability bucket, either
+            // colliding with that capability's existing default (reported, confusingly, as a
+            // name conflict — it's actually the composite (capability, is_default) unique index)
+            // or leaving the OLD capability with no default at all. Require the request to
+            // explicitly say what should happen to IsDefault in the same call (found by Copilot
+            // review).
+            if (capability != entity.Capability && entity.IsDefault && !request.IsDefault.HasValue)
+            {
+                return BadRequest(new
+                {
+                    error = "This provider is currently the default. Explicitly set isDefault (true or false) " +
+                            "in the same request when changing its capability, so the default assignment for " +
+                            "both capabilities stays unambiguous."
+                });
+            }
+
             entity.Capability = capability;
         }
 
         // string? fields follow the Go admin-user "omit = unchanged" convention: null/absent
         // leaves the stored value untouched, a supplied (non-null) value replaces it.
-        if (request.Endpoint != null) entity.Endpoint = request.Endpoint;
-        if (request.ModelName != null) entity.ModelName = request.ModelName;
+        if (request.Endpoint != null)
+        {
+            if (string.IsNullOrWhiteSpace(request.Endpoint))
+            {
+                return BadRequest(new { error = "Endpoint cannot be empty." });
+            }
+            entity.Endpoint = request.Endpoint;
+        }
+        if (request.ModelName != null)
+        {
+            if (string.IsNullOrWhiteSpace(request.ModelName))
+            {
+                return BadRequest(new { error = "ModelName cannot be empty." });
+            }
+            entity.ModelName = request.ModelName;
+        }
         if (request.IsEnabled.HasValue) entity.IsEnabled = request.IsEnabled.Value;
-        if (request.TimeoutSeconds.HasValue) entity.TimeoutSeconds = request.TimeoutSeconds.Value;
+        if (request.TimeoutSeconds.HasValue)
+        {
+            if (request.TimeoutSeconds.Value <= 0)
+            {
+                return BadRequest(new { error = "TimeoutSeconds must be a positive number." });
+            }
+            entity.TimeoutSeconds = request.TimeoutSeconds.Value;
+        }
 
         // ApiKey has one extra state beyond the usual convention: null/absent = unchanged,
         // "" = explicitly clear the stored key, anything else = replace it (R3/B.5).

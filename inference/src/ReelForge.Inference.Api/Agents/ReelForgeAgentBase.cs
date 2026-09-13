@@ -52,9 +52,9 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
     public string? OutputSchemaJson { get; }
     public Type? OutputSchemaType => _outputSchemaType;
 
-    public async Task<AgentRunResult> RunAsync(string prompt, CancellationToken ct = default)
+    public async Task<AgentRunResult> RunAsync(string prompt, Guid? agentDefinitionId = null, CancellationToken ct = default)
     {
-        AIAgent agent = await CreateAgentAsync(ct);
+        AIAgent agent = await CreateAgentAsync(agentDefinitionId, ct);
 
         AgentResponse agentResponse;
         if (_outputSchemaType != null)
@@ -115,9 +115,9 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
         };
     }
 
-    private async ValueTask<AIAgent> CreateAgentAsync(CancellationToken ct)
+    private async ValueTask<AIAgent> CreateAgentAsync(Guid? agentDefinitionId, CancellationToken ct)
     {
-        IChatClient chatClient = await _chatClients.GetAsync(AgentType, agentDefinitionId: null, ct);
+        IChatClient chatClient = await _chatClients.GetAsync(AgentType, agentDefinitionId, ct);
         return chatClient.AsAIAgent(
             instructions: SystemPrompt,
             name: Name,

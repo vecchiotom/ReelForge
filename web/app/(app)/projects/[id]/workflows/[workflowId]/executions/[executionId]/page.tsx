@@ -404,19 +404,25 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
   // Fetch the step's large artifact (e.g. a VideoAnalyze analysis JSON or VideoCompile EDL) whenever
   // the selected step result carries one. Separate from `output`/`outputJson` — this is the
   // "Edit decision list" style panel backed by `artifactStorageKey`.
+  // Depend on the stable id + artifact key rather than the whole `selectedStepResult` object: the
+  // SSE sync effect above replaces `execution` (and thus this object's identity) on every event,
+  // which previously re-triggered this fetch of a potentially large artifact even when neither the
+  // selected step nor its artifact had actually changed (found by Copilot review).
+  const selectedStepResultId = selectedStepResult?.id;
+  const selectedArtifactStorageKey = selectedStepResult?.artifactStorageKey;
+
   useEffect(() => {
-    const artifactStorageKey = selectedStepResult?.artifactStorageKey;
     setArtifactJson(null);
     setArtifactError(null);
-    if (!artifactStorageKey || !selectedStepResult) {
+    if (!selectedArtifactStorageKey || !selectedStepResultId) {
       return;
     }
     setArtifactLoading(true);
-    getStepResultArtifact(projectId, selectedStepResult.id)
+    getStepResultArtifact(projectId, selectedStepResultId)
       .then((data) => setArtifactJson(JSON.stringify(data)))
       .catch((err: unknown) => setArtifactError(err instanceof Error ? err.message : 'Failed to load artifact'))
       .finally(() => setArtifactLoading(false));
-  }, [projectId, selectedStepResult]);
+  }, [projectId, selectedStepResultId, selectedArtifactStorageKey]);
 
   if (loading) {
     return <Center h={400}><Loader size="lg" /></Center>;

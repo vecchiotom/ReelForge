@@ -49,7 +49,7 @@ public class WorkflowTemplateCatalogConfigDeserializationTests
         config.Should().NotBeNull();
         config!.Version.Should().Be(1);
         config.Source.Should().NotBeNull();
-        config.Source.Kind.Should().Be(VideoSourceKind.PreviousStepOutput);
+        config.Source.Kind.Should().Be(VideoSourceKind.ProjectFile);
         config.Source.ProjectFileId.Should().BeNull();
         config.Source.StepOrder.Should().BeNull();
 

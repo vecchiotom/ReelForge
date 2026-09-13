@@ -216,22 +216,17 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                 .Select((w, i) => new VideoAnalysisWord($"w{i}", w.StartSec, w.EndSec, w.Text))
                 .ToList();
 
-            // Offered ids: everything a Keep span may reference. Words are persisted for audit
-            // (and as the phase-2 subtitle-export basis) but are never offered in v1 — the
-            // segment is the offered transcript granularity (plan §8).
-            List<string> offeredIds = new(shots.Count + silences.Count + segments.Count);
-            offeredIds.AddRange(shots.Select(s => s.Id));
-            offeredIds.AddRange(silences.Select(s => s.Id));
-            offeredIds.AddRange(segments.Select(s => s.Id));
-
-            VideoAnalysisArtifact artifact = new(
+            // A preliminary artifact to hand to BuildBoundedView below (it reads Shots/SilenceSpans/
+            // Media/counts only, never OfferedIds, so a placeholder here is safe — see the
+            // corrected artifact constructed after the view is built).
+            VideoAnalysisArtifact draftArtifact = new(
                 Version: 1,
                 Media: new VideoAnalysisMedia(probe.DurationSec, probe.FpsNum, probe.FpsDen, probe.Width, probe.Height),
                 Shots: shots,
                 SilenceSpans: silences,
                 Segments: segments,
                 Words: words,
-                OfferedIds: offeredIds,
+                OfferedIds: [],
                 Provenance: new VideoAnalysisProvenance(
                     TranscriptionMode: config.Transcription,
                     TranscriptionApplied: transcriptionApplied,
@@ -239,6 +234,29 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                     TranscriptionProvider: transcriptionProviderName,
                     TranscriptionLanguage: config.Language,
                     AnalyzedAt: DateTime.UtcNow));
+
+            // ---- Build the bounded, id-anchored prompt view FIRST, so we know exactly which ids
+            // were actually shown before persisting the artifact's OfferedIds. ----
+
+            int maxSegmentTextChars = Math.Max(1, config.MaxSegmentTextChars);
+            List<VideoAnalysisSegment> viewSegments = segments
+                .Select(s => s.Text.Length > maxSegmentTextChars
+                    ? s with { Text = s.Text[..maxSegmentTextChars] }
+                    : s)
+                .ToList();
+
+            // artifactStorageKey isn't known yet (the artifact hasn't been uploaded) — meta's
+            // copy is patched in below once it is.
+            (JsonObject view, JsonObject meta, List<string> viewOfferedIds) = BuildBoundedView(
+                draftArtifact, viewSegments, config, artifactStorageKey: string.Empty,
+                transcriptionApplied, transcriptionDegraded, transcriptionProviderName);
+
+            // The persisted artifact's OfferedIds must be exactly the ids that survived view
+            // truncation — VideoCompileStepExecutor validates the model's Keep spans against this
+            // list, so persisting the full pre-truncation id set here would let it accept ids the
+            // model was never actually shown, defeating the id-anchored contract entirely (found
+            // by Copilot review).
+            VideoAnalysisArtifact artifact = draftArtifact with { OfferedIds = viewOfferedIds };
 
             string artifactLocalPath = scratch.GetPath("analysis.json");
             await File.WriteAllTextAsync(
@@ -248,6 +266,8 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             string artifactStorageKey = await _workspace.UploadArtifactAsync(
                 context.Execution.ProjectId, artifactLocalPath, artifactFileName, "application/json", context.CancellationToken);
 
+            meta["artifactStorageKey"] = artifactStorageKey;
+
             string? expectError = EvaluateExpect(config.Expect, artifact);
             if (expectError is not null)
             {
@@ -255,18 +275,6 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                     "VideoAnalyze step {StepOrder} failed expect check: {Message}", step.StepOrder, expectError);
                 return Failure(context, sw, "EXPECT_FAILED", expectError, artifactStorageKey);
             }
-
-            // ---- Build the bounded, id-anchored prompt view ----
-
-            int maxSegmentTextChars = Math.Max(1, config.MaxSegmentTextChars);
-            List<VideoAnalysisSegment> viewSegments = segments
-                .Select(s => s.Text.Length > maxSegmentTextChars
-                    ? s with { Text = s.Text[..maxSegmentTextChars] }
-                    : s)
-                .ToList();
-
-            (JsonObject view, JsonObject meta, List<string> viewOfferedIds) = BuildBoundedView(
-                artifact, viewSegments, config, artifactStorageKey, transcriptionApplied, transcriptionDegraded, transcriptionProviderName);
 
             context.RecordResolvedInput(BuildResolvedInputDescriptor(config, storageKey, viewOfferedIds.Count));
 

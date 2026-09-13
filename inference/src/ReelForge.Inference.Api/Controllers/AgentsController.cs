@@ -117,11 +117,22 @@ public class AgentsController : ControllerBase
 
         if (request.InferenceProviderId.HasValue)
         {
-            bool providerExists = await _db.InferenceProviders
-                .AnyAsync(p => p.Id == request.InferenceProviderId.Value, ct);
-            if (!providerExists)
+            // This override feeds chat-completion resolution only (InferenceProviderResolver.
+            // ResolveAsync) — a Transcription-capability provider would build an IChatClient
+            // against an ASR endpoint. Reject it here rather than relying on the resolver's own
+            // defense-in-depth check or the UI's picker filter, neither of which is a server
+            // boundary (found by Copilot review).
+            InferenceProviderCapability? providerCapability = await _db.InferenceProviders
+                .Where(p => p.Id == request.InferenceProviderId.Value)
+                .Select(p => (InferenceProviderCapability?)p.Capability)
+                .FirstOrDefaultAsync(ct);
+            if (providerCapability == null)
             {
                 return BadRequest(new { error = "Referenced inference provider not found." });
+            }
+            if (providerCapability != InferenceProviderCapability.Chat)
+            {
+                return BadRequest(new { error = "Only a Chat-capability provider can be assigned as an agent's inference provider override." });
             }
         }
 

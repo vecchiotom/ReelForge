@@ -8,9 +8,19 @@ interface AddStepModalProps {
   opened: boolean;
   onClose: () => void;
   onAdd: (stepType: StepType) => void;
+  /**
+   * True while the builder is still fetching the agent list. Extract/VideoAnalyze/VideoCompile
+   * steps auto-assign a built-in agent id from that list at the moment they're added — adding one
+   * before the fetch resolves would bake in a blank id that the create-workflow submit guard would
+   * then reject with a confusing "requires an agent" (found by Copilot review). Disable just those
+   * three step types until the list is in, rather than the whole modal.
+   */
+  nonLlmStepsDisabled?: boolean;
 }
 
-export function AddStepModal({ opened, onClose, onAdd }: AddStepModalProps) {
+const NON_LLM_STEP_TYPES: ReadonlySet<StepType> = new Set(['Extract', 'VideoAnalyze', 'VideoCompile']);
+
+export function AddStepModal({ opened, onClose, onAdd, nonLlmStepsDisabled = false }: AddStepModalProps) {
   const stepTypes: { type: StepType; label: string; icon: React.ReactNode; color: string; description: string }[] = [
     {
       type: 'Agent',
@@ -78,25 +88,31 @@ export function AddStepModal({ opened, onClose, onAdd }: AddStepModalProps) {
         </Text>
         
         <Stack gap="sm">
-          {stepTypes.map((st) => (
-            <Button
-              key={st.type}
-              variant="light"
-              color={st.color}
-              size="lg"
-              leftSection={st.icon}
-              onClick={() => onAdd(st.type)}
-              styles={{
-                root: { height: 'auto', padding: '16px' },
-                inner: { justifyContent: 'flex-start' },
-              }}
-            >
-              <div style={{ textAlign: 'left' }}>
-                <Text fw={600}>{st.label}</Text>
-                <Text size="xs" c="dimmed" fw={400}>{st.description}</Text>
-              </div>
-            </Button>
-          ))}
+          {stepTypes.map((st) => {
+            const disabled = nonLlmStepsDisabled && NON_LLM_STEP_TYPES.has(st.type);
+            return (
+              <Button
+                key={st.type}
+                variant="light"
+                color={st.color}
+                size="lg"
+                leftSection={st.icon}
+                onClick={() => onAdd(st.type)}
+                disabled={disabled}
+                styles={{
+                  root: { height: 'auto', padding: '16px' },
+                  inner: { justifyContent: 'flex-start' },
+                }}
+              >
+                <div style={{ textAlign: 'left' }}>
+                  <Text fw={600}>{st.label}</Text>
+                  <Text size="xs" c="dimmed" fw={400}>
+                    {disabled ? 'Loading built-in agent…' : st.description}
+                  </Text>
+                </div>
+              </Button>
+            );
+          })}
         </Stack>
       </Stack>
     </Modal>

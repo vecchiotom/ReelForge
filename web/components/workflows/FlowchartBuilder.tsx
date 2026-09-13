@@ -70,7 +70,7 @@ export function FlowchartBuilder({ steps, onChange, projectId }: FlowchartBuilde
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
-  const { data: agents } = useAgents();
+  const { data: agents, isLoading: agentsLoading } = useAgents();
 
   // Convert steps to nodes and edges
   useMemo(() => {
@@ -223,6 +223,7 @@ export function FlowchartBuilder({ steps, onChange, projectId }: FlowchartBuilde
         opened={addModalOpen}
         onClose={() => setAddModalOpen(false)}
         onAdd={handleAddStep}
+        nonLlmStepsDisabled={agentsLoading}
       />
     </>
   );

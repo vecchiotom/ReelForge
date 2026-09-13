@@ -59,7 +59,7 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
     public string? OutputSchemaJson { get; }
     public Type? OutputSchemaType => _outputSchemaType;
 
-    public async Task<AgentRunResult> RunAsync(string prompt, CancellationToken ct = default)
+    public async Task<AgentRunResult> RunAsync(string prompt, Guid? agentDefinitionId = null, CancellationToken ct = default)
     {
         AgentResponse agentResponse;
         using CancellationTokenSource timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -69,7 +69,7 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
         try
         {
             // Structured output is enforced via ChatResponseFormat.ForJsonSchema<T>() when OutputSchemaType is specified
-            AIAgent agent = await CreateAgentAsync(effectiveToken);
+            AIAgent agent = await CreateAgentAsync(agentDefinitionId, effectiveToken);
 
             // If structured output is required, configure ResponseFormat at runtime via AgentRunOptions
             if (_outputSchemaType != null)
@@ -261,10 +261,13 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
         return null;
     }
 
-    private async ValueTask<AIAgent> CreateAgentAsync(CancellationToken ct)
+    private async ValueTask<AIAgent> CreateAgentAsync(Guid? agentDefinitionId, CancellationToken ct)
     {
         // Structured output is applied via AgentRunOptions at runtime, not here.
-        IChatClient chatClient = await _chatClients.GetAsync(AgentType, AgentId, ct);
+        // Prefer the caller-supplied definition id (the actual WorkflowStep.AgentDefinitionId
+        // driving this run) so a per-agent provider override resolves correctly; AgentId (set
+        // once at DI-registration time) is only a fallback for callers that don't have one.
+        IChatClient chatClient = await _chatClients.GetAsync(AgentType, agentDefinitionId ?? AgentId, ct);
         return chatClient.AsAIAgent(
             instructions: SystemPrompt,
             name: Name,

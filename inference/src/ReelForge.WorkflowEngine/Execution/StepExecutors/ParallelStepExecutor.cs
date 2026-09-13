@@ -61,7 +61,7 @@ public class ParallelStepExecutor : IStepExecutor
             .ToListAsync(context.CancellationToken);
 
         // Resolve to IReelForgeAgent instances (skip any that aren't registered)
-        List<(string Name, IReelForgeAgent Agent)> resolved = agentIds
+        List<(string Name, Guid AgentDefinitionId, IReelForgeAgent Agent)> resolved = agentIds
             .Select(id =>
             {
                 AgentDefinition? def = agentDefs.FirstOrDefault(a => a.Id == id);
@@ -76,7 +76,7 @@ public class ParallelStepExecutor : IStepExecutor
                 if (agent == null)
                     _logger.LogWarning("Parallel step {StepOrder}: no agent registered for type {AgentType} (ID {AgentId}), skipping", context.Step.StepOrder, def.AgentType, id);
 
-                return (Name: def.Name, Agent: agent!);
+                return (Name: def.Name, AgentDefinitionId: def.Id, Agent: agent!);
             })
             .Where(x => x.Agent != null)
             .ToList();
@@ -118,9 +118,9 @@ public class ParallelStepExecutor : IStepExecutor
             new ParallelOptions { CancellationToken = context.CancellationToken },
             async (index, token) =>
             {
-                (string name, IReelForgeAgent agent) = resolved[index];
+                (string name, Guid agentDefinitionId, IReelForgeAgent agent) = resolved[index];
                 Stopwatch sw = Stopwatch.StartNew();
-                AgentRunResult agentResult = await agent.RunAsync(stepInput, token);
+                AgentRunResult agentResult = await agent.RunAsync(stepInput, agentDefinitionId, token);
                 sw.Stop();
 
                 _logger.LogInformation(

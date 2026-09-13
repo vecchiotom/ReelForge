@@ -76,9 +76,17 @@ public class FileSummarizationService : BackgroundService
                 return;
             }
 
+            // Look up the built-in FileSummarizerAgent's own definition id so a per-agent
+            // provider override (set via PUT /api/v1/agents/{id}/inference-provider) actually
+            // applies here — RunAsync previously always received null (found by Copilot review).
+            Guid? agentDefinitionId = await db.AgentDefinitions
+                .Where(a => a.AgentType == AgentType.FileSummarizerAgent)
+                .Select(a => (Guid?)a.Id)
+                .FirstOrDefaultAsync(ct);
+
             string displayName = file.OriginalPath ?? file.OriginalFileName;
             var result = await summarizer.RunAsync(
-                $"Summarize this file ({displayName}):\n\n{content}", ct);
+                $"Summarize this file ({displayName}):\n\n{content}", agentDefinitionId, ct);
 
             file.AgentSummary = result.Output;
             file.SummaryStatus = SummaryStatus.Done;

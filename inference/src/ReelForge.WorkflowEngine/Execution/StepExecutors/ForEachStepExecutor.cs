@@ -103,7 +103,7 @@ public class ForEachStepExecutor : IStepExecutor
                     itemInput = $"{itemInput}\n\n---\nRetry Guidance:\n{context.RetryGuidance}";
 
                 Stopwatch sw = Stopwatch.StartNew();
-                AgentRunResult result = await agent.RunAsync(itemInput, token);
+                AgentRunResult result = await agent.RunAsync(itemInput, context.Step.AgentDefinitionId, token);
                 sw.Stop();
                 _logger.LogDebug(
                     "ForEach step {StepOrder} iteration {IterationIndex} completed in {DurationMs}ms (Tokens={TokensUsed}, InputPreview={InputPreview}, OutputPreview={OutputPreview})",

@@ -39,9 +39,15 @@ public sealed class ChatClientFactory : IChatClientFactory
 
     private static IChatClient BuildAzureOpenAI(ResolvedInferenceProvider provider)
     {
+        AzureOpenAIClientOptions options = new()
+        {
+            NetworkTimeout = TimeSpan.FromSeconds(provider.TimeoutSeconds)
+        };
+
         AzureOpenAIClient client = new(
             new Uri(provider.Endpoint),
-            new ApiKeyCredential(provider.ApiKey));
+            new ApiKeyCredential(provider.ApiKey),
+            options);
 
         return client.GetChatClient(provider.ModelName).AsIChatClient();
     }
@@ -50,9 +56,15 @@ public sealed class ChatClientFactory : IChatClientFactory
     {
         string apiKey = string.IsNullOrWhiteSpace(provider.ApiKey) ? NoKeyPlaceholder : provider.ApiKey;
 
+        OpenAIClientOptions options = new()
+        {
+            Endpoint = new Uri(provider.Endpoint),
+            NetworkTimeout = TimeSpan.FromSeconds(provider.TimeoutSeconds)
+        };
+
         OpenAIClient client = new(
             new ApiKeyCredential(apiKey),
-            new OpenAIClientOptions { Endpoint = new Uri(provider.Endpoint) });
+            options);
 
         return client.GetChatClient(provider.ModelName).AsIChatClient();
     }

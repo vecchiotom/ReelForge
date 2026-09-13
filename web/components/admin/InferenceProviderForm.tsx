@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Modal, TextInput, Select, Switch, NumberInput, Button, Stack, Group } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
@@ -48,6 +48,29 @@ export function InferenceProviderForm({ opened, onClose, onSuccess, provider }: 
       modelName: (v) => (!v.trim() ? 'This field is required' : null),
     },
   });
+
+  // `form`'s own `initialValues` are captured once at mount and never track later prop changes,
+  // so `form.reset()` after a save would restore whatever `provider` looked like when this modal
+  // instance first mounted — not the value just saved (the page that owns this form keeps a single
+  // instance alive across edits, found by Copilot review). Re-seed from the current `provider` every
+  // time the modal opens instead, so a reopen always shows the latest saved data.
+  useEffect(() => {
+    if (opened) {
+      form.setValues({
+        name: provider?.name || '',
+        kind: (provider?.kind || 'AzureOpenAI') as InferenceProviderKind,
+        capability: (provider?.capability || 'Chat') as InferenceProviderCapability,
+        endpoint: provider?.endpoint || '',
+        modelName: provider?.modelName || '',
+        apiKey: '',
+        isDefault: provider?.isDefault || false,
+        isEnabled: provider?.isEnabled ?? true,
+        timeoutSeconds: provider?.timeoutSeconds ?? undefined,
+      });
+      form.resetDirty();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opened, provider]);
 
   const isAzure = form.values.kind === 'AzureOpenAI';
   const endpointLabel = isAzure ? 'Endpoint' : 'Base URL';
@@ -121,7 +144,6 @@ export function InferenceProviderForm({ opened, onClose, onSuccess, provider }: 
         notifications.show({ title: 'Created', message: 'Provider created', color: 'green' });
       }
       onSuccess();
-      form.reset();
       onClose();
     } catch (err: unknown) {
       notifications.show({

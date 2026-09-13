@@ -61,7 +61,10 @@ public class StepResultArtifactsController : ControllerBase
         // prefix — never the outputFiles prefix (a playable render/edit) and never another
         // project's objects, even though the WorkflowExecution join above already scopes the
         // step result to this project.
-        string expectedKeyPrefix = $"projects/{projectId}/agentFiles/video-analysis";
+        // Trailing slash makes this a true path-segment prefix — without it, a key like
+        // "projects/{id}/agentFiles/video-analysis-foreign/..." would also match (found by
+        // Copilot review), letting this endpoint reach objects outside its intended scope.
+        string expectedKeyPrefix = $"projects/{projectId}/agentFiles/video-analysis/";
         if (!stepResult.ArtifactStorageKey.StartsWith(expectedKeyPrefix, StringComparison.Ordinal))
             return Forbid();
 

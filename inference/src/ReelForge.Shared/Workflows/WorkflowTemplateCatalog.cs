@@ -136,8 +136,16 @@ public static class WorkflowTemplateCatalog
                     AgentType.VideoTransform,
                     "Analyze source video",
                     StepType.VideoAnalyze,
+                    // Source.Kind=ProjectFile with no ProjectFileId, deliberately: this is the
+                    // first step in the workflow, so Source.Kind=PreviousStepOutput would fail
+                    // SOURCE_UNRESOLVED on every single execution (there is no prior step's
+                    // output to resolve — found by Copilot review). ProjectFile fails the same
+                    // way when unconfigured, but the workflow builder's source picker for
+                    // ProjectFile visibly shows "no file selected", making it obvious the user
+                    // needs to pick one before running — unlike PreviousStepOutput, which reads
+                    // as already-configured.
                     VideoAnalyzeConfigJson: """
-                        {"version":1,"source":{"kind":"PreviousStepOutput"}}
+                        {"version":1,"source":{"kind":"ProjectFile"}}
                         """),
                 new(
                     AgentType.VideoStoryEditor,

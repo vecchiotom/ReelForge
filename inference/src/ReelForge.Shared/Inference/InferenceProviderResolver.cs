@@ -51,10 +51,15 @@ public sealed class InferenceProviderResolver : IInferenceProviderResolver
         if (agentDefinitionId.HasValue &&
             snapshot.AgentOverrides.TryGetValue(agentDefinitionId.Value, out Guid? overrideProviderId) &&
             overrideProviderId.HasValue &&
-            snapshot.ProvidersById.TryGetValue(overrideProviderId.Value, out InferenceProvider? overrideProvider))
+            snapshot.ProvidersById.TryGetValue(overrideProviderId.Value, out InferenceProvider? overrideProvider) &&
+            overrideProvider.Capability == InferenceProviderCapability.Chat)
         {
             // The store's LoadEnabledAsync only returns enabled providers, so a reference to a
-            // disabled (or deleted) provider simply misses here and falls through below.
+            // disabled (or deleted) provider simply misses here and falls through below. The
+            // Capability check is the resolver's own defense in depth: the API/UI should never
+            // let a Transcription provider be assigned as a chat override, but if one somehow
+            // is (found by Copilot review), it must not be handed to a chat call — fall through
+            // to the Chat default instead of building an IChatClient against an ASR endpoint.
             provider = overrideProvider;
         }
 
@@ -70,10 +75,15 @@ public sealed class InferenceProviderResolver : IInferenceProviderResolver
         InferenceProvider? provider = null;
 
         if (explicitProviderId.HasValue &&
-            snapshot.ProvidersById.TryGetValue(explicitProviderId.Value, out InferenceProvider? explicitProvider))
+            snapshot.ProvidersById.TryGetValue(explicitProviderId.Value, out InferenceProvider? explicitProvider) &&
+            explicitProvider.Capability == InferenceProviderCapability.Transcription)
         {
             // The store's LoadEnabledAsync only returns enabled providers, so a reference to a
             // disabled (or deleted) provider simply misses here and falls through to the default.
+            // The Capability check guards the inverse gap (found by Copilot review): a Chat
+            // provider id authored directly into VideoAnalyzeStepConfig.TranscriptionProviderId
+            // (bypassing the UI, which only offers Transcription rows) must not be sent through
+            // the transcription client factory.
             provider = explicitProvider;
         }
 
