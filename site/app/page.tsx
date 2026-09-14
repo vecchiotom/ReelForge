@@ -1,5 +1,10 @@
-import Link from 'next/link';
 import { Section } from '@/components/layout/Section';
+import { Panel } from '@/components/ui/Panel';
+import { Eyebrow } from '@/components/ui/Eyebrow';
+import { Button } from '@/components/ui/Button';
+import { GridOverlay } from '@/components/ui/GridOverlay';
+import { Hero } from '@/components/home/Hero';
+import { TechStrip } from '@/components/home/TechStrip';
 import { buildMetadata } from '@/lib/seo';
 
 export const metadata = buildMetadata({
@@ -108,56 +113,49 @@ const features = [
 export default function HomePage() {
   return (
     <>
-      <section className="py-10 sm:py-16 lg:py-20">
-        <div className="mx-auto w-full max-w-4xl px-4 text-center sm:px-6 lg:px-8">
-          <h1 className="text-3xl font-bold tracking-tight text-neutral-900 sm:text-4xl lg:text-5xl">
-            AI agents that turn your codebase into promotional videos
-          </h1>
-          <p className="mx-auto mt-4 max-w-2xl text-base text-neutral-600 sm:text-lg">
-            Agents analyze your project, script and direct a promo video, and Remotion renders it
-            — with a review loop that scores and refines every draft.
-          </p>
-          <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-center">
-            <Link
-              href="/contact"
-              className="inline-flex min-h-11 w-full items-center justify-center rounded-md bg-brand-600 px-6 py-3 text-base font-semibold text-white hover:bg-brand-700 sm:w-auto"
-            >
-              Get in touch
-            </Link>
-            <a
-              href="/app/login"
-              className="inline-flex min-h-11 w-full items-center justify-center rounded-md border border-neutral-300 px-6 py-3 text-base font-semibold text-neutral-700 hover:bg-neutral-50 sm:w-auto"
-            >
-              Sign in
-            </a>
-          </div>
-        </div>
-      </section>
+      <Hero />
 
-      <Section className="bg-neutral-50">
-        <h2 className="text-center text-2xl font-bold tracking-tight text-neutral-900 sm:text-3xl">
-          How it works
-        </h2>
-        <div className="mt-10 grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
+      <div className="border-b border-line bg-paper">
+        <div className="mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-8">
+          <TechStrip />
+        </div>
+      </div>
+
+      <Section id="how-it-works" className="relative overflow-hidden bg-paper-2">
+        <GridOverlay columns={4} />
+        <div className="relative text-center">
+          <Eyebrow as="div" className="justify-center">
+            Pipeline
+          </Eyebrow>
+          <h2 className="mt-3 font-display text-3xl font-bold uppercase tracking-tight text-ink sm:text-4xl">
+            How it works
+          </h2>
+        </div>
+        <div className="relative mt-10 grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
           {steps.map((step, index) => (
-            <div key={step.title} className="rounded-lg border border-neutral-200 bg-white p-6">
-              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-brand-100 text-sm font-semibold text-brand-700">
-                {index + 1}
+            <Panel key={step.title} tone="paper" className="p-6">
+              <div className="flex h-9 w-9 items-center justify-center border border-line bg-accent-tint font-mono text-sm font-semibold text-accent-strong">
+                {String(index + 1).padStart(2, '0')}
               </div>
-              <h3 className="mt-4 text-base font-semibold text-neutral-900">{step.title}</h3>
-              <p className="mt-2 text-sm text-neutral-600">{step.description}</p>
-            </div>
+              <h3 className="mt-4 font-display text-base font-bold text-ink">{step.title}</h3>
+              <p className="mt-2 text-sm text-ink-muted">{step.description}</p>
+            </Panel>
           ))}
         </div>
       </Section>
 
-      <Section>
-        <h2 className="text-center text-2xl font-bold tracking-tight text-neutral-900 sm:text-3xl">
-          What&apos;s inside
-        </h2>
+      <Section id="whats-inside">
+        <div className="text-center">
+          <Eyebrow as="div" className="justify-center">
+            Capabilities
+          </Eyebrow>
+          <h2 className="mt-3 font-display text-3xl font-bold uppercase tracking-tight text-ink sm:text-4xl">
+            What&apos;s inside
+          </h2>
+        </div>
         <div className="mt-10 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {features.map((feature) => (
-            <div key={feature.title} className="rounded-lg border border-neutral-200 p-6">
+            <Panel key={feature.title} tone="paper" className="p-6">
               <svg
                 width="28"
                 height="28"
@@ -165,31 +163,33 @@ export default function HomePage() {
                 fill="none"
                 aria-hidden="true"
                 focusable="false"
-                className="text-brand-600"
+                className="text-accent-strong"
               >
                 {feature.icon}
               </svg>
-              <h3 className="mt-4 text-base font-semibold text-neutral-900">{feature.title}</h3>
-              <p className="mt-2 text-sm text-neutral-600">{feature.description}</p>
-            </div>
+              <h3 className="mt-4 font-display text-base font-bold text-ink">{feature.title}</h3>
+              <p className="mt-2 text-sm text-ink-muted">{feature.description}</p>
+            </Panel>
           ))}
         </div>
       </Section>
 
-      <Section className="bg-brand-600">
+      <Section id="get-started" className="bg-ink text-white">
         <div className="text-center">
-          <h2 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">
+          <Eyebrow as="div" className="justify-center text-white/60">
+            Get started
+          </Eyebrow>
+          <h2 className="mt-3 font-display text-3xl font-bold uppercase tracking-tight text-white sm:text-4xl">
             Ready to see it on your project?
           </h2>
-          <p className="mx-auto mt-3 max-w-xl text-brand-50">
+          <p className="mx-auto mt-3 max-w-xl font-mono text-sm text-white/70">
             Tell us about what you&apos;re building and we&apos;ll get in touch.
           </p>
-          <Link
-            href="/contact"
-            className="mt-8 inline-flex min-h-11 items-center justify-center rounded-md bg-white px-6 py-3 text-base font-semibold text-brand-700 hover:bg-brand-50"
-          >
-            Get in touch
-          </Link>
+          <div className="mt-8 flex justify-center">
+            <Button href="/contact" variant="accent" size="lg" skew>
+              Get in touch
+            </Button>
+          </div>
         </div>
       </Section>
     </>

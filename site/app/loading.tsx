@@ -9,8 +9,8 @@ export default function Loading() {
     <div role="status" aria-live="polite">
       <span className="sr-only">Loading…</span>
 
-      {/* Header-height spacer (SiteHeader is h-16). */}
-      <div className="h-16" aria-hidden="true" />
+      {/* Header-height spacer (SiteHeader is h-20). */}
+      <div className="h-20" aria-hidden="true" />
 
       <div className="py-16 sm:py-20 lg:py-28">
         <Container>

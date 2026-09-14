@@ -1,5 +1,6 @@
 export const siteConfig = {
   name: 'ReelForge',
+  tagline: 'AI video agents',
   shortDescription: 'Generate promotional videos with AI-driven agentic workflows.',
   url: process.env.NEXT_PUBLIC_SITE_URL ?? 'https://reelforge.com',
   dashboardPath: '/app',
