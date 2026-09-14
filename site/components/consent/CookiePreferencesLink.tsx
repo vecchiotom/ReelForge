@@ -9,7 +9,7 @@ export function CookiePreferencesLink({ className }: { className?: string }) {
     <button
       type="button"
       onClick={reopen}
-      className={`text-sm text-neutral-600 underline-offset-2 hover:text-neutral-900 hover:underline ${className ?? ''}`.trim()}
+      className={`font-mono text-sm text-ink-muted underline-offset-2 hover:text-ink hover:underline ${className ?? ''}`.trim()}
     >
       Cookie preferences
     </button>

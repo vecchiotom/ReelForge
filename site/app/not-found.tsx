@@ -1,5 +1,5 @@
-import Link from 'next/link';
 import { Container } from '@/components/layout/Container';
+import { Button } from '@/components/ui/Button';
 import { buildMetadata } from '@/lib/seo';
 
 export const metadata = buildMetadata({
@@ -13,47 +13,35 @@ export default function NotFound() {
   return (
     <div className="py-16 text-center sm:py-20 lg:py-28">
       <Container>
-        <p className="text-sm font-semibold text-brand-600">404</p>
-        <h1 className="mt-2 text-3xl font-bold tracking-tight text-neutral-900 sm:text-4xl">
+        <p className="font-mono text-sm font-bold uppercase tracking-eyebrow text-accent-strong">404</p>
+        <h1 className="mt-2 font-display text-3xl font-bold uppercase tracking-[-0.02em] text-ink sm:text-4xl">
           Page not found
         </h1>
-        <p className="mx-auto mt-4 max-w-xl text-lg text-neutral-600">
+        <p className="mx-auto mt-4 max-w-xl text-lg text-ink-muted">
           The page you&apos;re looking for doesn&apos;t exist, may have moved, or the link you
           followed might be out of date.
         </p>
 
         <ul className="mx-auto mt-8 flex max-w-xl flex-col gap-3 sm:flex-row sm:flex-wrap sm:justify-center">
           <li>
-            <Link
-              href="/"
-              className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand-600 px-6 py-3 text-base font-semibold text-white hover:bg-brand-700"
-            >
+            <Button href="/" variant="accent">
               Home
-            </Link>
+            </Button>
           </li>
           <li>
-            <Link
-              href="/features"
-              className="inline-flex min-h-11 items-center justify-center rounded-md border border-neutral-300 px-6 py-3 text-base font-semibold text-neutral-700 hover:bg-neutral-50"
-            >
+            <Button href="/features" variant="outline">
               Features
-            </Link>
+            </Button>
           </li>
           <li>
-            <Link
-              href="/contact"
-              className="inline-flex min-h-11 items-center justify-center rounded-md border border-neutral-300 px-6 py-3 text-base font-semibold text-neutral-700 hover:bg-neutral-50"
-            >
+            <Button href="/contact" variant="outline">
               Contact
-            </Link>
+            </Button>
           </li>
           <li>
-            <a
-              href="/app/login"
-              className="inline-flex min-h-11 items-center justify-center rounded-md border border-neutral-300 px-6 py-3 text-base font-semibold text-neutral-700 hover:bg-neutral-50"
-            >
+            <Button href="/app/login" variant="outline">
               Sign in
-            </a>
+            </Button>
           </li>
         </ul>
       </Container>

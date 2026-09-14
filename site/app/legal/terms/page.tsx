@@ -17,14 +17,14 @@ export const metadata = buildMetadata({
   path: '/legal/terms',
 });
 
-const h2 = 'mt-10 text-xl font-bold tracking-tight text-neutral-900 first:mt-0';
-const p = 'mt-4 text-neutral-600';
-const ul = 'mt-4 list-disc space-y-2 pl-5 text-neutral-600';
+const h2 = 'mt-10 font-display text-xl font-bold uppercase tracking-[-0.01em] text-ink first:mt-0';
+const p = 'mt-4 font-sans text-ink-muted';
+const ul = 'mt-4 list-disc space-y-2 pl-5 font-sans text-ink-muted';
 
 export default function TermsPage() {
   return (
     <>
-      <h1 className="text-3xl font-bold tracking-tight text-neutral-900 sm:text-4xl">
+      <h1 className="font-display text-3xl font-bold uppercase tracking-[-0.02em] text-ink sm:text-4xl">
         Terms &amp; Conditions
       </h1>
       <p className={p}>
@@ -156,9 +156,9 @@ export default function TermsPage() {
         <li>{COMPANY_LEGAL_NAME}</li>
         <li>{REGISTERED_ADDRESS}</li>
         <li>
-          <a href={`mailto:${SUPPORT_EMAIL}`} className="text-brand-600 hover:text-brand-700">{SUPPORT_EMAIL}</a>
+          <a href={`mailto:${SUPPORT_EMAIL}`} className="text-accent-strong hover:text-accent-ink">{SUPPORT_EMAIL}</a>
           {' '}(general enquiries) or{' '}
-          <a href={`mailto:${PRIVACY_EMAIL}`} className="text-brand-600 hover:text-brand-700">{PRIVACY_EMAIL}</a>
+          <a href={`mailto:${PRIVACY_EMAIL}`} className="text-accent-strong hover:text-accent-ink">{PRIVACY_EMAIL}</a>
           {' '}(privacy-related enquiries)
         </li>
       </ul>

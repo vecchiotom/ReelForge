@@ -21,14 +21,14 @@ export const metadata = buildMetadata({
   path: '/legal/privacy',
 });
 
-const h2 = 'mt-10 text-xl font-bold tracking-tight text-neutral-900 first:mt-0';
-const p = 'mt-4 text-neutral-600';
-const ul = 'mt-4 list-disc space-y-2 pl-5 text-neutral-600';
+const h2 = 'mt-10 font-display text-xl font-bold uppercase tracking-[-0.01em] text-ink first:mt-0';
+const p = 'mt-4 font-sans text-ink-muted';
+const ul = 'mt-4 list-disc space-y-2 pl-5 font-sans text-ink-muted';
 
 export default function PrivacyPolicyPage() {
   return (
     <>
-      <h1 className="text-3xl font-bold tracking-tight text-neutral-900 sm:text-4xl">
+      <h1 className="font-display text-3xl font-bold uppercase tracking-[-0.02em] text-ink sm:text-4xl">
         Privacy Policy
       </h1>
       <p className={p}>
@@ -125,9 +125,9 @@ export default function PrivacyPolicyPage() {
         your browser&apos;s local storage, not a cookie.
       </p>
       <div className="mt-4 overflow-x-auto">
-        <table className="w-full min-w-[560px] border-collapse text-left text-sm text-neutral-600">
+        <table className="w-full min-w-[560px] border-collapse text-left text-sm text-ink-muted">
           <thead>
-            <tr className="border-b border-neutral-300 text-neutral-900">
+            <tr className="border-b border-line-strong text-ink">
               <th className="py-2 pr-4 font-semibold">Name</th>
               <th className="py-2 pr-4 font-semibold">Type</th>
               <th className="py-2 pr-4 font-semibold">Purpose</th>
@@ -135,7 +135,7 @@ export default function PrivacyPolicyPage() {
             </tr>
           </thead>
           <tbody>
-            <tr className="border-b border-neutral-200 align-top">
+            <tr className="border-b border-line align-top">
               <td className="py-2 pr-4 font-mono text-xs">rf-cookie-consent</td>
               <td className="py-2 pr-4">Local storage (not a cookie)</td>
               <td className="py-2 pr-4">
@@ -144,7 +144,7 @@ export default function PrivacyPolicyPage() {
               </td>
               <td className="py-2 pr-4">Persistent, until you clear it or change your choice</td>
             </tr>
-            <tr className="border-b border-neutral-200 align-top">
+            <tr className="border-b border-line align-top">
               <td className="py-2 pr-4 font-mono text-xs">_ga</td>
               <td className="py-2 pr-4">Cookie (Google Analytics)</td>
               <td className="py-2 pr-4">Analytics — distinguishes unique visitors. Set only after you accept.</td>
@@ -163,7 +163,7 @@ export default function PrivacyPolicyPage() {
         </table>
       </div>
       <p className={p}>
-        You can change your mind at any time: <CookiePreferencesLink className="text-brand-600 hover:text-brand-700" /> reopens the
+        You can change your mind at any time: <CookiePreferencesLink className="text-accent-strong hover:text-accent-ink" /> reopens the
         consent banner so you can accept or reject analytics cookies again.
       </p>
 
@@ -248,7 +248,7 @@ export default function PrivacyPolicyPage() {
         <li>{COMPANY_LEGAL_NAME}</li>
         <li>{REGISTERED_ADDRESS}</li>
         <li>
-          Privacy enquiries: <a href={`mailto:${PRIVACY_EMAIL}`} className="text-brand-600 hover:text-brand-700">{PRIVACY_EMAIL}</a>
+          Privacy enquiries: <a href={`mailto:${PRIVACY_EMAIL}`} className="text-accent-strong hover:text-accent-ink">{PRIVACY_EMAIL}</a>
         </li>
         <li>Data protection officer / contact: {DPO_CONTACT}</li>
       </ul>

@@ -6,6 +6,7 @@ import { validateContact, type ValidationError } from '@/lib/validation';
 import { trackEvent } from '@/lib/gtag';
 import { SUPPORT_EMAIL } from '@/lib/legal-placeholders';
 import { Spinner } from '@/components/ui/Spinner';
+import { buttonClass } from '@/components/ui/button-styles';
 
 type FieldName = 'name' | 'email' | 'company' | 'message';
 
@@ -144,10 +145,10 @@ export function ContactForm() {
   }
 
   const inputClass = (field: FieldName) =>
-    `mt-2 block w-full rounded-md border px-3 py-2 text-neutral-900 shadow-sm focus:outline-none focus:ring-1 ${
+    `mt-2 block w-full rounded-none border bg-paper px-3 py-2 font-mono text-sm text-ink focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-strong ${
       fieldErrors[field]
-        ? 'border-red-500 focus:border-red-500 focus:ring-red-500'
-        : 'border-neutral-300 focus:border-brand-500 focus:ring-brand-500'
+        ? 'border-danger-border text-danger'
+        : 'border-line-strong'
     }`;
 
   return (
@@ -158,7 +159,7 @@ export function ContactForm() {
           role="alert"
           aria-live="assertive"
           tabIndex={-1}
-          className="rounded-md border border-red-300 bg-red-50 p-4 text-sm text-red-800 focus:outline-none"
+          className="border border-danger-border bg-danger-tint p-4 font-mono text-sm text-danger focus:outline-none"
         >
           {bannerError.kind === 'network' && (
             <p>We couldn&apos;t reach the server — check your connection and try again.</p>
@@ -188,7 +189,7 @@ export function ContactForm() {
       )}
 
       <div>
-        <label htmlFor="name" className="block text-sm font-medium text-neutral-900">
+        <label htmlFor="name" className="block font-mono text-xs uppercase tracking-eyebrow text-ink-muted">
           Name
         </label>
         <input
@@ -206,14 +207,14 @@ export function ContactForm() {
           className={inputClass('name')}
         />
         {fieldErrors.name && (
-          <p id="name-error" role="alert" className="mt-1 text-sm text-red-600">
+          <p id="name-error" role="alert" className="mt-1 text-sm text-danger">
             {fieldErrors.name}
           </p>
         )}
       </div>
 
       <div>
-        <label htmlFor="email" className="block text-sm font-medium text-neutral-900">
+        <label htmlFor="email" className="block font-mono text-xs uppercase tracking-eyebrow text-ink-muted">
           Email
         </label>
         <input
@@ -231,15 +232,15 @@ export function ContactForm() {
           className={inputClass('email')}
         />
         {fieldErrors.email && (
-          <p id="email-error" role="alert" className="mt-1 text-sm text-red-600">
+          <p id="email-error" role="alert" className="mt-1 text-sm text-danger">
             {fieldErrors.email}
           </p>
         )}
       </div>
 
       <div>
-        <label htmlFor="company" className="block text-sm font-medium text-neutral-900">
-          Company <span className="text-neutral-400">(optional)</span>
+        <label htmlFor="company" className="block font-mono text-xs uppercase tracking-eyebrow text-ink-muted">
+          Company <span className="text-ink-faint">(optional)</span>
         </label>
         <input
           ref={companyRef}
@@ -255,14 +256,14 @@ export function ContactForm() {
           className={inputClass('company')}
         />
         {fieldErrors.company && (
-          <p id="company-error" role="alert" className="mt-1 text-sm text-red-600">
+          <p id="company-error" role="alert" className="mt-1 text-sm text-danger">
             {fieldErrors.company}
           </p>
         )}
       </div>
 
       <div>
-        <label htmlFor="message" className="block text-sm font-medium text-neutral-900">
+        <label htmlFor="message" className="block font-mono text-xs uppercase tracking-eyebrow text-ink-muted">
           Message
         </label>
         <textarea
@@ -280,7 +281,7 @@ export function ContactForm() {
           className={inputClass('message')}
         />
         {fieldErrors.message && (
-          <p id="message-error" role="alert" className="mt-1 text-sm text-red-600">
+          <p id="message-error" role="alert" className="mt-1 text-sm text-danger">
             {fieldErrors.message}
           </p>
         )}
@@ -304,7 +305,7 @@ export function ContactForm() {
         type="submit"
         disabled={submitting}
         aria-busy={submitting}
-        className="inline-flex min-h-11 min-w-[10rem] w-full items-center justify-center gap-2 rounded-md bg-brand-600 px-6 py-3 text-base font-semibold text-white hover:bg-brand-700 disabled:opacity-70 sm:w-auto"
+        className={`${buttonClass({ variant: 'accent', size: 'lg' })} w-full gap-2 disabled:opacity-70 sm:w-auto`}
       >
         {submitting ? (
           <>

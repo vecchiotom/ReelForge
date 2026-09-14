@@ -16,11 +16,11 @@ export function ContactAddress({
   className?: string;
 }) {
   return (
-    <address className={`not-italic space-y-1 text-sm text-neutral-600 ${className ?? ''}`.trim()}>
-      <p className="font-medium text-neutral-900">{COMPANY_LEGAL_NAME}</p>
+    <address className={`not-italic space-y-1 text-sm text-ink-muted ${className ?? ''}`.trim()}>
+      <p className="font-medium text-ink">{COMPANY_LEGAL_NAME}</p>
       <p>{REGISTERED_ADDRESS}</p>
       <p>
-        <a href={`mailto:${SUPPORT_EMAIL}`} className="hover:text-neutral-900">
+        <a href={`mailto:${SUPPORT_EMAIL}`} className="hover:text-ink">
           {SUPPORT_EMAIL}
         </a>
       </p>

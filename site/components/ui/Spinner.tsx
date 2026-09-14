@@ -1,7 +1,7 @@
 export function Spinner({ className }: { className?: string }) {
   return (
     <svg
-      className={`animate-spin ${className ?? 'h-4 w-4'}`.trim()}
+      className={`animate-spin ${className ?? 'h-4 w-4 text-accent-strong'}`.trim()}
       viewBox="0 0 24 24"
       fill="none"
       aria-hidden="true"

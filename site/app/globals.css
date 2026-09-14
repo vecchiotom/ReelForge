@@ -24,17 +24,6 @@
   --color-danger-border: #DC2626;
   --color-danger-tint: #FEF2F2;
   --tracking-eyebrow: 0.18em;
-
-  --color-brand-50: #F5F1FE;
-  --color-brand-100: #EADDFD;
-  --color-brand-200: #DCC7FC;
-  --color-brand-300: #C9A8FA;
-  --color-brand-400: #B77DF8;
-  --color-brand-500: #A855F7;
-  --color-brand-600: #7C3AED;
-  --color-brand-700: #6D28D9;
-  --color-brand-800: #5B21B6;
-  --color-brand-900: #3B0F6F;
 }
 
 @media (prefers-reduced-motion: reduce) {

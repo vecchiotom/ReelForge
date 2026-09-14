@@ -1,5 +1,6 @@
 import { Container } from '@/components/layout/Container';
 import { Section } from '@/components/layout/Section';
+import { Eyebrow } from '@/components/ui/Eyebrow';
 import { ContactAddress } from '@/components/contact/ContactAddress';
 import { buildMetadata } from '@/lib/seo';
 
@@ -10,22 +11,37 @@ export const metadata = buildMetadata({
   path: '/about',
 });
 
+function AccentList({ items }: { items: string[] }) {
+  return (
+    <ul className="space-y-2">
+      {items.map((item) => (
+        <li key={item} className="flex items-start gap-3">
+          <span aria-hidden="true" className="mt-1.5 h-2 w-2 shrink-0 bg-accent" />
+          <span>{item}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export default function AboutPage() {
   return (
     <>
-      <div className="pt-12 sm:pt-16 lg:pt-20">
+      <div className="border-b border-line pt-16 pb-10 sm:pt-20 lg:pt-24">
         <Container>
-          <h1 className="text-3xl font-bold tracking-tight text-neutral-900 sm:text-4xl lg:text-5xl">
+          <Eyebrow>The platform</Eyebrow>
+          <h1 className="mt-4 text-balance font-display text-[clamp(2rem,5vw,3.5rem)] font-bold uppercase leading-[0.95] tracking-[-0.02em] text-ink">
             About
           </h1>
         </Container>
       </div>
 
-      <Section>
-        <h2 className="text-2xl font-bold tracking-tight text-neutral-900">
+      <Section className="border-b border-line">
+        <Eyebrow>Mission</Eyebrow>
+        <h2 className="mt-3 font-display text-2xl font-bold uppercase tracking-[-0.01em] text-ink">
           What we&apos;re building
         </h2>
-        <div className="mt-4 max-w-3xl space-y-4 text-neutral-600">
+        <div className="mt-4 max-w-3xl space-y-4 text-ink-muted">
           <p>
             ReelForge is an agentic platform for generating promotional videos. Instead of a
             template picker, a pipeline of specialized AI agents reads your codebase and assets,
@@ -41,9 +57,12 @@ export default function AboutPage() {
         </div>
       </Section>
 
-      <Section className="bg-neutral-50">
-        <h2 className="text-2xl font-bold tracking-tight text-neutral-900">How we work</h2>
-        <div className="mt-4 max-w-3xl space-y-4 text-neutral-600">
+      <Section className="border-b border-line bg-paper-2">
+        <Eyebrow>Architecture</Eyebrow>
+        <h2 className="mt-3 font-display text-2xl font-bold uppercase tracking-[-0.01em] text-ink">
+          How we work
+        </h2>
+        <div className="mt-4 max-w-3xl space-y-4 text-ink-muted">
           <p>
             ReelForge is built as a set of microservices — a Go API for authentication, a REST API
             for projects and workflows, and a workflow engine that executes agent runs consumed
@@ -55,17 +74,22 @@ export default function AboutPage() {
             and workflow history stay in your own PostgreSQL database and object storage, not a
             third-party data lake.
           </p>
-          <ul className="list-disc space-y-2 pl-5">
-            <li>Self-hostable end to end via Docker Compose</li>
-            <li>Bring your own model endpoints (Azure OpenAI or OpenAI-compatible)</li>
-            <li>Your data stays in your own Postgres and object storage</li>
-          </ul>
+          <AccentList
+            items={[
+              'Self-hostable end to end via Docker Compose',
+              'Bring your own model endpoints (Azure OpenAI or OpenAI-compatible)',
+              'Your data stays in your own Postgres and object storage',
+            ]}
+          />
         </div>
       </Section>
 
       <Section>
-        <h2 className="text-2xl font-bold tracking-tight text-neutral-900">Contact</h2>
-        <div className="mt-4 max-w-3xl text-neutral-600">
+        <Eyebrow>Get in touch</Eyebrow>
+        <h2 className="mt-3 font-display text-2xl font-bold uppercase tracking-[-0.01em] text-ink">
+          Contact
+        </h2>
+        <div className="mt-4 max-w-3xl text-ink-muted">
           <p>
             Want to talk through how ReelForge fits your project? Reach out and we&apos;ll get
             back to you.

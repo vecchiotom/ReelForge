@@ -12,9 +12,10 @@ export default function Loading() {
       {/* Header-height spacer (SiteHeader is h-20). */}
       <div className="h-20" aria-hidden="true" />
 
-      <div className="py-16 sm:py-20 lg:py-28">
+      <div className="border-b border-line py-16 sm:py-20 lg:py-28">
         <Container>
-          <Skeleton className="mx-auto h-8 w-2/3 max-w-md" />
+          <Skeleton className="h-3 w-32" />
+          <Skeleton className="mx-auto mt-4 h-8 w-2/3 max-w-md" />
           <Skeleton className="mx-auto mt-4 h-4 w-full max-w-xl" />
 
           <div className="mt-10 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">

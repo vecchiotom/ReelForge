@@ -1,5 +1,6 @@
-import Link from 'next/link';
 import { Container } from '@/components/layout/Container';
+import { Button } from '@/components/ui/Button';
+import { Eyebrow } from '@/components/ui/Eyebrow';
 import { ContactAddress } from '@/components/contact/ContactAddress';
 import { buildMetadata } from '@/lib/seo';
 import { RESPONSE_TIME_SLA } from '@/lib/legal-placeholders';
@@ -16,32 +17,27 @@ export default function ContactThankYouPage() {
     <div className="py-16 sm:py-20 lg:py-28">
       <Container>
         <div className="mx-auto max-w-2xl text-center">
-          <h1 className="text-3xl font-bold tracking-tight text-neutral-900 sm:text-4xl">
+          <Eyebrow as="div" className="justify-center">Message received</Eyebrow>
+          <h1 className="mt-4 text-balance font-display text-[clamp(1.75rem,4.5vw,3rem)] font-bold uppercase leading-[0.95] tracking-[-0.02em] text-ink">
             Thanks — your message is on its way
           </h1>
-          <p className="mt-4 text-lg text-neutral-600">
+          <p className="mt-4 text-lg text-ink-muted">
             Someone from our team will read it and get back to you. Our target response time is{' '}
             {RESPONSE_TIME_SLA}.
           </p>
 
           <div className="mt-10 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-center">
-            <Link
-              href="/"
-              className="inline-flex min-h-11 items-center justify-center rounded-md bg-brand-600 px-6 py-3 text-base font-semibold text-white hover:bg-brand-700"
-            >
+            <Button href="/" variant="accent" size="lg" skew>
               Back to home
-            </Link>
-            <Link
-              href="/features"
-              className="inline-flex min-h-11 items-center justify-center rounded-md border border-neutral-300 px-6 py-3 text-base font-semibold text-neutral-700 hover:bg-neutral-50"
-            >
+            </Button>
+            <Button href="/features" variant="outline" size="lg">
               Explore features
-            </Link>
+            </Button>
           </div>
         </div>
 
-        <div className="mx-auto mt-16 max-w-sm border-t border-neutral-200 pt-8 text-center">
-          <h2 className="text-sm font-semibold text-neutral-900">
+        <div className="mx-auto mt-16 max-w-sm border-t border-line pt-8 text-center">
+          <h2 className="font-mono text-[11px] uppercase tracking-eyebrow text-ink-muted">
             Need to reach us sooner?
           </h2>
           <ContactAddress showPhone showResponseTime className="mt-4 text-center" />
