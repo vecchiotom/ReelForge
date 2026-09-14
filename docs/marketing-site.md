@@ -4,6 +4,16 @@
 root domain. `/web` is the authenticated dashboard. They are two separate Next.js projects, not
 one project with two route groups.
 
+## Visual design system
+
+`/site` went through a 5-phase visual redesign (purple/white/near-black palette, Chakra Petch +
+JetBrains Mono type system, decorative hairline primitives, and a WebGL 3D hero) after this file
+was first written. See [`docs/site-design-system.md`](site-design-system.md) for the palette
+tokens and their measured WCAG contrast ratios, the font/decoration/3D rationale, the SSR-isolation
+and reduced-motion rules for the 3D scenes, and the bundle code-split contract that keeps them off
+every non-homepage route. Nothing in that redesign changed the routing split, domain contract,
+consent behavior, or legal/SEO plumbing described below — those remain exactly as documented here.
+
 ## Why a separate project instead of a route group in `/web`
 
 - **Different audience, different trust boundary.** Every page in `/site` is meant to be crawled,
@@ -151,3 +161,9 @@ Two categories of content went into this site, and they were held to different r
   policy, terms of service) so there is exactly one place to fill in real values, and no
   page silently shipped with a fabricated address or a made-up company name that could be mistaken
   for real. See the launch checklist above for the full list of tokens to replace before launch.
+- The same discipline extended to the visual redesign: the homepage's "Runs on" strip
+  (`site/components/home/TechStrip.tsx`) lists real stack components (Remotion, ffmpeg,
+  PostgreSQL, Docker, Next.js, Azure OpenAI) as plain text, never captioned as "partners" or
+  "customers" — no partner logo or customer name was invented. No fabricated social-media links
+  were added either; the reference design's social-icon rail became real in-page section anchors.
+  See `docs/site-design-system.md`.

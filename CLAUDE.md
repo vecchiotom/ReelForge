@@ -41,7 +41,7 @@ All services are containerized and accessed through an nginx reverse proxy on a 
 
 Nginx is the single entry point (port 80). It routes requests to the appropriate backend and translates httpOnly cookies into Authorization headers. The Go API is the authority for user management and JWT issuance. The Inference API handles CRUD and publishes execution requests to RabbitMQ. The Workflow Engine consumes execution requests and runs AI agents.
 
-See [`docs/marketing-site.md`](docs/marketing-site.md) for the public marketing site's routing split (`/` → `site`, `/app/*` → `web`) and its launch checklist.
+See [`docs/marketing-site.md`](docs/marketing-site.md) for the public marketing site's routing split (`/` → `site`, `/app/*` → `web`) and its launch checklist. `/site` also ships a WebGL/three.js hero (homepage-only, lazy-loaded behind `next/dynamic`) and a Chakra Petch/JetBrains Mono type system — see [`docs/site-design-system.md`](docs/site-design-system.md).
 
 ### Go API
 
