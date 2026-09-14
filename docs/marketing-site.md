@@ -141,7 +141,7 @@ exists to make, and any pageview number pulled from GA4 should be read as a floo
 
 Two categories of content went into this site, and they were held to different rules:
 
-- **Product capabalities** (what ReelForge does, its architecture, its workflow pipeline) were
+- **Product capabilities** (what ReelForge does, its architecture, its workflow pipeline) were
   written from `CLAUDE.md` and the actual codebase — real, verifiable facts about a real system.
 - **Business/legal facts** that only the business owner can supply — legal entity name, registered
   address, registration/VAT numbers, DPO contact, governing law, liability caps, retention
