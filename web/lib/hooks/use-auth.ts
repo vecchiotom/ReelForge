@@ -53,7 +53,9 @@ export function useAuth() {
   const logout = useCallback(async () => {
     await fetch('/api/auth/logout', { method: 'POST' });
     notifyAuthChange();
-    window.location.href = '/login';
+    // Raw browser navigation does not get the app's basePath ('/app') prepended
+    // automatically, unlike next/link or next/navigation — the path must be absolute.
+    window.location.href = '/app/login';
   }, []);
 
   return useMemo(

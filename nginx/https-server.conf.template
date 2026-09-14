@@ -15,6 +15,7 @@ server {
     set $inference_api http://inference:8080;
     set $workflow_engine http://workflow-engine:8080;
     set $web_app http://web:3000;
+    set $site_app http://site:3000;
 
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;

@@ -6,7 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ReelForge is a microservices platform for generating promotional videos using [Remotion](https://www.remotion.dev/) via agentic workflows. Four services coordinate to handle the frontend, API requests, and AI/agent inference:
 
-- **`/web`** — Next.js 15 App Router + Mantine v8 frontend
+- **`/site`** — Next.js 15 App Router + Tailwind CSS v4 public marketing site, served at the root domain (`/`)
+- **`/web`** — Next.js 15 App Router + Mantine v8 authenticated platform dashboard, served under `/app`
 - **`/api`** — Go REST API (Gorilla Mux, GORM, PostgreSQL)
 - **`/inference/src/ReelForge.Inference.Api`** — .NET 9 REST API for projects, files, agents, workflows CRUD
 - **`/inference/src/ReelForge.WorkflowEngine`** — .NET 9 workflow execution engine consuming from RabbitMQ
@@ -441,7 +442,8 @@ web/
 | `/api/v1/*` | `inference:8080` | Cookie → Authorization header |
 | `/health` | `go-api:8080` | None |
 | `/api/auth/logout` | — | Nginx clears cookies |
-| `/*` | `web:3000` | None (frontend) |
+| `/app/*` | `web:3000` | None (dashboard, basePath `/app`) |
+| `/*` | `site:3000` | None (public marketing site) |
 
 ## Commands
 
@@ -500,7 +502,8 @@ All services have Dockerfiles and are orchestrated via `docker-compose.yml` at t
 |---------|-------|-----------|---------------|-------|
 | `nginx` | Built from `./nginx` (`nginx:alpine` + openssl/gettext) | 80 (`APP_PORT`), 443 (`HTTPS_PORT`) | 80, 443 | Single entry point, njs cookie↔header translation, TLS termination (self-signed by default; see [`docs/tls.md`](docs/tls.md)) |
 | `caddy` | `caddy:2-alpine` | — (internal) | 80, 443 | ACME client only — obtains/renews the Let's Encrypt cert nginx reads off the shared `caddy_certs` volume; never serves traffic. Opt-in via the `tls` compose profile, requires `DOMAIN`/`ACME_EMAIL`. See [`docs/tls.md`](docs/tls.md) |
-| `web` | Built from `./web` | — (internal) | 3000 | Next.js frontend |
+| `site` | Built from `./site` | 127.0.0.1:3100 (dev convenience only) | 3000 | Public marketing site (Next.js, Tailwind v4), no `depends_on` — must come up even if the backend is down |
+| `web` | Built from `./web` | — (internal) | 3000 | Next.js dashboard, basePath `/app` |
 | `go-api` | Built from `./api` | — (internal) | 8080 | Depends on postgres (healthy) |
 | `inference` | Built from `./inference` | — (internal) | 8080 | Inference API, depends on go-api + rabbitmq; mounts `dpkeys` at `/keys` (Data Protection key ring) |
 | `workflow-engine` | Built from `./inference` | — (internal) | 8080 | Workflow engine, depends on inference + rabbitmq; mounts `dpkeys` at `/keys` (Data Protection key ring) and `videoscratch` at `/var/tmp/reelforge-video` (per-execution ffmpeg scratch space, `VideoEditing:ScratchPath`); image includes `ffmpeg`/`ffprobe` (see Video Editing above) |

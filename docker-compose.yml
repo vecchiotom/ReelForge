@@ -304,6 +304,43 @@ services:
     networks:
       - reelforge
 
+  site:
+    build:
+      context: ./site
+      dockerfile: Dockerfile
+      # Switch between 'development' (Turbopack hot reload) and 'production' (precompiled standalone)
+      target: ${SITE_BUILD_TARGET:-development}
+      args:
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-https://reelforge.com}
+    # ── Volume Mounts ──────────────────────────────────────
+    # REQUIRED for development mode (hot reload)
+    # MUST BE REMOVED/COMMENTED for production mode
+    # ───────────────────────────────────────────────────────
+    # volumes:
+    #   - ./site:/app
+    #   - /app/node_modules
+    #   - /app/.next
+    # ───────────────────────────────────────────────────────
+    environment:
+      NODE_ENV: ${SITE_NODE_ENV:-development}
+      PORT: 3000
+      NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-https://reelforge.com}
+      NEXT_PUBLIC_GA_MEASUREMENT_ID: ${NEXT_PUBLIC_GA_MEASUREMENT_ID:-}
+      CONTACT_WEBHOOK_URL: ${CONTACT_WEBHOOK_URL:-}
+    # Loopback-only, same pattern as `web` — 3100 avoids clashing with web's 3000.
+    ports:
+      - "127.0.0.1:3100:3000"
+    restart: unless-stopped
+    # No depends_on: the marketing site must come up even if the backend is down.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO/dev/null http://127.0.0.1:3000/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - reelforge
+
   web:
     build:
       context: ./web
@@ -339,7 +376,10 @@ services:
       go-api:
         condition: service_started
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO/dev/null http://127.0.0.1:3000 || exit 1"]
+      # basePath '/app' means Next returns 404 for '/' — probe a real route under
+      # /app instead, or this service never becomes healthy and (via the
+      # depends_on: condition: service_healthy chain below) nginx never starts.
+      test: ["CMD-SHELL", "wget -qO/dev/null http://127.0.0.1:3000/app/login || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -372,6 +412,9 @@ services:
       # Caddy's storage itself.
       - caddy_certs:/caddy-data:ro
     depends_on:
+      site:
+        condition: service_healthy
+        restart: true
       web:
         condition: service_healthy
         restart: true
