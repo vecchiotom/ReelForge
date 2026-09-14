@@ -1,3 +1,4 @@
+'use client';
 import { Container } from '@/components/layout/Container';
 import { GridOverlay } from '@/components/ui/GridOverlay';
 import { ChromeWidget } from '@/components/ui/ChromeWidget';
@@ -8,11 +9,18 @@ import { Panel } from '@/components/ui/Panel';
 import { HeroSceneMount } from '@/components/three/HeroSceneMount';
 import { ViewfinderMount } from '@/components/three/ViewfinderMount';
 import { SectionIndexRail } from './SectionIndexRail';
+import { useScrollParallax } from '@/lib/use-scroll-parallax';
 
 export function Hero() {
+  // Wrapping div (rather than forwardRef on GridOverlay) keeps the shared
+  // primitive untouched for its other call sites (Section.tsx, /contact).
+  const gridParallaxRef = useScrollParallax<HTMLDivElement>(10);
+
   return (
     <section className="relative isolate overflow-hidden border-b border-line bg-paper-2">
-      <GridOverlay columns={4} horizontalAt={['62%']} />
+      <div ref={gridParallaxRef} className="absolute inset-0">
+        <GridOverlay columns={4} horizontalAt={['62%']} />
+      </div>
       <ChromeWidget glyph="close" className="absolute left-4 top-4 hidden sm:flex" />
       <ChromeWidget glyph="target" className="absolute right-4 top-4 hidden sm:flex" />
       <RegistrationMark className="absolute left-2 top-2" />

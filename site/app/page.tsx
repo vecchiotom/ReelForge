@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/Button';
 import { GridOverlay } from '@/components/ui/GridOverlay';
 import { Hero } from '@/components/home/Hero';
 import { TechStrip } from '@/components/home/TechStrip';
+import { Reveal } from '@/components/motion/Reveal';
 import { buildMetadata } from '@/lib/seo';
 
 export const metadata = buildMetadata({
@@ -121,77 +122,83 @@ export default function HomePage() {
         </div>
       </div>
 
-      <Section id="how-it-works" className="relative overflow-hidden bg-paper-2">
-        <GridOverlay columns={4} />
-        <div className="relative text-center">
-          <Eyebrow as="div" className="justify-center">
-            Pipeline
-          </Eyebrow>
-          <h2 className="mt-3 font-display text-3xl font-bold uppercase tracking-tight text-ink sm:text-4xl">
-            How it works
-          </h2>
-        </div>
-        <div className="relative mt-10 grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
-          {steps.map((step, index) => (
-            <Panel key={step.title} tone="paper" className="p-6">
-              <div className="flex h-9 w-9 items-center justify-center border border-line bg-accent-tint font-mono text-sm font-semibold text-accent-strong">
-                {String(index + 1).padStart(2, '0')}
-              </div>
-              <h3 className="mt-4 font-display text-base font-bold text-ink">{step.title}</h3>
-              <p className="mt-2 text-sm text-ink-muted">{step.description}</p>
-            </Panel>
-          ))}
-        </div>
-      </Section>
-
-      <Section id="whats-inside">
-        <div className="text-center">
-          <Eyebrow as="div" className="justify-center">
-            Capabilities
-          </Eyebrow>
-          <h2 className="mt-3 font-display text-3xl font-bold uppercase tracking-tight text-ink sm:text-4xl">
-            What&apos;s inside
-          </h2>
-        </div>
-        <div className="mt-10 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
-          {features.map((feature) => (
-            <Panel key={feature.title} tone="paper" className="p-6">
-              <svg
-                width="28"
-                height="28"
-                viewBox="0 0 24 24"
-                fill="none"
-                aria-hidden="true"
-                focusable="false"
-                className="text-accent-strong"
-              >
-                {feature.icon}
-              </svg>
-              <h3 className="mt-4 font-display text-base font-bold text-ink">{feature.title}</h3>
-              <p className="mt-2 text-sm text-ink-muted">{feature.description}</p>
-            </Panel>
-          ))}
-        </div>
-      </Section>
-
-      <Section id="get-started" className="bg-ink text-white">
-        <div className="text-center">
-          <Eyebrow as="div" className="justify-center text-white/60">
-            Get started
-          </Eyebrow>
-          <h2 className="mt-3 font-display text-3xl font-bold uppercase tracking-tight text-white sm:text-4xl">
-            Ready to see it on your project?
-          </h2>
-          <p className="mx-auto mt-3 max-w-xl font-mono text-sm text-white/70">
-            Tell us about what you&apos;re building and we&apos;ll get in touch.
-          </p>
-          <div className="mt-8 flex justify-center">
-            <Button href="/contact" variant="accent" size="lg" skew>
-              Get in touch
-            </Button>
+      <Reveal as="div">
+        <Section id="how-it-works" className="relative overflow-hidden bg-paper-2">
+          <GridOverlay columns={4} />
+          <div className="relative text-center">
+            <Eyebrow as="div" className="justify-center">
+              Pipeline
+            </Eyebrow>
+            <h2 className="mt-3 font-display text-3xl font-bold uppercase tracking-tight text-ink sm:text-4xl">
+              How it works
+            </h2>
           </div>
-        </div>
-      </Section>
+          <div className="relative mt-10 grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
+            {steps.map((step, index) => (
+              <Panel key={step.title} tone="paper" className="p-6">
+                <div className="flex h-9 w-9 items-center justify-center border border-line bg-accent-tint font-mono text-sm font-semibold text-accent-strong">
+                  {String(index + 1).padStart(2, '0')}
+                </div>
+                <h3 className="mt-4 font-display text-base font-bold text-ink">{step.title}</h3>
+                <p className="mt-2 text-sm text-ink-muted">{step.description}</p>
+              </Panel>
+            ))}
+          </div>
+        </Section>
+      </Reveal>
+
+      <Reveal as="div">
+        <Section id="whats-inside">
+          <div className="text-center">
+            <Eyebrow as="div" className="justify-center">
+              Capabilities
+            </Eyebrow>
+            <h2 className="mt-3 font-display text-3xl font-bold uppercase tracking-tight text-ink sm:text-4xl">
+              What&apos;s inside
+            </h2>
+          </div>
+          <div className="mt-10 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            {features.map((feature) => (
+              <Panel key={feature.title} tone="paper" className="p-6">
+                <svg
+                  width="28"
+                  height="28"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  aria-hidden="true"
+                  focusable="false"
+                  className="text-accent-strong"
+                >
+                  {feature.icon}
+                </svg>
+                <h3 className="mt-4 font-display text-base font-bold text-ink">{feature.title}</h3>
+                <p className="mt-2 text-sm text-ink-muted">{feature.description}</p>
+              </Panel>
+            ))}
+          </div>
+        </Section>
+      </Reveal>
+
+      <Reveal as="div">
+        <Section id="get-started" className="bg-ink text-white">
+          <div className="text-center">
+            <Eyebrow as="div" className="justify-center text-white/60">
+              Get started
+            </Eyebrow>
+            <h2 className="mt-3 font-display text-3xl font-bold uppercase tracking-tight text-white sm:text-4xl">
+              Ready to see it on your project?
+            </h2>
+            <p className="mx-auto mt-3 max-w-xl font-mono text-sm text-white/70">
+              Tell us about what you&apos;re building and we&apos;ll get in touch.
+            </p>
+            <div className="mt-8 flex justify-center">
+              <Button href="/contact" variant="accent" size="lg" skew>
+                Get in touch
+              </Button>
+            </div>
+          </div>
+        </Section>
+      </Reveal>
     </>
   );
 }
