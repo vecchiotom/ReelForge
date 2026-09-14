@@ -54,4 +54,27 @@ public sealed record VideoCompileStepConfig(
     int Crf = 20,
     string Preset = "veryfast",
     bool RegisterProjectFile = true,     // registers the compiled video as a re-editable ProjectFile row
+    // -- Phase 3: optional motion-graphics overlays (see docs/video-editing.md
+    //    "Motion graphics (Phase 3)"). EnableGraphics=false (default) is byte-identical to the
+    //    pre-Phase-3 compile path — this is the load-bearing backward-compatibility guarantee. --
+    /// <summary>
+    /// Which step's resolved <c>MotionGraphicsPlanOutput</c> to apply. <c>null</c> (default) means
+    /// no graphics plan is even looked for. Reuses <see cref="ExtractInputRef"/> verbatim, same as
+    /// <see cref="Decision"/> — only <c>From = Previous</c> or <c>From = Step</c> are valid.
+    /// </summary>
+    ExtractInputRef? GraphicsPlan = null,
+    bool EnableGraphics = false,
+    int MaxOverlays = 20,
+    int OverlayShortMs = 1500,
+    int OverlayMediumMs = 3000,
+    int OverlayHoldMs = 6000,
+    int OverlayFadeMs = 300,
+    /// <summary>Percent of frame height. Clamped 2..12 at execution time.</summary>
+    int OverlayFontSizePct = 5,
+    // Allowlisted at execution time exactly like VideoCodec/AudioCodec/Preset above — these are
+    // workflow-author-supplied config, but still reach ffmpeg's drawtext/drawbox filter string.
+    string OverlayFontColor = "white",
+    string OverlayBoxColor = "black@0.45",
+    int MaxOverlayTextChars = 80,
+    int MaxOverlaySubtextChars = 60,
     VideoCompileExpectation? Expect = null);

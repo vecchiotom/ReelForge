@@ -161,6 +161,48 @@ public class FfmpegArgvBuilderTests
     }
 
     [Fact]
+    public void BuildKeyframeArgs_places_ss_before_i_and_produces_the_exact_expected_token_array()
+    {
+        string[] args = FfmpegArgvBuilder.BuildKeyframeArgs("/scratch/input.mp4", "/scratch/keyframe-s2.jpg", 12.5, 512);
+
+        args.Should().Equal(
+            "-nostdin", "-hide_banner", "-y",
+            "-loglevel", "error",
+            "-protocol_whitelist", "file",
+            "-ss", "12.5",
+            "-i", "/scratch/input.mp4",
+            "-frames:v", "1",
+            "-vf", "scale='min(512,iw)':-2",
+            "-f", "image2",
+            "-c:v", "mjpeg",
+            "-q:v", "4",
+            "/scratch/keyframe-s2.jpg");
+    }
+
+    [Fact]
+    public void BuildKeyframeArgs_formats_numbers_with_invariant_culture_even_under_de_DE()
+    {
+        CultureInfo original = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("de-DE");
+
+            string[] args = FfmpegArgvBuilder.BuildKeyframeArgs("/scratch/input.mp4", "/scratch/keyframe.jpg", 10.75, 640);
+
+            // The scale filter's own syntax legitimately uses a comma as an argument separator
+            // (min(640,iw)) — the real assertion is that the *numbers* render with decimal points
+            // ("10.75", "640"), never a decimal comma, under de-DE.
+            args.Should().Contain("10.75");
+            args.Should().Contain("scale='min(640,iw)':-2");
+            args.Should().NotContain(a => a.Contains("10,75"));
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = original;
+        }
+    }
+
+    [Fact]
     public void FfmpegArgvFormat_Number_is_invariant_for_int_and_long_overloads_too()
     {
         CultureInfo original = CultureInfo.CurrentCulture;

@@ -395,3 +395,69 @@ public class VideoEditDecisionOutput
 
     public string SuggestedTitle { get; set; } = string.Empty;
 }
+
+/// <summary>
+/// One planned motion-graphics overlay (lower-third, title, callout, tag). Structured output for
+/// <c>MotionGraphicsPlannerAgent</c> (Phase 3 — see docs/video-editing.md "Motion graphics").
+/// </summary>
+/// <remarks>
+/// THE SAME RUSHCUT INVARIANT, extended to graphics: this class, and
+/// <see cref="MotionGraphicsPlanOutput"/> as a whole, must never gain a numeric or time-bearing
+/// property, and must never carry a pixel coordinate. The model's only contribution is an opaque
+/// <see cref="PlacementId"/> drawn from the set it was actually offered
+/// (<c>VideoAnalysisArtifact.OfferedPlacementIds</c>) plus enum-word choices
+/// (<see cref="Duration"/>/<see cref="Emphasis"/>) that <c>VideoCompileStepExecutor</c> alone
+/// resolves to milliseconds/style — never a number the model supplied directly. See the
+/// reflection test asserting this type is structurally incapable of expressing a time or a
+/// position.
+/// </remarks>
+public class MotionGraphicsOverlay
+{
+    /// <summary>Must be one of the ids in <c>VideoAnalysisArtifact.OfferedPlacementIds</c> — never invented.</summary>
+    public string PlacementId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// One of: LowerThird | Title | Callout | Tag.
+    /// </summary>
+    /// <remarks>
+    /// Currently DESCRIPTIVE/RESERVED ONLY: <c>DrawtextFilterBuilder</c> does not read this value
+    /// at all — every <see cref="Kind"/> renders identically (position/size come entirely from the
+    /// chosen placement's <c>Rect</c> and from <see cref="Emphasis"/>, not from <see cref="Kind"/>).
+    /// A per-kind rendering difference was considered during the audit cleanup pass but rejected as
+    /// out of scope for a small change: the placement's region (LowerThird/UpperThird/CenterBand) is
+    /// already resolved server-side from <c>view.placements</c>, so having <see cref="Kind"/> ALSO
+    /// influence position would create two disagreeing sources of geometry for the same overlay.
+    /// Reserved for a future rendering differentiation (e.g. a distinct style per kind) should that
+    /// be designed deliberately. See docs/video-editing.md "Motion graphics (Phase 3)".
+    /// </remarks>
+    public string Kind { get; set; } = string.Empty;
+
+    public string Text { get; set; } = string.Empty;
+
+    public string Subtext { get; set; } = string.Empty;
+
+    /// <summary>
+    /// One of: Short | Medium | Hold — never a number. Mapped to actual milliseconds
+    /// (<c>VideoCompileStepConfig.OverlayShortMs</c>/<c>OverlayMediumMs</c>/<c>OverlayHoldMs</c>)
+    /// entirely server-side.
+    /// </summary>
+    public string Duration { get; set; } = string.Empty;
+
+    /// <summary>One of: Subtle | Normal | Strong.</summary>
+    public string Emphasis { get; set; } = string.Empty;
+
+    /// <summary>Why this overlay was chosen. Prose only.</summary>
+    public string Reason { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Structured output for <c>MotionGraphicsPlannerAgent</c>. Zero or more overlays, each anchored
+/// only to a placement id offered by a <c>StepType.VideoAnalyze</c> step
+/// (<c>view.placements</c>) — never a timestamp or pixel coordinate anywhere in this type.
+/// </summary>
+public class MotionGraphicsPlanOutput
+{
+    public List<MotionGraphicsOverlay> Overlays { get; set; } = new();
+
+    public string PlanRationale { get; set; } = string.Empty;
+}

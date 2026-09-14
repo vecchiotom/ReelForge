@@ -10,6 +10,7 @@ import type {
   VideoSourceRef,
   VideoSourceKind,
   VideoTranscriptionMode,
+  VideoVisualDetail,
 } from '@/lib/types/workflow';
 import { useProjectFiles } from '@/lib/hooks/use-files';
 import { useInferenceProviders } from '@/lib/hooks/use-inference-providers';
@@ -36,6 +37,22 @@ export function createDefaultVideoAnalyzeStepConfig(): VideoAnalyzeStepConfigVal
     maxOutputChars: 24_000,
     maxViewSegments: 400,
     maxSegmentTextChars: 160,
+    analyzeVisuals: true,
+    visualSampleFps: 2.0,
+    visualGridWidth: 32,
+    visualGridHeight: 18,
+    maxVisualSampleFrames: 4000,
+    stillMotionThreshold: 0.02,
+    minStillWindowMs: 400,
+    maxStillWindowsPerShot: 3,
+    detectLetterbox: false,
+    detectSharpness: false,
+    analyzeAudioLevels: true,
+    detectNearDuplicates: true,
+    duplicateSimilarityThreshold: 0.90,
+    duplicateWindowShots: 20,
+    visualDetail: 'Compact',
+    maxViewDuplicateGroups: 20,
     expect: null,
   };
 }
@@ -185,6 +202,45 @@ export function VideoAnalyzeStepConfig({
           disabled={!config.detectShots}
         />
       </Group>
+
+      <Divider label="Scene/visual analysis (Phase 1)" labelPosition="left" />
+      <Text size="xs" c="dimmed">
+        Deterministic ffmpeg + pure C# descriptors (motion, camera move, exposure, dominant
+        colors, safe zones, near-duplicate takes, audio loudness) — no LLM call, no new external
+        dependency. See docs/video-editing.md.
+      </Text>
+      <Group grow align="flex-end">
+        <Switch
+          label="Analyze visuals"
+          checked={config.analyzeVisuals}
+          onChange={(e) => patch({ analyzeVisuals: e.currentTarget.checked })}
+        />
+        <Switch
+          label="Analyze audio levels"
+          checked={config.analyzeAudioLevels}
+          onChange={(e) => patch({ analyzeAudioLevels: e.currentTarget.checked })}
+        />
+        <Switch
+          label="Detect near-duplicate takes"
+          checked={config.detectNearDuplicates}
+          onChange={(e) => patch({ detectNearDuplicates: e.currentTarget.checked })}
+          disabled={!config.analyzeVisuals}
+        />
+      </Group>
+      {config.analyzeVisuals && (
+        <Select
+          label="Per-shot detail in the prompt view"
+          description="Degrades Full -> Compact -> None to fit the char budget below, before any shot/silence/segment is ever dropped"
+          size="xs"
+          value={config.visualDetail}
+          data={[
+            { value: 'None', label: 'None — no visual/audio data in the view' },
+            { value: 'Compact', label: 'Compact — motion, camera move, safe zone, dup/best, exposure' },
+            { value: 'Full', label: 'Full — adds all regions, all still windows, motion std-dev/peak' },
+          ]}
+          onChange={(v) => v && patch({ visualDetail: v as VideoVisualDetail })}
+        />
+      )}
 
       <Divider label="Transcription (ASR)" labelPosition="left" />
       <Select
@@ -337,15 +393,25 @@ export function VideoAnalyzeStepConfig({
 {`{
   "view": {
     "media": { "durationSec": 184.32, "fpsNum": 30, "fpsDen": 1, "width": 1920, "height": 1080 },
-    "shots": [ { "id": "s0", "startSec": 0.0, "endSec": 12.4, "durationSec": 12.4 } ],
+    "shots": [ { "id": "s0", "startSec": 0.0, "endSec": 12.4, "durationSec": 12.4${
+      config.analyzeVisuals && config.visualDetail !== 'None'
+        ? ',\n      "v": { "motion": 12, "move": "Pan", "cutIn": "still", "cutOut": "moving",\n             "bright": 41, "contrast": 22, "colors": ["#2b3a4f", "#c9b48a"],\n             "safe": { "region": "LowerThird", "fit": 88, "text": "Light" },\n             "dup": "d2", "best": true }' + (config.analyzeAudioLevels ? ',\n      "a": { "rms": -21, "speech": 82 }' : '')
+        : ''
+    } } ],
     "silences": [ { "id": "g3", "startSec": 12.1, "endSec": 13.9, "durationSec": 1.8, "afterShot": "s0" } ],
-    "segments": [ { "id": "t7", "shot": "s0", "startSec": 1.2, "endSec": 4.9, "text": "so what we built here is" } ]
+    "segments": [ { "id": "t7", "shot": "s0", "startSec": 1.2, "endSec": 4.9, "text": "so what we built here is" } ]${
+      config.analyzeVisuals && config.visualDetail !== 'None'
+        ? ',\n    "pacing": { "meanShotSec": 4.1, "medianShotSec": 3.8, "cutsPerMinute": 14.6, "motionTimeline": [12, 30, 8], "timelineBinSec": 5.0 },\n    "duplicateGroups": [ { "id": "d2", "shotIds": ["s4", "s7"], "bestShotId": "s7", "similarity": 94 } ]'
+        : ''
+    }
   },
   "meta": {
     "operation": "videoAnalyze",
     "artifactStorageKey": "projects/.../step-1-analysis.json",
     "offeredIdCount": 412, "truncated": false, "droppedItems": 0,
     "transcription": { "mode": "${config.transcription}", "applied": true, "provider": "whisper-local", "degraded": false },
+    "visual": { "applied": ${config.analyzeVisuals}, "degraded": false, "sampleFps": ${config.visualSampleFps}, "gridWidth": ${config.visualGridWidth}, "gridHeight": ${config.visualGridHeight}, "detail": "${config.analyzeVisuals ? config.visualDetail : 'None'}" },
+    "audioLevels": { "applied": ${config.analyzeAudioLevels} },
     "sourceChars": 1843201, "outputChars": 23117
   }
 }`}

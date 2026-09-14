@@ -57,8 +57,14 @@ export function InferenceProviderTable({ providers, onDelete }: InferenceProvide
               </Badge>
             </Table.Td>
             <Table.Td>
-              <Badge color={provider.capability === 'Transcription' ? 'teal' : 'indigo'} variant="light" size="sm">
-                {provider.capability === 'Transcription' ? 'Transcription' : 'Chat'}
+              <Badge
+                color={
+                  provider.capability === 'Transcription' ? 'teal' : provider.capability === 'Vision' ? 'orange' : 'indigo'
+                }
+                variant="light"
+                size="sm"
+              >
+                {provider.capability}
               </Badge>
             </Table.Td>
             <Table.Td>{provider.endpoint}</Table.Td>

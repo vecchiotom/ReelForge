@@ -205,6 +205,23 @@ public class AgentToolProvider : IAgentToolProvider
             ],
 
             // ──────────────────────────────────────────────────────────────────
+            // MotionGraphicsPlanner (Phase 3): read-only project context + FailWorkflow only,
+            // identical in spirit to VideoStoryEditor immediately above — it decides zero or more
+            // overlays anchored only to offered placement ids; it never produces or touches media
+            // directly. Explicitly NO sandbox tools, no WriteProjectFile, no render tool — spelled
+            // out on purpose for the same reason as VideoStoryEditor's case above.
+            // ──────────────────────────────────────────────────────────────────
+
+            AgentType.MotionGraphicsPlanner =>
+            [
+                AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
+                AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
+                AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
+                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
+                AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
+            ],
+
+            // ──────────────────────────────────────────────────────────────────
             // Custom / unknown: minimal project read access only.
             // ──────────────────────────────────────────────────────────────────
 

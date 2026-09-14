@@ -202,6 +202,118 @@ public class InferenceProviderResolverTests
         resolved.Should().BeNull();
     }
 
+    // --- Phase 2: Vision capability (mirrors the Transcription tests above exactly) ---
+
+    [Fact]
+    public async Task ResolveVisionAsync_prefers_the_explicit_provider_id_over_the_default()
+    {
+        InferenceProvider defaultProvider = MakeProvider(
+            isDefault: true, name: "vision-default", capability: InferenceProviderCapability.Vision);
+        InferenceProvider explicitProvider = MakeProvider(
+            isDefault: false, name: "vision-explicit", capability: InferenceProviderCapability.Vision);
+
+        InferenceProviderResolver resolver = CreateResolver(
+            providers: new[] { defaultProvider, explicitProvider },
+            overrides: new Dictionary<Guid, Guid?>());
+
+        ResolvedInferenceProvider? resolved = await resolver.ResolveVisionAsync(
+            explicitProviderId: explicitProvider.Id, CancellationToken.None);
+
+        resolved.Should().NotBeNull();
+        resolved!.ProviderId.Should().Be(explicitProvider.Id);
+        resolved.Name.Should().Be("vision-explicit");
+    }
+
+    [Fact]
+    public async Task ResolveVisionAsync_falls_back_to_the_default_when_no_explicit_id_is_given()
+    {
+        InferenceProvider defaultProvider = MakeProvider(
+            isDefault: true, name: "vision-default", capability: InferenceProviderCapability.Vision);
+
+        InferenceProviderResolver resolver = CreateResolver(
+            providers: new[] { defaultProvider },
+            overrides: new Dictionary<Guid, Guid?>());
+
+        ResolvedInferenceProvider? resolved = await resolver.ResolveVisionAsync(
+            explicitProviderId: null, CancellationToken.None);
+
+        resolved.Should().NotBeNull();
+        resolved!.ProviderId.Should().Be(defaultProvider.Id);
+    }
+
+    [Fact]
+    public async Task ResolveVisionAsync_returns_null_when_nothing_resolves_even_with_config_fallback_available()
+    {
+        // Same rationale as ResolveTranscriptionAsync: no fallback to the legacy AzureOpenAI:*
+        // configuration keys for vision either, even when a Chat default row also exists.
+        InferenceProvider chatDefault = MakeProvider(
+            isDefault: true, name: "chat-default", capability: InferenceProviderCapability.Chat);
+
+        InferenceProviderResolver resolver = CreateResolver(
+            providers: new[] { chatDefault },
+            overrides: new Dictionary<Guid, Guid?>(),
+            configOverrides: new Dictionary<string, string?>
+            {
+                ["AzureOpenAI:Endpoint"] = "https://config-fallback.example",
+                ["AzureOpenAI:ApiKey"] = "config-key",
+                ["AzureOpenAI:DeploymentName"] = "config-deployment"
+            });
+
+        ResolvedInferenceProvider? resolved = await resolver.ResolveVisionAsync(
+            explicitProviderId: null, CancellationToken.None);
+
+        resolved.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ResolveVisionAsync_never_returns_a_Chat_provider_explicitly_passed_as_the_vision_id()
+    {
+        // Capability guards the inverse gap (mirrors ResolveTranscriptionAsync's equivalent
+        // test): a Chat provider id authored directly into VideoAnalyzeStepConfig.VisionProviderId
+        // (bypassing the UI, which only offers Vision rows) must fall through to the Vision
+        // default (or null), never be sent through the vision/chat-image path as if it were
+        // vision-capable by virtue of being a chat provider.
+        InferenceProvider chatProvider = MakeProvider(
+            isDefault: false, name: "chat-only", capability: InferenceProviderCapability.Chat);
+        InferenceProvider visionDefault = MakeProvider(
+            isDefault: true, name: "vision-default", capability: InferenceProviderCapability.Vision);
+
+        InferenceProviderResolver resolver = CreateResolver(
+            providers: new[] { chatProvider, visionDefault },
+            overrides: new Dictionary<Guid, Guid?>());
+
+        ResolvedInferenceProvider? resolved = await resolver.ResolveVisionAsync(
+            explicitProviderId: chatProvider.Id, CancellationToken.None);
+
+        resolved.Should().NotBeNull();
+        resolved!.ProviderId.Should().Be(visionDefault.Id,
+            "a Chat-capability id passed as the explicit vision provider must fall through to the Vision default");
+    }
+
+    [Fact]
+    public async Task ResolveVisionAsync_and_ResolveAsync_defaults_are_fully_independent()
+    {
+        // R4-style regression, extended to the third capability: a Vision default and a Chat
+        // default coexist independently and must never answer each other's resolution.
+        InferenceProvider visionDefault = MakeProvider(
+            isDefault: true, name: "vision-default", capability: InferenceProviderCapability.Vision);
+        InferenceProvider chatDefault = MakeProvider(
+            isDefault: true, name: "chat-default", capability: InferenceProviderCapability.Chat);
+
+        InferenceProviderResolver resolver = CreateResolver(
+            providers: new[] { visionDefault, chatDefault },
+            overrides: new Dictionary<Guid, Guid?>());
+
+        ResolvedInferenceProvider chatResolved = await resolver.ResolveAsync(
+            AgentType.CodeStructureAnalyzer, agentDefinitionId: null, CancellationToken.None);
+        ResolvedInferenceProvider? visionResolved = await resolver.ResolveVisionAsync(
+            explicitProviderId: null, CancellationToken.None);
+
+        chatResolved.ProviderId.Should().Be(chatDefault.Id);
+        visionResolved.Should().NotBeNull();
+        visionResolved!.ProviderId.Should().Be(visionDefault.Id);
+    }
+
     private static InferenceProvider MakeProvider(
         bool isDefault,
         string name,

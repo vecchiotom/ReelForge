@@ -84,6 +84,9 @@ builder.Services.AddSingleton<IMediaProbe, FfprobeMediaProbe>();
 builder.Services.AddSingleton<ISilenceDetector, FfmpegSilenceDetector>();
 builder.Services.AddSingleton<IShotDetector, FfmpegShotDetector>();
 builder.Services.AddSingleton<IAudioExtractor, FfmpegAudioExtractor>();
+builder.Services.AddSingleton<IFrameGridSampler, FfmpegFrameGridSampler>();
+builder.Services.AddSingleton<IKeyframeExtractor, FfmpegKeyframeExtractor>();
+builder.Services.AddSingleton<IShotCaptioner, VisionShotCaptioner>();
 
 // --- MinIO / S3 ---
 builder.Services.AddSingleton<IAmazonS3>(sp =>
@@ -112,6 +115,7 @@ builder.Services.AddSingleton<IReelForgeAgent, ScriptwriterAgentImpl>();
 builder.Services.AddSingleton<IReelForgeAgent, AuthorAgentImpl>();
 builder.Services.AddSingleton<IReelForgeAgent, ReviewAgentImpl>();
 builder.Services.AddSingleton<IReelForgeAgent, VideoStoryEditorAgent>();
+builder.Services.AddSingleton<IReelForgeAgent, MotionGraphicsPlannerAgent>();
 builder.Services.AddSingleton<IAgentRegistry, AgentRegistry>();
 builder.Services.AddSingleton<IAgentToolProvider, AgentToolProvider>();
 builder.Services.AddSingleton<IProjectFileWorkspace, ProjectFileWorkspace>();

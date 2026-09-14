@@ -92,6 +92,30 @@ public sealed class InferenceProviderResolver : IInferenceProviderResolver
         return provider != null ? ResolveTranscriptionFromProvider(provider) : null;
     }
 
+    public async Task<ResolvedInferenceProvider?> ResolveVisionAsync(Guid? explicitProviderId, CancellationToken ct)
+    {
+        Snapshot snapshot = await GetSnapshotAsync(ct);
+
+        InferenceProvider? provider = null;
+
+        if (explicitProviderId.HasValue &&
+            snapshot.ProvidersById.TryGetValue(explicitProviderId.Value, out InferenceProvider? explicitProvider) &&
+            explicitProvider.Capability == InferenceProviderCapability.Vision)
+        {
+            // Same defense-in-depth shape as ResolveTranscriptionAsync's Capability guard: a Chat
+            // (or Transcription) provider id authored directly into
+            // VideoAnalyzeStepConfig.VisionProviderId must not be sent through the vision path.
+            provider = explicitProvider;
+        }
+
+        provider ??= snapshot.DefaultVisionProvider;
+
+        // Vision reuses the exact same chat-completions client construction as ResolveAsync —
+        // ResolveFromProvider, not a dedicated "ResolveVisionFromProvider" — since a vision call
+        // is just a chat call with an image content part (see IInferenceProviderResolver.ResolveVisionAsync).
+        return provider != null ? ResolveFromProvider(provider) : null;
+    }
+
     private ResolvedInferenceProvider ResolveFromProvider(InferenceProvider provider)
     {
         string apiKey = string.Empty;
@@ -199,8 +223,12 @@ public sealed class InferenceProviderResolver : IInferenceProviderResolver
                 p => p.IsDefault && p.Capability == InferenceProviderCapability.Chat);
             InferenceProvider? defaultTranscriptionProvider = enabled.FirstOrDefault(
                 p => p.IsDefault && p.Capability == InferenceProviderCapability.Transcription);
+            InferenceProvider? defaultVisionProvider = enabled.FirstOrDefault(
+                p => p.IsDefault && p.Capability == InferenceProviderCapability.Vision);
 
-            Snapshot snapshot = new(providersById, overrides, defaultChatProvider, defaultTranscriptionProvider, DateTime.UtcNow);
+            Snapshot snapshot = new(
+                providersById, overrides, defaultChatProvider, defaultTranscriptionProvider,
+                defaultVisionProvider, DateTime.UtcNow);
             _snapshot = snapshot;
             return snapshot;
         }
@@ -215,5 +243,6 @@ public sealed class InferenceProviderResolver : IInferenceProviderResolver
         IReadOnlyDictionary<Guid, Guid?> AgentOverrides,
         InferenceProvider? DefaultChatProvider,
         InferenceProvider? DefaultTranscriptionProvider,
+        InferenceProvider? DefaultVisionProvider,
         DateTime LoadedAt);
 }

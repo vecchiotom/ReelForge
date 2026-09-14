@@ -158,6 +158,49 @@ public static class WorkflowTemplateCatalog
                     VideoCompileConfigJson: """
                         {"version":1,"decision":{"from":"Previous"},"analysisStepOrder":1}
                         """)
+            ]),
+        new(
+            Key: "video-derush-edit-graphics",
+            Name: "Video Derush, Edit & Graphics",
+            Description: "Opt-in template extending Video Derush & Edit with Phase 3 motion graphics: the analyze step also derives overlay-placement candidates, a second agent plans zero or more lower-third/title/callout overlays anchored only to those offered placement ids (never a coordinate or timestamp), and the compile step applies them during the same ffmpeg encode. Demonstrates EmitOverlayPlacements/EnableGraphics end to end.",
+            Version: 1,
+            AutoCreateOnProject: false,
+            RequiresUserInput: false,
+            Steps:
+            [
+                new(
+                    AgentType.VideoTransform,
+                    "Analyze source video",
+                    StepType.VideoAnalyze,
+                    // Same ProjectFile-source rationale as video-derush-edit's first step above
+                    // (this is the first step, so PreviousStepOutput would fail SOURCE_UNRESOLVED
+                    // on every run) — plus emitOverlayPlacements:true to derive Phase 3's
+                    // view.placements candidates alongside the usual cut-anchor ids.
+                    VideoAnalyzeConfigJson: """
+                        {"version":1,"source":{"kind":"ProjectFile"},"emitOverlayPlacements":true}
+                        """),
+                new(
+                    AgentType.VideoStoryEditor,
+                    "Decide which spans to keep",
+                    AgentInputContextMode: AgentInputContextMode.PreviousStepOnly),
+                new(
+                    AgentType.MotionGraphicsPlanner,
+                    "Plan motion graphics overlays",
+                    // FullWorkflow (not PreviousStepOnly): this agent needs BOTH the analyze
+                    // step's view.placements (step 1) and the story editor's decision (step 2),
+                    // not merely the immediately-preceding step's output.
+                    AgentInputContextMode: AgentInputContextMode.FullWorkflow),
+                new(
+                    AgentType.VideoTransform,
+                    "Compile edited video with graphics",
+                    StepType.VideoCompile,
+                    // Decision/GraphicsPlan reference their source steps explicitly by
+                    // StepOrder — "Previous" relative to THIS step would resolve to the
+                    // MotionGraphicsPlanner step's output (step 3), not the story editor's
+                    // decision (step 2).
+                    VideoCompileConfigJson: """
+                        {"version":1,"decision":{"from":"Step","stepOrder":2},"analysisStepOrder":1,"enableGraphics":true,"graphicsPlan":{"from":"Step","stepOrder":3}}
+                        """)
             ])
     ];
 

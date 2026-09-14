@@ -522,7 +522,9 @@ public static class DatabaseSeeder
                or any other numeric time value, in your structured output or anywhere else. You
                are not given frame-accurate timing and are not trusted with it — a separate
                deterministic step resolves your chosen ids to exact times against the full
-               analysis artifact. Your only job is choosing which ids to keep.
+               analysis artifact. Your only job is choosing which ids to keep. Describe cuts
+               qualitatively ("removes the long pause after the intro", "trims the repeated
+               take"), never with a number.
              - Express your decision only as an ordered list of Keep spans, each naming the
                first and last id (inclusive) of a contiguous run to retain. Everything not
                covered by a Keep span is cut — there is no separate "remove" list.
@@ -530,6 +532,37 @@ public static class DatabaseSeeder
                reorder) and must not overlap.
              - Prefer segments with clear, complete thoughts over fragments; prefer cutting
                silence gaps and false starts; do not keep a shot solely because it is long.
+
+             ## Shot visual/audio context (when available)
+
+             Some shots carry extra, purely descriptive context under a "v" (visual) and/or "a"
+             (audio) key — use it to judge pacing and quality, never to reason about timing. The
+             no-timestamp rule above is completely unchanged: this context is never a number you
+             may repeat, and you still only ever choose among the ids you were given.
+
+             - "motion" (0-100): how much movement is in the shot — low is calm/still, high is
+               busy or shaky.
+             - "move": a rough camera-movement guess — Static, Pan, Tilt, Zoom, or Handheld.
+             - "cutIn"/"cutOut": whether the shot is calm ("still") or already moving ("moving")
+               right at its start/end — prefer starting and ending a kept run of ids on "still"
+               boundaries so a cut never lands mid-motion.
+             - "still": one or more calm windows within the shot, if any.
+             - "dup"/"best": shots sharing the same "dup" id are near-duplicate takes of the same
+               moment — when choosing between them, prefer the one marked "best": true unless the
+               transcript or other context gives you a reason to prefer a different take.
+             - "bright"/"colors": rough exposure (0-100) and the shot's dominant palette — use
+               only to judge whether a shot looks well-exposed, never to describe timing.
+             - "rms"/"speech" (under "a"): rough audio loudness and how much of the shot has
+               speech versus silence.
+
+             Some shots also carry a "c" (caption) key: a short AI-generated description of what
+             is visually happening in the shot — subjects present, the action, the setting, the
+             mood, the shot scale, on-screen text, and a few tags. Use it as extra context for
+             judging pacing and quality (e.g. preferring a shot whose caption suggests a clear,
+             complete moment over one that sounds like a fragment or a false start), exactly like
+             "v"/"a" — never as a source of timing. A shot with no "c" key is normal, not a
+             signal that the shot is empty or unimportant: captioning only runs on a
+             budget-limited subset of shots, so most shots will not have one.
 
              ## Tools
 
@@ -546,6 +579,66 @@ public static class DatabaseSeeder
              human-readable reason rather than fabricating a decision.
              """,
              "#0284C7")
+        },
+        {
+            AgentType.MotionGraphicsPlanner,
+            ("MotionGraphicsPlanner",
+             "Plans zero or more motion-graphics overlays (lower-thirds, titles, callouts) anchored only to offered placement ids from a video analysis.",
+             """
+             You are a motion-graphics planner for an edited video. You are given the story
+             editor's already-decided edit (or the same bounded analysis view) plus a list
+             of overlay-placement candidates under "placements" — each with a short opaque
+             id such as "p0" or "p3", the named region it sits in (LowerThird, UpperThird,
+             or CenterBand), a 0-100 "fit" score for how suitable that spot is, and a
+             "text" hint ("Light" or "Dark") for which text color reads well there. You
+             decide zero or more text/graphic overlays (lower-thirds, titles, callouts) to
+             add during the final compile.
+
+             ## Rules — hard constraints, not suggestions
+
+             - You may reference ONLY placement ids that appear in the "placements" list
+               you were given. Never invent one, never guess one, never reuse an id from a
+               previous run or a different video, and never reuse a shot/silence/segment
+               id ("s2", "g3", "t7") as a placement id — those are a completely different
+               kind of id and are never valid here.
+             - You must NEVER output, estimate, or mention a timestamp, duration in
+               seconds/milliseconds, frame number, or pixel/percentage coordinate,
+               anywhere in your structured output. You are not given frame-accurate
+               timing or geometry and are not trusted with either — a separate
+               deterministic step resolves your chosen placement ids to exact positions
+               and times against the full analysis artifact. Your only job is choosing
+               which placements to use and what each overlay says.
+             - Duration is a WORD, not a number: choose exactly one of "Short", "Medium",
+               or "Hold" for how long an overlay should stay on screen. A separate
+               deterministic step maps these words to actual milliseconds — you never
+               supply a number yourself.
+             - Emphasis is also a WORD: choose one of "Subtle", "Normal", or "Strong" for
+               how visually prominent the overlay should be.
+             - Kind is one of "LowerThird", "Title", "Callout", or "Tag" — pick whichever
+               best matches what the overlay is for.
+             - Keep Text short and Subtext, if used, shorter still — think broadcast
+               lower-third, not a paragraph. Prefer zero overlays over a cluttered edit:
+               only add one where it genuinely helps the viewer (introducing a speaker,
+               naming a place, calling out a key point), never as decoration on every cut.
+             - Do not reuse the same placement id twice, and do not exceed a small,
+               tasteful number of overlays for the whole edit.
+
+             ## Tools
+
+             Use `ListProjectFiles` and `ReadProjectFile` if you need to check other
+             project context (e.g. a brief or script) before deciding. You have no
+             sandbox tools and no ability to write files or render media — you only plan.
+
+             Output ONLY valid JSON matching the MotionGraphicsPlanOutput schema: an
+             `overlays` list of {placementId, kind, text, subtext, duration, emphasis,
+             reason} entries (subtext may be empty), and a `planRationale` explaining
+             your overall approach.
+
+             If there are no placements offered, or none of them warrant an overlay,
+             output an empty `overlays` list rather than inventing a placement id or
+             forcing an overlay that is not warranted.
+             """,
+             "#DB2777")
         },
         {
             AgentType.FileSummarizerAgent,
@@ -697,10 +790,12 @@ public static class DatabaseSeeder
         if (agentType is AgentType.ExtractTransform or AgentType.VideoTransform)
             return JsonSerializer.Serialize(Array.Empty<string>());
 
-        // VideoStoryEditor's real runtime tool scope (AgentToolProvider.GetTools) is deliberately
-        // minimal and read-only; falling through to BaseTools here would misreport it as having
-        // WriteProjectFile/sandbox access it does not actually receive (found by e2e QA).
-        if (agentType is AgentType.VideoStoryEditor)
+        // VideoStoryEditor/MotionGraphicsPlanner's real runtime tool scope
+        // (AgentToolProvider.GetTools) is deliberately minimal and read-only; falling through to
+        // BaseTools here would misreport either as having WriteProjectFile/sandbox access it does
+        // not actually receive (found by e2e QA for VideoStoryEditor; mirrored for Phase 3's
+        // MotionGraphicsPlanner, which has the identical minimal tool scope).
+        if (agentType is AgentType.VideoStoryEditor or AgentType.MotionGraphicsPlanner)
             return JsonSerializer.Serialize(ReadOnlyProjectContextTools);
 
         string[] extra = agentType switch
@@ -735,6 +830,7 @@ public static class DatabaseSeeder
         AgentType.ReviewAgent => "ReviewOutput",
         AgentType.FileSummarizerAgent => "FileSummaryOutput",
         AgentType.VideoStoryEditor => "VideoEditDecisionOutput",
+        AgentType.MotionGraphicsPlanner => "MotionGraphicsPlanOutput",
         _ => null
     };
 
@@ -755,6 +851,7 @@ public static class DatabaseSeeder
             AgentType.ReviewAgent => GenerateReviewSchema(),
             AgentType.FileSummarizerAgent => GenerateFileSummarySchema(),
             AgentType.VideoStoryEditor => GenerateVideoEditDecisionSchema(),
+            AgentType.MotionGraphicsPlanner => GenerateMotionGraphicsPlanSchema(),
             _ => null
         };
 
@@ -1256,5 +1353,35 @@ public static class DatabaseSeeder
             suggestedTitle = new { type = "string", description = "A short suggested title for the edited video." }
         },
         required = new[] { "keep", "editRationale", "suggestedTitle" }
+    };
+
+    private static object GenerateMotionGraphicsPlanSchema() => new
+    {
+        type = "object",
+        properties = new
+        {
+            overlays = new
+            {
+                type = "array",
+                items = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        placementId = new { type = "string", description = "Must be a placement id from the offered \"placements\" list (e.g. \"p0\") — never invented, never a shot/silence/segment id." },
+                        kind = new { type = "string", description = "One of: LowerThird | Title | Callout | Tag." },
+                        text = new { type = "string", description = "The overlay's main text. Keep short." },
+                        subtext = new { type = "string", description = "Optional secondary line. May be empty." },
+                        duration = new { type = "string", description = "One of: Short | Medium | Hold — never a number. A deterministic step maps this to milliseconds." },
+                        emphasis = new { type = "string", description = "One of: Subtle | Normal | Strong." },
+                        reason = new { type = "string", description = "Why this overlay was chosen. Prose only — never a timestamp or coordinate." }
+                    },
+                    required = new[] { "placementId", "kind", "text", "subtext", "duration", "emphasis", "reason" }
+                },
+                description = "Zero or more planned overlays, each anchored only to an offered placement id. Never exceed a small, tasteful count."
+            },
+            planRationale = new { type = "string", description = "Overall explanation of the graphics plan. Prose only." }
+        },
+        required = new[] { "overlays", "planRationale" }
     };
 }

@@ -202,7 +202,15 @@ export interface VideoAnalyzeExpectation {
   minShots?: number | null;
   minTranscriptSegments?: number | null;
   maxSilenceRatio?: number | null;
+  minShotsWithVisuals?: number | null;
 }
+
+/**
+ * How much per-shot visual/audio detail (Phase 1 descriptors) the bounded view includes per shot.
+ * `VideoAnalyzeStepExecutor.BuildBoundedView` degrades Full -> Compact -> None to fit
+ * `maxOutputChars` BEFORE ever dropping an offered shot/silence/segment.
+ */
+export type VideoVisualDetail = 'None' | 'Compact' | 'Full';
 
 export interface VideoAnalyzeStepConfig {
   version: number;
@@ -227,6 +235,28 @@ export interface VideoAnalyzeStepConfig {
   maxOutputChars: number;
   maxViewSegments: number;
   maxSegmentTextChars: number;
+  // -- Phase 1: visual scene analysis (one low-res raw-frame grid ffmpeg pass + pure C#) --
+  analyzeVisuals: boolean;
+  visualSampleFps: number;
+  visualGridWidth: number;
+  visualGridHeight: number;
+  maxVisualSampleFrames: number;
+  stillMotionThreshold: number;
+  minStillWindowMs: number;
+  maxStillWindowsPerShot: number;
+  /** Opt-in, lower priority than the core grid pipeline — see docs/video-editing.md. */
+  detectLetterbox: boolean;
+  /** Opt-in, lower priority than the core grid pipeline — see docs/video-editing.md. */
+  detectSharpness: boolean;
+  // -- Phase 1: audio loudness (reuses the WAV already extracted for transcription, or extracts it) --
+  analyzeAudioLevels: boolean;
+  // -- Phase 1: near-duplicate / best-take grouping --
+  detectNearDuplicates: boolean;
+  duplicateSimilarityThreshold: number;
+  duplicateWindowShots: number;
+  // -- Phase 1: bounded-view detail level --
+  visualDetail: VideoVisualDetail;
+  maxViewDuplicateGroups: number;
   expect?: VideoAnalyzeExpectation | null;
 }
 
@@ -261,6 +291,24 @@ export interface VideoCompileStepConfig {
   crf: number;
   preset: string;
   registerProjectFile: boolean;
+  // -- Phase 3: optional motion-graphics overlays (see docs/video-editing.md
+  //    "Motion graphics (Phase 3)"). enableGraphics=false (default) is byte-identical to the
+  //    pre-Phase-3 compile path. --
+  /** Which step's resolved MotionGraphicsPlanOutput to apply. `null` = no graphics plan looked up. Only `from: 'Previous'` or `from: 'Step'` are valid, same as `decision`. */
+  graphicsPlan?: ExtractInputRef | null;
+  enableGraphics: boolean;
+  maxOverlays: number;
+  overlayShortMs: number;
+  overlayMediumMs: number;
+  overlayHoldMs: number;
+  overlayFadeMs: number;
+  /** Percent of frame height, clamped 2..12 server-side. */
+  overlayFontSizePct: number;
+  // Allowlisted at execution time, same discipline as videoCodec/audioCodec/preset above.
+  overlayFontColor: string;
+  overlayBoxColor: string;
+  maxOverlayTextChars: number;
+  maxOverlaySubtextChars: number;
   expect?: VideoCompileExpectation | null;
 }
 

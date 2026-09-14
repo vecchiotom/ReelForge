@@ -3,12 +3,13 @@ export type InferenceProviderKind = 'AzureOpenAI' | 'OpenAICompatible';
 /**
  * What an InferenceProvider row can be used for. Mirrors the backend `InferenceProviderCapability`
  * enum (ReelForge.Shared/Data/Models/Enums.cs) and `InferenceProviderResponse.Capability`
- * (Inference.Api/Controllers/Dto/InferenceProviderDtos.cs) exactly — confirmed against WS4's
- * shipped code. `Chat` and `Transcription` each participate in their own "at most one default"
- * constraint, so a chat-provider picker (e.g. the per-agent override) must filter out
- * `Transcription` rows and vice versa.
+ * (Inference.Api/Controllers/Dto/InferenceProviderDtos.cs) exactly. `Chat`, `Transcription`, and
+ * `Vision` (Phase 2 of video editing — shot captioning, see docs/video-editing.md) each participate
+ * in their own independent "at most one default" constraint, so a chat-provider picker (e.g. the
+ * per-agent override) must filter to `Chat` only — never merely "not Transcription", which would
+ * incorrectly admit `Vision` rows too.
  */
-export type InferenceProviderCapability = 'Chat' | 'Transcription';
+export type InferenceProviderCapability = 'Chat' | 'Transcription' | 'Vision';
 
 export interface InferenceProvider {
   id: string;
