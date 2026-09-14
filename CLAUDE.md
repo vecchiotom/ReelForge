@@ -41,6 +41,8 @@ All services are containerized and accessed through an nginx reverse proxy on a 
 
 Nginx is the single entry point (port 80). It routes requests to the appropriate backend and translates httpOnly cookies into Authorization headers. The Go API is the authority for user management and JWT issuance. The Inference API handles CRUD and publishes execution requests to RabbitMQ. The Workflow Engine consumes execution requests and runs AI agents.
 
+See [`docs/marketing-site.md`](docs/marketing-site.md) for the public marketing site's routing split (`/` → `site`, `/app/*` → `web`) and its launch checklist.
+
 ### Go API
 
 **Module:** `github.com/vecchiotom/reelforge`
@@ -579,6 +581,11 @@ All configuration is driven by `.env` at the repo root (copy `.env.example` to `
 | `VIDEO_ANALYZE_TIMEOUT_SECONDS` | `900` | Hard wall-clock timeout for a `VideoAnalyze` step's ffmpeg/ffprobe/ASR calls (`VideoEditing:AnalyzeTimeoutSeconds`) |
 | `VIDEO_COMPILE_TIMEOUT_SECONDS` | `1800` | Hard wall-clock timeout for a `VideoCompile` step's ffmpeg encode (`VideoEditing:CompileTimeoutSeconds`) |
 | `VIDEO_FONT_FILE` | `/usr/share/fonts/dejavu/DejaVuSans.ttf` | Font file passed to drawtext's `fontfile=` for Phase 3 motion-graphics overlays (`VideoEditing:FontFilePath`) — must exist in the `workflow-engine` image; the default matches the `font-dejavu` Alpine package the Dockerfile installs alongside ffmpeg |
+| `SITE_BUILD_TARGET` | `development` | Dockerfile build target for the `site` service (`development` for Turbopack hot reload, `production` for the precompiled standalone build) |
+| `SITE_NODE_ENV` | `development` | `NODE_ENV` for the `site` container; set to `production` alongside `SITE_BUILD_TARGET=production` |
+| `NEXT_PUBLIC_SITE_URL` | `https://reelforge.com` | Canonical absolute origin for the marketing site — the single value `site/lib/site-config.ts` reads for canonical URLs, `sitemap.xml`, `robots.txt`, Open Graph/Twitter cards, and JSON-LD. Baked in at build time via a Docker build arg, so the `site` image must be rebuilt after changing it. See [`docs/marketing-site.md`](docs/marketing-site.md) |
+| `NEXT_PUBLIC_GA_MEASUREMENT_ID` | — | GA4 measurement ID (`G-XXXXXXXXXX`) for the marketing site. Leave empty to ship without analytics — no script is injected either way unless a visitor also accepts the cookie banner |
+| `CONTACT_WEBHOOK_URL` | — | Where the marketing site's `/api/contact` route POSTs submissions as JSON. Leave empty and submissions are only logged to the `site` container's stdout |
 
 ### Inference `appsettings.json` Keys
 
