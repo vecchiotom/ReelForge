@@ -155,6 +155,33 @@ public class DrawtextFilterBuilderTests
     }
 
     [Fact]
+    public void BoxColor_none_skips_the_drawbox_entirely_but_still_chains_drawtext_to_vout()
+    {
+        string chain = DrawtextFilterBuilder.BuildFilterChain(
+            "[vcut]", new[] { Overlay() }, probedWidth: 1920, probedHeight: 1080,
+            fontSizePct: 5, fadeMs: 300, fontColor: "white", boxColor: "none",
+            fontFilePath: "/fonts/DejaVuSans.ttf",
+            textFilePathForIndex: slot => $"/scratch/ov-{slot}.txt");
+
+        chain.Should().NotContain("drawbox=");
+        chain.Should().Contain("drawtext=");
+        chain.Should().StartWith("[vcut]drawtext=");
+        chain.TrimEnd().Should().EndWith("[vout]");
+    }
+
+    [Fact]
+    public void BoxColor_none_is_case_insensitive_and_still_skips_the_drawbox()
+    {
+        string chain = DrawtextFilterBuilder.BuildFilterChain(
+            "[vcut]", new[] { Overlay() }, probedWidth: 1920, probedHeight: 1080,
+            fontSizePct: 5, fadeMs: 300, fontColor: "white", boxColor: "None",
+            fontFilePath: "/fonts/DejaVuSans.ttf",
+            textFilePathForIndex: slot => $"/scratch/ov-{slot}.txt");
+
+        chain.Should().NotContain("drawbox=");
+    }
+
+    [Fact]
     public void Multiple_overlays_chain_through_intermediate_labels_and_the_last_one_reaches_vout()
     {
         var overlays = new List<ResolvedOverlay> { Overlay("p0", "First"), Overlay("p1", "Second", startSec: 10, endSec: 12) };

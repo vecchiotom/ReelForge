@@ -215,6 +215,12 @@ public class VideoCompileStepExecutor : IStepExecutor
                 return Failure(context, sw, "DECISION_INVALID", $"Decision input is not valid JSON: {ex.Message}");
             }
 
+            // An explicit `"keep": null` in the JSON overwrites the `= new()` default with a real
+            // null (System.Text.Json does not run property initializers for an explicit JSON
+            // null), which would otherwise NRE past this point instead of degrading to EMPTY_KEEP.
+            if (decision is not null)
+                decision.Keep ??= [];
+
             if (decision is null || decision.Keep.Count == 0)
                 return Failure(context, sw, "EMPTY_KEEP", "Decision has no Keep spans; nothing to compile.");
 
@@ -841,6 +847,13 @@ public class VideoCompileStepExecutor : IStepExecutor
             return ([], graphics);
         }
 
+        // An explicit `"overlays": null` in the JSON overwrites the `= new()` default with a real
+        // null (System.Text.Json does not run property initializers for an explicit JSON null),
+        // which would otherwise NRE below instead of degrading to "no overlays, graphics not
+        // applied" the same way an empty overlays array already does.
+        if (plan is not null)
+            plan.Overlays ??= [];
+
         if (plan is null || plan.Overlays.Count == 0)
         {
             graphics["droppedOverlays"] = new JsonArray();
@@ -1012,8 +1025,17 @@ public class VideoCompileStepExecutor : IStepExecutor
         int probedHeight = 0,
         VideoCompileStepConfig? graphicsConfig = null)
     {
+        // Half-open [SnappedStart, SnappedEnd) per span, matching ToStartFrame(floor)/ToEndFrame
+        // (ceiling)'s own semantics (EndFrame is the first EXCLUDED frame — see MapSourceToOutputSec's
+        // doc comment and the span-duration accumulation in MapSourceToOutputSec/
+        // MapSourceWindowToOutput, both of which already assume EndFrame-StartFrame frames per
+        // span, not EndFrame-StartFrame+1). ffmpeg's between(x,min,max) is INCLUSIVE on both ends
+        // (x >= min && x <= max), so using it here would additionally select the frame whose PTS
+        // is exactly SnappedEnd — frame index EndFrame, one frame past what was actually kept —
+        // for every span, accumulating drift across the whole cut. gte(t,start)*lt(t,end) (product
+        // as logical AND) makes the actual encoder output match the frame-quantization math.
         string BetweenTerms() => string.Join("+", spans.Select(s =>
-            $"between(t,{FfmpegArgvFormat.Number(s.SnappedStart)},{FfmpegArgvFormat.Number(s.SnappedEnd)})"));
+            $"gte(t,{FfmpegArgvFormat.Number(s.SnappedStart)})*lt(t,{FfmpegArgvFormat.Number(s.SnappedEnd)})"));
 
         string videoFilter = $"select='{BetweenTerms()}',setpts=N/FRAME_RATE/TB";
         string audioFilter = $"aselect='{BetweenTerms()}',asetpts=N/SR/TB";

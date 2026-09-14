@@ -291,10 +291,18 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                         VideoAnalysisShot shot = shots[i];
                         List<byte[]> frames = FrameGridAnalyzer.SliceShotFrames(
                             grid.PixelData, grid.FrameCount, grid.GridWidth, grid.GridHeight, grid.EffectiveFps,
-                            shot.StartSec, shot.EndSec);
+                            shot.StartSec, shot.EndSec, out int startFrameIndex);
+
+                        // Absolute source-timeline time of frames[0] — NOT necessarily shot.StartSec,
+                        // since grid sample times are quantized to i/fps (see SliceShotFrames). Needed
+                        // so AnalyzeShot reports StillWindows in absolute seconds, not shot-relative.
+                        double shotStartOffsetSec = grid.EffectiveFps > 0
+                            ? startFrameIndex / grid.EffectiveFps
+                            : shot.StartSec;
 
                         VideoAnalysisShotVisual visual = FrameGridAnalyzer.AnalyzeShot(
-                            frames, grid.GridWidth, grid.GridHeight, grid.EffectiveFps, analyzerOptions);
+                            frames, grid.GridWidth, grid.GridHeight, grid.EffectiveFps, analyzerOptions,
+                            shotStartOffsetSec);
 
                         shots[i] = shot with { Visual = visual };
 

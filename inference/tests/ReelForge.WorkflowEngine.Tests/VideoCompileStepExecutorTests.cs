@@ -170,6 +170,26 @@ public class VideoCompileStepExecutorTests
     }
 
     [Fact]
+    public async Task Explicit_null_keep_fails_with_EMPTY_KEEP_not_an_uncaught_exception()
+    {
+        // An explicit `"keep": null` (as opposed to an omitted/absent field) overwrites the
+        // `= new()` property-initializer default with a real null under System.Text.Json — this
+        // must degrade to EMPTY_KEEP exactly like `"keep": []` does, never escape as
+        // UNEXPECTED_ERROR via an uncaught NullReferenceException.
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" });
+
+        string decisionJson = """{"keep":null,"editRationale":"nothing","suggestedTitle":"x"}""";
+        StepExecutionContext context = CreateContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        StepExecutionResult result = await CreateExecutor(workspace).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Failed);
+        ErrorCode(result).Should().Be("EMPTY_KEEP");
+    }
+
+    [Fact]
     public async Task MinRetainedRatio_violation_fails()
     {
         // Duration 100s; keep only [0,5) => 5% retained, well under a 0.9 minimum.
@@ -271,6 +291,53 @@ public class VideoCompileStepExecutorTests
         result.Status.Should().Be(StepStatus.Completed);
         edl.GetProperty("segments").GetArrayLength().Should().Be(3);
         edl.GetProperty("droppedSegmentsOverCap").GetInt32().Should().Be(7);
+    }
+
+    // ---------------------------------------------------------------------
+    // Half-open select/aselect filter expression (R9 cut-accuracy) — ffmpeg's between(x,min,max)
+    // is inclusive on both ends, so using it for the cut selects one extra frame (the frame whose
+    // PTS is exactly SnappedEnd) per kept span, compounding drift across every span in the cut.
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public async Task Encoder_select_filter_uses_half_open_gte_lt_not_inclusive_between()
+    {
+        // 10 short, well-separated kept spans — enough that a systematic +1-frame-per-span error
+        // would compound noticeably across the whole select expression, not just wobble once.
+        var shots = Enumerable.Range(0, 10)
+            .Select(i => ($"s{i}", 3.0 * i, 3.0 * i + 1.0)) // 1s shots, 2s gaps
+            .ToArray();
+
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            durationSec: 3.0 * shots.Length + 2.0,
+            shots: shots,
+            offeredIds: shots.Select(s => s.Item1).ToArray());
+
+        (string, string, string)[] spans = shots.Select(s => (s.Item1, s.Item1, "keep")).ToArray();
+        string decisionJson = BuildDecisionJson(spans);
+
+        StepExecutionContext context = CreateContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        IReadOnlyList<string>? capturedArgs = null;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, ffmpegArgsCaptured: args => capturedArgs ??= args).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed);
+        capturedArgs.Should().NotBeNull();
+
+        List<string> argsList = capturedArgs!.ToList();
+        int filterIndex = argsList.IndexOf("-filter_complex");
+        filterIndex.Should().BeGreaterThanOrEqualTo(0, "10 spans stays well under the filter-complex-script threshold");
+        string filterComplex = argsList[filterIndex + 1];
+
+        filterComplex.Should().NotContain("between(t,",
+            "ffmpeg's between() is inclusive on both ends, which selects one extra frame (at exactly SnappedEnd) per span");
+
+        int gteCount = System.Text.RegularExpressions.Regex.Matches(filterComplex, @"gte\(t,").Count;
+        int ltCount = System.Text.RegularExpressions.Regex.Matches(filterComplex, @"lt\(t,").Count;
+        // Each of the 10 spans appears once in the video select and once in the audio aselect.
+        gteCount.Should().Be(shots.Length * 2);
+        ltCount.Should().Be(shots.Length * 2);
     }
 
     // ---------------------------------------------------------------------
@@ -470,7 +537,8 @@ public class VideoCompileStepExecutorTests
     // =======================================================================
 
     private static VideoCompileStepExecutor CreateExecutor(
-        Mock<IProjectFileWorkspace> workspace, Action<JsonElement>? edlCaptured = null, bool drawtextAvailable = true)
+        Mock<IProjectFileWorkspace> workspace, Action<JsonElement>? edlCaptured = null, bool drawtextAvailable = true,
+        Action<IReadOnlyList<string>>? ffmpegArgsCaptured = null)
     {
         // The drawtext-availability probe is a process-lifetime static cache in the executor
         // (see ResolveGraphicsAsync/IsDrawtextAvailableAsync) — reset it per test case so each
@@ -485,6 +553,7 @@ public class VideoCompileStepExecutorTests
         toolRunner
             .Setup(t => t.RunFfmpegAsync(
                 It.Is<IReadOnlyList<string>>(a => !a.Contains("-filters")), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+            .Callback<IReadOnlyList<string>, TimeSpan, CancellationToken>((args, _, _) => ffmpegArgsCaptured?.Invoke(args))
             .ReturnsAsync(new VideoToolResult(0, string.Empty, string.Empty, false));
 
         var mediaProbe = new Mock<IMediaProbe>();
@@ -862,6 +931,33 @@ public class VideoCompileStepExecutorTests
         graphics.GetProperty("droppedOverlays").GetArrayLength().Should().Be(0);
     }
 
+    [Fact]
+    public async Task Explicit_null_overlays_in_graphics_plan_degrades_to_no_graphics_not_UNEXPECTED_ERROR()
+    {
+        // An explicit `"overlays": null` overwrites MotionGraphicsPlanOutput.Overlays' `= new()`
+        // default with a real null under System.Text.Json — this must degrade the same way a
+        // missing/unresolvable GraphicsPlan already does (cut succeeds, no graphics applied),
+        // never escape as UNEXPECTED_ERROR via an uncaught NullReferenceException.
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" });
+
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        string graphicsPlanJson = """{"overlays":null,"planRationale":"nothing to show"}""";
+
+        StepExecutionContext context = CreateGraphicsContext(
+            artifact, decisionJson, graphicsPlanJson, out Mock<IProjectFileWorkspace> workspace);
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(workspace, edlCaptured: e => edl = e).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, "a null overlays list must never fail the compile — the cut is the primary deliverable");
+        JsonElement graphics = edl.GetProperty("graphics");
+        graphics.GetProperty("enabled").GetBoolean().Should().BeTrue();
+        graphics.GetProperty("applied").GetBoolean().Should().BeFalse();
+        graphics.GetProperty("appliedOverlayCount").GetInt32().Should().Be(0);
+    }
+
     /// <summary>Builds a context wired for Phase 3 graphics: a 4th history entry (StepOrder 3, the MotionGraphicsPlanner step) plus EnableGraphics=true, GraphicsPlan pointed at it.</summary>
     private static StepExecutionContext CreateGraphicsContext(
         VideoAnalysisArtifact artifact,
@@ -1017,5 +1113,42 @@ public class VideoCompileStepExecutorTests
     public void MapSourceWindowToOutput_degenerate_window_returns_null()
     {
         VideoCompileStepExecutor.MapSourceWindowToOutput(ThreeSpanFixture(), 5.0, 5.0).Should().BeNull();
+    }
+
+    [Fact]
+    public void MapSourceToOutputSec_accumulates_exact_frame_counts_across_many_spans_no_per_span_drift()
+    {
+        // 12 kept spans of varying frame-lengths at 30fps, each independently computed from an
+        // exact frame count (never a naive seconds multiplication) — enough spans that a
+        // systematic +1-frame-per-span accumulation error would produce a clearly wrong, linearly
+        // growing offset by the last span, not just sub-frame rounding noise.
+        const int fps = 30;
+        int[] frameLengths = { 7, 3, 11, 5, 2, 9, 4, 6, 8, 3, 10, 5 };
+        var spans = new List<VideoCompileStepExecutor.ResolvedSpan>();
+        var expectedOutputStartFrame = new long[frameLengths.Length];
+
+        long cursor = 0;
+        long accumulatedFrames = 0;
+        for (int i = 0; i < frameLengths.Length; i++)
+        {
+            long startFrame = cursor + 20; // a 20-frame cut gap before every kept span
+            long endFrame = startFrame + frameLengths[i];
+            double snappedStart = VideoCompileStepExecutor.FrameToSec(startFrame, fps, 1);
+            double snappedEnd = VideoCompileStepExecutor.FrameToSec(endFrame, fps, 1);
+            spans.Add(new VideoCompileStepExecutor.ResolvedSpan(snappedStart, snappedEnd, snappedStart, snappedEnd, startFrame, endFrame));
+
+            expectedOutputStartFrame[i] = accumulatedFrames;
+            accumulatedFrames += frameLengths[i];
+            cursor = endFrame;
+        }
+
+        for (int i = 0; i < spans.Count; i++)
+        {
+            double expectedOutputStartSec = expectedOutputStartFrame[i] / (double)fps;
+            double? actual = VideoCompileStepExecutor.MapSourceToOutputSec(spans, spans[i].SnappedStart);
+            actual.Should().NotBeNull();
+            actual!.Value.Should().BeApproximately(expectedOutputStartSec, 1e-9,
+                $"span {i}'s output-timeline start must reflect the exact frame count of every prior span, not an off-by-one-frame-per-span drift");
+        }
     }
 }

@@ -152,6 +152,39 @@ public class FrameGridAnalyzerTests
     }
 
     [Fact]
+    public void AnalyzeShot_still_windows_are_reported_in_absolute_source_timeline_seconds_not_shot_relative()
+    {
+        const int width = 4, height = 4;
+        const double fps = 2.0;
+        const int frameCount = 40; // 20s of grid samples at 2fps, covering the whole source video.
+        byte[] frame = MakeFrame(width, height, (_, _) => 100); // identical frames => fully still.
+        int frameSize = frame.Length;
+        var pixelData = new byte[frameSize * frameCount];
+        for (int i = 0; i < frameCount; i++)
+        {
+            Buffer.BlockCopy(frame, 0, pixelData, i * frameSize, frameSize);
+        }
+
+        // The shot under analysis occupies [10s, 16s) of a much longer source video — a
+        // deliberately non-zero start, so a still window wrongly reported relative to the start
+        // of the SLICED subarray (i.e. near 0s) is caught rather than accidentally matching.
+        const double shotStartSec = 10.0, shotEndSec = 16.0;
+        List<byte[]> frames = FrameGridAnalyzer.SliceShotFrames(
+            pixelData, frameCount, width, height, fps, shotStartSec, shotEndSec, out int startFrameIndex);
+        double shotStartOffsetSec = startFrameIndex / fps;
+
+        VideoAnalysisShotVisual visual = FrameGridAnalyzer.AnalyzeShot(
+            frames, width, height, fps, DefaultOptions, shotStartOffsetSec);
+
+        visual.StillWindows.Should().NotBeEmpty();
+        visual.StillWindows.Should().OnlyContain(w => w.StartSec >= shotStartSec && w.EndSec <= shotEndSec);
+
+        // The pre-fix code computed these relative to the sliced subarray (offset 0), which would
+        // have placed them within [0, 6] instead — well outside the shot's actual window.
+        visual.StillWindows.Should().OnlyContain(w => w.StartSec >= 9.99 && w.EndSec > 6.0);
+    }
+
+    [Fact]
     public void SliceShotFrames_returns_at_least_one_frame_for_a_very_short_shot()
     {
         const int width = 4, height = 4;

@@ -90,10 +90,18 @@ public static class DrawtextFilterBuilder
             string enableExpr = $"between(t,{start},{end})";
             string alphaExpr = BuildAlphaExpression(start, end, fadeSec);
 
-            string boxLabel = $"[gfx{i}b]";
-            segments.Add(
-                $"{currentLabel}drawbox=x={boxX}:y={boxY}:w={boxW}:h={boxH}:color={boxColor}:t=fill:" +
-                $"enable='{enableExpr}'{boxLabel}");
+            // "none" means skip the drawbox entirely — chain drawtext directly off the previous
+            // stage's label instead of introducing a [gfx{i}b] box label (see docs/video-editing.md
+            // "Motion graphics (Phase 3)").
+            bool skipBox = string.Equals(boxColor, "none", StringComparison.OrdinalIgnoreCase);
+            string boxLabel = currentLabel;
+            if (!skipBox)
+            {
+                boxLabel = $"[gfx{i}b]";
+                segments.Add(
+                    $"{currentLabel}drawbox=x={boxX}:y={boxY}:w={boxW}:h={boxH}:color={boxColor}:t=fill:" +
+                    $"enable='{enableExpr}'{boxLabel}");
+            }
 
             string mainTextPath = textFilePathForIndex(MainTextSlot(i));
             string mainLabel = !hasSubtext && isLast ? "[vout]" : hasSubtext ? $"[gfx{i}t]" : $"[gfx{i}]";

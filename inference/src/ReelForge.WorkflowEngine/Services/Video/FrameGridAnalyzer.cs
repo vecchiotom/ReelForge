@@ -38,8 +38,19 @@ public static class FrameGridAnalyzer
     /// are left at their defaults here — those are cross-shot and patched in afterward by
     /// <see cref="GroupDuplicates"/>'s caller.
     /// </summary>
+    /// <param name="shotStartOffsetSec">
+    /// Absolute source-timeline time (seconds) of <paramref name="frames"/>[0] — i.e. the sliced
+    /// subarray's starting sample time, <c>startFrameIndex / fps</c> against the FULL grid, not
+    /// necessarily the shot's own <c>StartSec</c> (grid samples are quantized; see
+    /// <see cref="SliceShotFrames"/>). Added to every time-bearing field this method computes
+    /// (currently just <see cref="VideoAnalysisShotVisual.StillWindows"/>) so callers get
+    /// absolute source-timeline seconds, not time relative to the shot's own sliced window.
+    /// Defaults to 0 for callers (e.g. existing unit tests) that already pass pre-sliced,
+    /// shot-relative frames and want shot-relative output.
+    /// </param>
     public static VideoAnalysisShotVisual AnalyzeShot(
-        IReadOnlyList<byte[]> frames, int gridWidth, int gridHeight, double fps, Options options)
+        IReadOnlyList<byte[]> frames, int gridWidth, int gridHeight, double fps, Options options,
+        double shotStartOffsetSec = 0.0)
     {
         if (frames.Count == 0)
         {
@@ -90,7 +101,7 @@ public static class FrameGridAnalyzer
         double tailMotion = HeadTailMotion(frameDeltaMean, fps, fromStart: false);
 
         // ---- Still windows: runs where per-pair delta < threshold, lasting >= MinStillWindowMs ----
-        List<VideoAnalysisStillWindow> stillWindows = FindStillWindows(frameDeltaMean, fps, options);
+        List<VideoAnalysisStillWindow> stillWindows = FindStillWindows(frameDeltaMean, fps, options, shotStartOffsetSec);
 
         // ---- Exposure/color, averaged over every sampled pixel of every frame in the shot ----
         double brightnessSum = 0, brightnessSqSum = 0, contrastSum = 0, saturationSum = 0;
@@ -220,10 +231,24 @@ public static class FrameGridAnalyzer
     public static List<byte[]> SliceShotFrames(
         byte[] pixelData, int frameCount, int gridWidth, int gridHeight, double fps,
         double shotStartSec, double shotEndSec)
+        => SliceShotFrames(pixelData, frameCount, gridWidth, gridHeight, fps, shotStartSec, shotEndSec, out _);
+
+    /// <summary>
+    /// Same as the four-argument-tail overload, but also reports <paramref name="startFrameIndex"/>
+    /// — the returned slice's starting index within the FULL grid buffer. Callers that later pass
+    /// the slice to <see cref="AnalyzeShot"/> need this (as <c>startFrameIndex / fps</c>) to report
+    /// absolute source-timeline seconds for time-bearing fields such as
+    /// <see cref="VideoAnalysisShotVisual.StillWindows"/> — it is NOT always exactly
+    /// <c>shotStartSec</c>, since grid sample times are quantized to <c>i / fps</c>.
+    /// </summary>
+    public static List<byte[]> SliceShotFrames(
+        byte[] pixelData, int frameCount, int gridWidth, int gridHeight, double fps,
+        double shotStartSec, double shotEndSec, out int startFrameIndex)
     {
         int frameSize = gridWidth * gridHeight * 3;
         if (frameCount <= 0 || fps <= 0)
         {
+            startFrameIndex = 0;
             return [];
         }
 
@@ -234,6 +259,7 @@ public static class FrameGridAnalyzer
             endIdxExclusive = Math.Min(startIdx + 1, frameCount);
         }
 
+        startFrameIndex = startIdx;
         var result = new List<byte[]>(Math.Max(0, endIdxExclusive - startIdx));
         for (int i = startIdx; i < endIdxExclusive; i++)
         {
@@ -555,7 +581,8 @@ public static class FrameGridAnalyzer
         return arr.Length > 0 ? arr.Average() : 0.0;
     }
 
-    private static List<VideoAnalysisStillWindow> FindStillWindows(double[] frameDeltaMean, double fps, Options options)
+    private static List<VideoAnalysisStillWindow> FindStillWindows(
+        double[] frameDeltaMean, double fps, Options options, double shotStartOffsetSec)
     {
         var windows = new List<VideoAnalysisStillWindow>();
         if (frameDeltaMean.Length == 0 || fps <= 0)
@@ -573,9 +600,11 @@ public static class FrameGridAnalyzer
                 return;
             }
 
-            // frameDeltaMean[k] is the delta ending at sample time (k+1)/fps.
-            double startSec = runStart / fps;
-            double endSec = runEndExclusive / fps;
+            // frameDeltaMean[k] is the delta ending at sample time (k+1)/fps, relative to the
+            // start of this shot's sliced frame window — add shotStartOffsetSec to get absolute
+            // source-timeline seconds (see AnalyzeShot's shotStartOffsetSec doc).
+            double startSec = runStart / fps + shotStartOffsetSec;
+            double endSec = runEndExclusive / fps + shotStartOffsetSec;
             if (endSec - startSec >= minWindowSec)
             {
                 double meanMotion = frameDeltaMean.Skip(runStart).Take(runEndExclusive - runStart).Average();
