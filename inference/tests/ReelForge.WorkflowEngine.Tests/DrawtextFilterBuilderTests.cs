@@ -21,8 +21,9 @@ public class DrawtextFilterBuilderTests
         string text = "SECRET OVERLAY TEXT MARKER",
         string subtext = "",
         double startSec = 4.0,
-        double endSec = 6.0) => new(
-            placementId, "LowerThird", text, subtext, DurationMs: 1500, Emphasis: "Normal",
+        double endSec = 6.0,
+        string emphasis = "Normal") => new(
+            placementId, "LowerThird", text, subtext, DurationMs: 1500, Emphasis: emphasis,
             OutputStartSec: startSec, OutputEndSec: endSec,
             Rect: new VideoAnalysisRect(0.1, 0.8, 0.6, 0.15), TextColor: "Light");
 
@@ -120,6 +121,57 @@ public class DrawtextFilterBuilderTests
     }
 
     [Fact]
+    public void Strong_emphasis_produces_a_larger_fontsize_than_normal_for_otherwise_identical_config()
+    {
+        // Item C: Emphasis previously reached ResolvedOverlay but was never read by the filter
+        // builder. Strong should nudge the font size up (fontSizePct * 1.25, clamped to [2, 12]).
+        string normalChain = DrawtextFilterBuilder.BuildFilterChain(
+            "[vcut]", new[] { Overlay(emphasis: "Normal") }, probedWidth: 1920, probedHeight: 1080,
+            fontSizePct: 5, fadeMs: 300, fontColor: "white", boxColor: "black@0.45",
+            fontFilePath: "/fonts/DejaVuSans.ttf",
+            textFilePathForIndex: slot => $"/scratch/ov-{slot}.txt");
+
+        string strongChain = DrawtextFilterBuilder.BuildFilterChain(
+            "[vcut]", new[] { Overlay(emphasis: "Strong") }, probedWidth: 1920, probedHeight: 1080,
+            fontSizePct: 5, fadeMs: 300, fontColor: "white", boxColor: "black@0.45",
+            fontFilePath: "/fonts/DejaVuSans.ttf",
+            textFilePathForIndex: slot => $"/scratch/ov-{slot}.txt");
+
+        int ExtractMainFontSize(string chain)
+        {
+            System.Text.RegularExpressions.Match match =
+                System.Text.RegularExpressions.Regex.Match(chain, @"fontsize=(\d+)");
+            match.Success.Should().BeTrue();
+            return int.Parse(match.Groups[1].Value);
+        }
+
+        int normalFontSize = ExtractMainFontSize(normalChain);
+        int strongFontSize = ExtractMainFontSize(strongChain);
+
+        strongFontSize.Should().BeGreaterThan(normalFontSize);
+    }
+
+    [Fact]
+    public void Subtle_emphasis_produces_a_smaller_or_equal_fontsize_than_normal()
+    {
+        int normalFontSize = DrawtextFilterBuilder.ComputeFontSize(probedHeight: 1080, fontSizePct: 5, emphasis: "Normal");
+        int subtleFontSize = DrawtextFilterBuilder.ComputeFontSize(probedHeight: 1080, fontSizePct: 5, emphasis: "Subtle");
+
+        subtleFontSize.Should().BeLessThanOrEqualTo(normalFontSize);
+    }
+
+    [Fact]
+    public void Emphasis_scaling_stays_within_the_existing_fontSizePct_clamp_range()
+    {
+        // At the top of the valid fontSizePct range (12), Strong (x1.25) must still clamp to 12,
+        // not escape to an effective 15%.
+        int atMaxNormal = DrawtextFilterBuilder.ComputeFontSize(probedHeight: 1080, fontSizePct: 12, emphasis: "Normal");
+        int atMaxStrong = DrawtextFilterBuilder.ComputeFontSize(probedHeight: 1080, fontSizePct: 12, emphasis: "Strong");
+
+        atMaxStrong.Should().Be(atMaxNormal);
+    }
+
+    [Fact]
     public void Numbers_in_the_filter_string_are_culture_invariant_regardless_of_current_culture()
     {
         CultureInfo original = CultureInfo.CurrentCulture;
@@ -179,6 +231,39 @@ public class DrawtextFilterBuilderTests
             textFilePathForIndex: slot => $"/scratch/ov-{slot}.txt");
 
         chain.Should().NotContain("drawbox=");
+    }
+
+    [Fact]
+    public void EscapeFilterPath_embeds_a_literal_single_quote_using_the_close_escape_reopen_idiom()
+    {
+        // Item G: ffmpeg's filter parser does not process backslash escapes inside a single-quoted
+        // value — the correct way to embed a literal ' in a '...'-wrapped value is to close the
+        // quote, insert an escaped quote via a backslash OUTSIDE any quotes, then reopen: '\''.
+        DrawtextFilterBuilder.EscapeFilterPath("it's").Should().Be("it'\\''s");
+    }
+
+    [Fact]
+    public void EscapeFilterPath_no_longer_escapes_colon_or_backslash()
+    {
+        // Both are unnecessary (and were incorrect) inside a single-quoted value: the surrounding
+        // quotes already protect ':', and '\' has no special meaning inside single quotes at all.
+        DrawtextFilterBuilder.EscapeFilterPath("a:b").Should().Be("a:b");
+        DrawtextFilterBuilder.EscapeFilterPath(@"a\b").Should().Be(@"a\b");
+    }
+
+    [Fact]
+    public void Path_with_a_single_quote_produces_a_filter_string_ffmpeg_would_parse_back_to_the_original_path()
+    {
+        // Worked example proving the escaping is correct in isolation (real scratch paths never
+        // contain a literal quote — see DrawtextFilterBuilder.EscapeFilterPath's remarks — so this
+        // is defense-in-depth verification, not a reachable production path).
+        string chain = DrawtextFilterBuilder.BuildFilterChain(
+            "[vcut]", new[] { Overlay() }, probedWidth: 1920, probedHeight: 1080,
+            fontSizePct: 5, fadeMs: 300, fontColor: "white", boxColor: "black@0.45",
+            fontFilePath: "/fonts/DejaVuSans.ttf",
+            textFilePathForIndex: slot => "/scratch/it's/ov-" + slot + ".txt");
+
+        chain.Should().Contain("textfile='/scratch/it'\\''s/ov-0.txt'");
     }
 
     [Fact]

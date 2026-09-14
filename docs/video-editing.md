@@ -791,11 +791,20 @@ invariant `VideoEditDecisionOutput` established, extended to also forbid a pixel
 reflection approach exactly. `Duration`/`Emphasis`/`Kind` are enum WORDS the model chooses from a
 closed vocabulary described in its prompt — `VideoCompileStepExecutor` alone resolves `Duration`
 to milliseconds (`OverlayShortMs`/`OverlayMediumMs`/`OverlayHoldMs`, defaulting to `Medium` on an
-unrecognized value) and `OverlayFontSizePct` to an actual pixel font size. The
+unrecognized value) and `OverlayFontSizePct` to an actual pixel font size, which `Emphasis`
+(`Subtle`/`Normal`/`Strong`) then nudges up or down by a fixed multiplier (0.8x/1x/1.25x, still
+clamped to the same valid `[2, 12]` percentage range) in `DrawtextFilterBuilder.ComputeFontSize` —
+a deliberately small effect, not a whole per-emphasis styling system. `Kind`
+(`LowerThird`/`Title`/`Callout`/`Tag`) is currently **descriptive/reserved only** — nothing reads
+it downstream, every kind renders identically, since the placement's own region
+(LowerThird/UpperThird/CenterBand) already resolves the overlay's geometry and letting `Kind` also
+influence position would create two disagreeing sources of geometry for the same overlay. See the
+doc comment on `MotionGraphicsOverlay.Kind` in `OutputSchemas.cs`. The
 `MotionGraphicsPlannerAgent` class's fallback prompt and the seeded built-in `AgentDefinition` row
-in `DatabaseSeeder` are kept verbatim-identical, enforced by
-`MotionGraphicsPlannerPromptConsistencyTests` (mirroring
-`VideoStoryEditorPromptConsistencyTests`'s reflection approach). Tool access is the same minimal
+in `DatabaseSeeder` are kept verbatim-identical, enforced by the second `[Fact]` in
+`VideoStoryEditorPromptConsistencyTests.cs`
+(`MotionGraphicsPlanner_fallback_prompt_matches_the_seeded_built_in_agent_prompt_verbatim`,
+mirroring the first fact's reflection approach for `VideoStoryEditorAgent`). Tool access is the same minimal
 read-only project context + `FailWorkflow` `VideoStoryEditor` gets — no sandbox tools, no
 write/render tools.
 
@@ -836,19 +845,25 @@ feature — but only as sanitized FILE CONTENT, never as argv or filter-string c
 
 1. **`OverlayTextSanitizer.Sanitize(raw, maxChars)`** (`WorkflowEngine/Services/Video/`) — an
    ALLOWLIST (never a denylist, which is only ever safe against characters someone thought of) of
-   letters, digits, spaces, and a small safe punctuation set. NFC-normalizes first; collapses ALL
-   whitespace (including newlines/tabs — drawtext treats a raw newline as a forced line break) to
-   single spaces before the allowlist strips anything, so a newline becomes a space rather than
-   being silently deleted (which would wrongly glue two words together); truncates to `maxChars`
-   without splitting a grapheme cluster (`StringInfo`-based, never a blind `str[..n]`); returns
-   `""` for an empty/whitespace-only result, and the caller then drops that overlay/line entirely.
-   Colon (`:`) and percent (`%`) are deliberately excluded from the punctuation set as
-   defense-in-depth — even though the architecture below already neutralizes drawtext's own use of
-   those characters — so a future refactor that accidentally put this text into a filter string
-   directly still could not terminate a drawtext option or invoke an `%{eif:...}`/`%{pts}`
-   expansion. Emoji are also deliberately excluded (outside `\p{L}`/`\p{N}`): the configured
-   overlay font is not guaranteed to carry emoji glyphs, so admitting them risks silent tofu-box
-   rendering.
+   letters, digits, combining marks, spaces, and a small safe punctuation set. NFC-normalizes
+   first; collapses ALL whitespace (including newlines/tabs — drawtext treats a raw newline as a
+   forced line break) to single spaces before the allowlist strips anything, so a newline becomes
+   a space rather than being silently deleted (which would wrongly glue two words together);
+   truncates to `maxChars` without splitting a grapheme cluster (`StringInfo`-based, never a blind
+   `str[..n]`); returns `""` for an empty/whitespace-only result, and the caller then drops that
+   overlay/line entirely. **The allowlist is a second, independent layer, not the primary safety
+   mechanism** — the primary mechanism is architectural (point 2 below): sanitized text is never
+   interpolated into a filter/argv string at all, so no character reaching this far could ever
+   terminate a drawtext option or invoke an expansion regardless of what the allowlist admits.
+   Given that, the allowlist is kept narrow anyway, as ordinary defense-in-depth: colon (`:`) and
+   percent (`%`) are excluded (drawtext's own option separator / expansion syntax), and so are
+   `'`, `,`, and `;` (not filter-syntax-significant inside a quoted value, but not essential to a
+   lower-third/title/callout either, so excluding them keeps the surface small). Emoji are also
+   deliberately excluded (outside `\p{L}`/`\p{N}`/`\p{M}`): the configured overlay font is not
+   guaranteed to carry emoji glyphs, so admitting them risks silent tofu-box rendering. Combining
+   marks (`\p{M}`) ARE admitted so NFC-normalized text in scripts without precomposed forms (e.g.
+   Devanagari vowel signs) survives sanitization instead of being silently mangled
+   character-by-character.
 2. **Text never appears in the ffmpeg argv or filter string at all.** Each overlay's sanitized
    text/subtext is written to its own scratch file (`{scratch}/ov-{slot}.txt` —
    `DrawtextFilterBuilder.MainTextSlot`/`SubtextSlot` are the single source of truth both the

@@ -25,10 +25,16 @@ public interface IFrameGridSampler
     /// <summary>
     /// <paramref name="sampleFps"/> is clamped downward for very long videos so the grid buffer
     /// never exceeds <paramref name="maxSampleFrames"/> frames:
-    /// <c>effectiveFps = min(sampleFps, maxSampleFrames / totalDurationSec)</c>.
+    /// <c>effectiveFps = min(sampleFps, maxSampleFrames / totalDurationSec)</c> —
+    /// <paramref name="maxSampleFrames"/> &lt;= 0 falls back to a compiled-in default rather than
+    /// disabling the cap (see <c>FfmpegFrameGridSampler.ComputeEffectiveFps</c>).
+    /// <paramref name="scratch"/> resolves the sampler's own scratch-file path(s) (e.g. the raw
+    /// grid buffer) the same way every other video scratch-file consumer does, via
+    /// <see cref="VideoScratchSpace.GetPath"/>.
     /// </summary>
     Task<FrameGridResult> SampleAsync(
         string localFilePath,
+        VideoScratchSpace scratch,
         double sampleFps,
         int gridWidth,
         int gridHeight,

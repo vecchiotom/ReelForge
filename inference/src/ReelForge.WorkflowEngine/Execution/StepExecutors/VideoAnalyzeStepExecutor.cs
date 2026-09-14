@@ -268,12 +268,21 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             bool visualDegraded = false;
             List<VideoAnalysisDuplicateGroup> duplicateGroups = [];
 
+            // Clamped here, at the point config is consumed — same convention as
+            // VideoCompileStepExecutor's Crf/MaxSegments clamps — so a workflow-author-supplied
+            // config (e.g. 2048x2048) can't allocate an enormous grid.rgb scratch file or force a
+            // huge single in-memory byte[] read of it (Item D cleanup). Computed unconditionally
+            // (not just when AnalyzeVisuals) so the "visual" meta block below always reports the
+            // grid dimensions that would actually be used.
+            int gridWidth = Math.Clamp(config.VisualGridWidth, 8, 256);
+            int gridHeight = Math.Clamp(config.VisualGridHeight, 8, 256);
+
             if (config.AnalyzeVisuals)
             {
                 try
                 {
                     FrameGridResult grid = await _frameGridSampler.SampleAsync(
-                        localVideoPath, config.VisualSampleFps, config.VisualGridWidth, config.VisualGridHeight,
+                        localVideoPath, scratch, config.VisualSampleFps, gridWidth, gridHeight,
                         probe.DurationSec, config.MaxVisualSampleFrames, context.CancellationToken);
 
                     if (grid.FrameCount <= 0)
@@ -368,108 +377,123 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
 
             if (config.Vision != VideoVisionMode.Off)
             {
-                ResolvedInferenceProvider? visionProvider =
-                    await _providerResolver.ResolveVisionAsync(config.VisionProviderId, context.CancellationToken);
-
-                if (visionProvider is null)
+                try
                 {
-                    if (config.Vision == VideoVisionMode.Required)
-                    {
-                        return Failure(
-                            context, sw, "VISION_UNAVAILABLE",
-                            "Vision is Required but no vision-capable inference provider is configured.");
-                    }
+                    ResolvedInferenceProvider? visionProvider =
+                        await _providerResolver.ResolveVisionAsync(config.VisionProviderId, context.CancellationToken);
 
-                    _logger.LogInformation(
-                        "VideoAnalyze step {StepOrder}: no vision provider resolved; degrading (Vision=Optional).",
-                        step.StepOrder);
-                    visionDegraded = true;
-                }
-                else
-                {
-                    visionProviderName = visionProvider.Name;
-
-                    IReadOnlyList<string> selectedShotIds = KeyframeSelector.SelectShotsToCaption(
-                        shots, duplicateGroups.Count > 0 ? duplicateGroups : null,
-                        config.CaptionSelection, config.MaxCaptionedShots, config.MinCaptionShotSeconds);
-
-                    if (selectedShotIds.Count > 0)
-                    {
-                        Dictionary<string, int> shotIndexById = shots
-                            .Select((s, i) => (s.Id, i))
-                            .ToDictionary(t => t.Id, t => t.i);
-
-                        using CancellationTokenSource visionCts =
-                            CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken);
-                        visionCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, config.VisionTimeoutSeconds)));
-                        CancellationToken visionCt = visionCts.Token;
-
-                        foreach (string shotId in selectedShotIds)
-                        {
-                            if (visionCts.IsCancellationRequested)
-                            {
-                                if (!context.CancellationToken.IsCancellationRequested)
-                                    visionPartial = true;
-                                break;
-                            }
-
-                            if (!shotIndexById.TryGetValue(shotId, out int shotIdx))
-                                continue;
-
-                            try
-                            {
-                                VideoAnalysisShot shot = shots[shotIdx];
-                                double atSec = KeyframeSelector.ChooseKeyframeSec(shot);
-                                string keyframePath = scratch.GetPath($"keyframe-{shot.Id}.jpg");
-
-                                await _keyframeExtractor.ExtractKeyframeAsync(
-                                    localVideoPath, keyframePath, atSec, config.KeyframeMaxWidth, visionCt);
-
-                                ShotCaptionRequest request = new(shot.Id, keyframePath, atSec);
-                                VideoShotCaption caption = await CaptionWithRetryAsync(
-                                    visionProvider, request, config.MaxCaptionChars, visionCt);
-
-                                // SAFETY (plan §3): the shot-id <-> caption binding is never
-                                // model-controlled. Overwrite ShotId with the id we actually
-                                // requested — never trust whatever the model echoed back — before
-                                // attaching the caption to this shot.
-                                shots[shotIdx] = shot with { Caption = caption with { ShotId = shot.Id } };
-                                captionedShotCount++;
-                            }
-                            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
-                            {
-                                throw;
-                            }
-                            catch (OperationCanceledException)
-                            {
-                                // The aggregate VisionTimeoutSeconds budget (not the outer
-                                // execution's own CancellationToken) fired mid-call: stop
-                                // captioning further shots but keep what already succeeded.
-                                visionPartial = true;
-                                break;
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogWarning(
-                                    ex, "VideoAnalyze step {StepOrder}: captioning shot {ShotId} failed after retries; skipping.",
-                                    step.StepOrder, shotId);
-                                failedShotCount++;
-                            }
-                        }
-                    }
-
-                    visionApplied = captionedShotCount > 0;
-                    if (!visionApplied)
+                    if (visionProvider is null)
                     {
                         if (config.Vision == VideoVisionMode.Required)
                         {
                             return Failure(
-                                context, sw, "VISION_FAILED",
-                                "Vision is Required but captioning did not produce any shot captions.");
+                                context, sw, "VISION_UNAVAILABLE",
+                                "Vision is Required but no vision-capable inference provider is configured.");
                         }
 
+                        _logger.LogInformation(
+                            "VideoAnalyze step {StepOrder}: no vision provider resolved; degrading (Vision=Optional).",
+                            step.StepOrder);
                         visionDegraded = true;
                     }
+                    else
+                    {
+                        visionProviderName = visionProvider.Name;
+
+                        IReadOnlyList<string> selectedShotIds = KeyframeSelector.SelectShotsToCaption(
+                            shots, duplicateGroups.Count > 0 ? duplicateGroups : null,
+                            config.CaptionSelection, config.MaxCaptionedShots, config.MinCaptionShotSeconds);
+
+                        if (selectedShotIds.Count > 0)
+                        {
+                            Dictionary<string, int> shotIndexById = shots
+                                .Select((s, i) => (s.Id, i))
+                                .ToDictionary(t => t.Id, t => t.i);
+
+                            using CancellationTokenSource visionCts =
+                                CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken);
+                            visionCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, config.VisionTimeoutSeconds)));
+                            CancellationToken visionCt = visionCts.Token;
+
+                            foreach (string shotId in selectedShotIds)
+                            {
+                                if (visionCts.IsCancellationRequested)
+                                {
+                                    if (!context.CancellationToken.IsCancellationRequested)
+                                        visionPartial = true;
+                                    break;
+                                }
+
+                                if (!shotIndexById.TryGetValue(shotId, out int shotIdx))
+                                    continue;
+
+                                try
+                                {
+                                    VideoAnalysisShot shot = shots[shotIdx];
+                                    double atSec = KeyframeSelector.ChooseKeyframeSec(shot);
+                                    string keyframePath = scratch.GetPath($"keyframe-{shot.Id}.jpg");
+
+                                    await _keyframeExtractor.ExtractKeyframeAsync(
+                                        localVideoPath, keyframePath, atSec, config.KeyframeMaxWidth, visionCt);
+
+                                    ShotCaptionRequest request = new(shot.Id, keyframePath, atSec);
+                                    VideoShotCaption caption = await CaptionWithRetryAsync(
+                                        visionProvider, request, config.MaxCaptionChars, visionCt);
+
+                                    // SAFETY (plan §3): the shot-id <-> caption binding is never
+                                    // model-controlled. Overwrite ShotId with the id we actually
+                                    // requested — never trust whatever the model echoed back — before
+                                    // attaching the caption to this shot.
+                                    shots[shotIdx] = shot with { Caption = caption with { ShotId = shot.Id } };
+                                    captionedShotCount++;
+                                }
+                                catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+                                {
+                                    throw;
+                                }
+                                catch (OperationCanceledException)
+                                {
+                                    // The aggregate VisionTimeoutSeconds budget (not the outer
+                                    // execution's own CancellationToken) fired mid-call: stop
+                                    // captioning further shots but keep what already succeeded.
+                                    visionPartial = true;
+                                    break;
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.LogWarning(
+                                        ex, "VideoAnalyze step {StepOrder}: captioning shot {ShotId} failed after retries; skipping.",
+                                        step.StepOrder, shotId);
+                                    failedShotCount++;
+                                }
+                            }
+                        }
+
+                        visionApplied = captionedShotCount > 0;
+                        if (!visionApplied)
+                        {
+                            if (config.Vision == VideoVisionMode.Required)
+                            {
+                                return Failure(
+                                    context, sw, "VISION_FAILED",
+                                    "Vision is Required but captioning did not produce any shot captions.");
+                            }
+
+                            visionDegraded = true;
+                        }
+                    }
+                }
+                catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "VideoAnalyze step {StepOrder}: vision captioning setup failed; degrading.", step.StepOrder);
+                    if (config.Vision == VideoVisionMode.Required)
+                        return Failure(context, sw, "VISION_FAILED", $"Vision captioning failed: {ex.Message}");
+
+                    visionDegraded = true;
                 }
             }
 
@@ -543,7 +567,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             (JsonObject view, JsonObject meta, List<string> viewOfferedIds, List<string> viewOfferedPlacementIds) = BuildBoundedView(
                 draftArtifact, viewSegments, config, artifactStorageKey: string.Empty,
                 transcriptionApplied, transcriptionDegraded, transcriptionProviderName,
-                visualApplied, visualDegraded, audioLevelsApplied,
+                visualApplied, visualDegraded, gridWidth, gridHeight, audioLevelsApplied,
                 visionApplied, visionDegraded, visionPartial, visionProviderName, captionedShotCount, failedShotCount);
 
             // The persisted artifact's OfferedIds must be exactly the ids that survived view
@@ -891,6 +915,8 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         string? transcriptionProviderName,
         bool visualApplied,
         bool visualDegraded,
+        int visualGridWidth,
+        int visualGridHeight,
         bool audioLevelsApplied,
         bool visionApplied,
         bool visionDegraded,
@@ -982,8 +1008,8 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                 ["applied"] = visualApplied,
                 ["degraded"] = visualDegraded,
                 ["sampleFps"] = config.VisualSampleFps,
-                ["gridWidth"] = config.VisualGridWidth,
-                ["gridHeight"] = config.VisualGridHeight,
+                ["gridWidth"] = visualGridWidth,
+                ["gridHeight"] = visualGridHeight,
                 ["detail"] = detailApplied.ToString()
             },
             ["visualDetailApplied"] = detailApplied.ToString(),

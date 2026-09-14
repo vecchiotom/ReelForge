@@ -16,7 +16,7 @@ public class OverlayTextSanitizerTests
     [Fact]
     public void Plain_text_passes_through_unchanged()
     {
-        OverlayTextSanitizer.Sanitize("Jane Doe, Engineer", 80).Should().Be("Jane Doe, Engineer");
+        OverlayTextSanitizer.Sanitize("Jane Doe - Engineer", 80).Should().Be("Jane Doe - Engineer");
     }
 
     [Fact]
@@ -118,12 +118,15 @@ public class OverlayTextSanitizerTests
     }
 
     [Fact]
-    public void Single_quote_is_allowed_since_it_never_reaches_the_filter_string()
+    public void Single_quote_comma_and_semicolon_are_stripped_by_the_tightened_allowlist()
     {
-        // Deliberate design choice (documented on OverlayTextSanitizer): unlike ':'/'%', a single
-        // quote is common in ordinary text ("don't", "It's") and is safe to keep here because it
-        // never reaches ffmpeg's filter STRING at all — only a separately-written textfile.
-        OverlayTextSanitizer.Sanitize("It's a test", 80).Should().Be("It's a test");
+        // Tightened per the audit's Item A: even though none of these are filter-syntax-significant
+        // inside a quoted textfile= value (the real safety property is architectural — text never
+        // reaches the filter STRING at all), the allowlist itself is kept as small as plausibly
+        // needed for a lower-third/title/callout, as ordinary defense-in-depth.
+        OverlayTextSanitizer.Sanitize("It's a test", 80).Should().Be("Its a test");
+        OverlayTextSanitizer.Sanitize("Jane Doe, Engineer", 80).Should().Be("Jane Doe Engineer");
+        OverlayTextSanitizer.Sanitize("First; Second", 80).Should().Be("First Second");
     }
 
     [Fact]
@@ -141,6 +144,17 @@ public class OverlayTextSanitizerTests
         string padded = "AB" + combining;
         Action act = () => OverlayTextSanitizer.Sanitize(padded, 2);
         act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Combining_marks_survive_sanitization_instead_of_being_stripped()
+    {
+        // Devanagari "ki" (U+0915 KA + U+093F combining vowel sign I) has no precomposed form —
+        // the vowel sign is \p{Mn} and must be admitted by the allowlist or NFC-normalized script
+        // text like this is silently mangled character-by-character. Before Item A's fix, \p{M}
+        // was not in the allowlist and this vowel sign would have been stripped.
+        string devanagariKi = "कि"; // कि
+        OverlayTextSanitizer.Sanitize(devanagariKi, 80).Should().Be(devanagariKi);
     }
 
 }

@@ -1073,8 +1073,15 @@ public class VideoCompileStepExecutor : IStepExecutor
 
         // R20, extended for Phase 3: overlays can make one long filter string even with very few
         // spans (many drawbox/drawtext filters chained), so the script-file threshold now also
-        // accounts for filter STRING LENGTH, not just segment count.
-        if (spans.Count > FilterComplexScriptThreshold || filterComplex.Length > 4000)
+        // accounts for filter STRING LENGTH, not just segment count — but ONLY when overlays are
+        // actually present. Item F cleanup: the length clause used to apply unconditionally, so a
+        // plain cut-only compile with ~45+ segments (no overlays at all) already produced a
+        // >4000-char filter string from the between(t,...) terms alone and silently switched to
+        // -filter_complex_script — functionally equivalent, but not the byte-identical
+        // pre-Phase-3 behavior this feature's backward-compatibility claim promises. Gating on
+        // overlays.Count > 0 keeps a no-overlay compile on exactly its original count-only
+        // threshold, while an overlay-heavy compile still gets the length-based safety net.
+        if (spans.Count > FilterComplexScriptThreshold || (overlays is { Count: > 0 } && filterComplex.Length > 4000))
         {
             string scriptPath = scratch.GetPath("filter_complex.txt");
             await File.WriteAllTextAsync(scriptPath, filterComplex, ct);

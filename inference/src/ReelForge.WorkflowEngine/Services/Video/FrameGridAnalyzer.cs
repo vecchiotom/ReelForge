@@ -225,8 +225,13 @@ public static class FrameGridAnalyzer
     /// <summary>
     /// Slices the caller's raw grid buffer (all sampled frames of the whole video, CFR from
     /// t=0 at <paramref name="fps"/>) down to just the frames whose sample time
-    /// <c>i / fps</c> falls in <c>[shotStartSec, shotEndSec)</c>. Guarantees at least one frame
-    /// when the buffer is non-empty, even for a shot shorter than one sample interval.
+    /// <c>i / fps</c> falls in <c>[shotStartSec, shotEndSec)</c>. For a shot shorter than one
+    /// sample interval, widens the slice to include the one frame at <c>startIdx</c> so a valid
+    /// shot within the sampled range still gets at least one frame — but this is NOT an
+    /// unconditional guarantee: when <paramref name="shotStartSec"/> falls at or beyond the end of
+    /// the sampled range (<c>startIdx == frameCount</c>, e.g. a shot beyond what was actually
+    /// sampled), the result is an empty slice, which callers handle safely (see
+    /// <see cref="AnalyzeShot"/>'s empty-frames path).
     /// </summary>
     public static List<byte[]> SliceShotFrames(
         byte[] pixelData, int frameCount, int gridWidth, int gridHeight, double fps,
@@ -442,6 +447,31 @@ public static class FrameGridAnalyzer
         return groups;
     }
 
+    /// <summary>
+    /// Above this many members, <see cref="MeanPairwiseSimilarity"/> subsamples instead of
+    /// computing every pair — see its doc comment.
+    /// </summary>
+    private const int MaxMembersForFullPairwiseSimilarity = 50;
+
+    /// <summary>
+    /// Fixed subsample size used once a group exceeds <see cref="MaxMembersForFullPairwiseSimilarity"/>
+    /// — yields at most <c>32*31/2 = 496</c> pairs regardless of how large the group grew.
+    /// </summary>
+    private const int PairwiseSimilaritySampleSize = 32;
+
+    /// <summary>
+    /// Mean pairwise cosine-ish similarity within one duplicate group. The clustering step above
+    /// (<see cref="GroupDuplicates"/>) is correctly WINDOWED — shot <c>i</c> is only ever compared
+    /// against the previous <c>windowShots</c> shots — but single-linkage chaining can still grow
+    /// a group arbitrarily large (e.g. a long run of consecutively-similar shots in a long,
+    /// static-camera video), and computing every pair within such a group is O(m²), unbounded even
+    /// though the clustering itself was bounded. Above <see cref="MaxMembersForFullPairwiseSimilarity"/>
+    /// members, this deterministically subsamples <see cref="PairwiseSimilaritySampleSize"/>
+    /// evenly-spaced members and computes the mean over just those pairs instead — capping
+    /// worst-case cost to a fixed ~500 pairs regardless of group size, at the cost of exact mean
+    /// precision for huge groups (acceptable: this value is informational metadata on the group,
+    /// not used for the grouping decision itself, which already happened above).
+    /// </summary>
     private static double MeanPairwiseSimilarity(List<int> members, IReadOnlyList<ShotSignature> signatures)
     {
         if (members.Count < 2)
@@ -449,13 +479,26 @@ public static class FrameGridAnalyzer
             return 1.0;
         }
 
+        IReadOnlyList<int> sample = members;
+        if (members.Count > MaxMembersForFullPairwiseSimilarity)
+        {
+            var subsampled = new List<int>(PairwiseSimilaritySampleSize);
+            double stride = (double)members.Count / PairwiseSimilaritySampleSize;
+            for (int k = 0; k < PairwiseSimilaritySampleSize; k++)
+            {
+                subsampled.Add(members[(int)(k * stride)]);
+            }
+
+            sample = subsampled;
+        }
+
         double sum = 0;
         int count = 0;
-        for (int a = 0; a < members.Count; a++)
+        for (int a = 0; a < sample.Count; a++)
         {
-            for (int b = a + 1; b < members.Count; b++)
+            for (int b = a + 1; b < sample.Count; b++)
             {
-                sum += Similarity(signatures[members[a]], signatures[members[b]]);
+                sum += Similarity(signatures[sample[a]], signatures[sample[b]]);
                 count++;
             }
         }

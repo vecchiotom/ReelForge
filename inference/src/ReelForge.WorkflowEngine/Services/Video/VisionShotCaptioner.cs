@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using ReelForge.Shared.Inference;
@@ -14,6 +15,16 @@ namespace ReelForge.WorkflowEngine.Services.Video;
 public sealed class VisionShotCaptioner : IShotCaptioner
 {
     private static readonly JsonSerializerOptions ResponseJsonOptions = new(JsonSerializerDefaults.Web);
+
+    /// <summary>
+    /// Cap on each of <see cref="VideoShotCaption.Subjects"/>/<see cref="VideoShotCaption.OnScreenText"/>/
+    /// <see cref="VideoShotCaption.Tags"/> — a captioning backend returning an unbounded list must
+    /// not be able to inflate the analysis artifact/bounded view without limit (Item H cleanup).
+    /// </summary>
+    private const int MaxListItems = 20;
+
+    /// <summary>Cap on each individual list-item string's length (list fields are short tags/snippets, not prose — a smaller fixed budget than <see cref="VideoShotCaption.Summary"/>'s caller-configurable <c>maxCaptionChars</c>).</summary>
+    private const int MaxListItemChars = 200;
 
     private readonly IChatClientFactory _chatClientFactory;
     private readonly ILogger<VisionShotCaptioner> _logger;
@@ -83,8 +94,7 @@ public sealed class VisionShotCaptioner : IShotCaptioner
                 $"Vision captioning for shot '{request.ShotId}' returned no parseable structured output.");
         }
 
-        if (parsed.Summary.Length > maxCaptionChars)
-            parsed = parsed with { Summary = parsed.Summary[..maxCaptionChars] };
+        parsed = ApplyCaps(parsed, maxCaptionChars);
 
         // SAFETY (see IShotCaptioner's remarks): ShotId here is whatever the model happened to
         // echo back, or the parser's default, and is NEVER used for binding. The caller
@@ -99,5 +109,51 @@ public sealed class VisionShotCaptioner : IShotCaptioner
         }
 
         return parsed;
+    }
+
+    /// <summary>
+    /// Post-processes a freshly-deserialized <see cref="VideoShotCaption"/>: clamps
+    /// <paramref name="maxCaptionChars"/> to non-negative (a raw <c>str[..n]</c> slice with a
+    /// negative <c>n</c> throws <see cref="ArgumentOutOfRangeException"/>), grapheme-safe-truncates
+    /// every string field to it, and caps every list field to <see cref="MaxListItems"/> entries
+    /// of at most <see cref="MaxListItemChars"/> characters each — so neither a misconfigured
+    /// caller nor an unbounded captioning-backend response can inflate the analysis
+    /// artifact/bounded view or throw (Item H cleanup). Factored out as a pure, directly
+    /// unit-testable method — the rest of <see cref="CaptionAsync"/> requires a live
+    /// <see cref="IChatClient"/> and isn't independently unit tested without it.
+    /// </summary>
+    internal static VideoShotCaption ApplyCaps(VideoShotCaption parsed, int maxCaptionChars)
+    {
+        int safeCaptionChars = Math.Max(0, maxCaptionChars);
+        return parsed with
+        {
+            Summary = OverlayTextSanitizer.TruncateByTextElements(parsed.Summary ?? string.Empty, safeCaptionChars),
+            Action = OverlayTextSanitizer.TruncateByTextElements(parsed.Action ?? string.Empty, safeCaptionChars),
+            Setting = OverlayTextSanitizer.TruncateByTextElements(parsed.Setting ?? string.Empty, safeCaptionChars),
+            Mood = OverlayTextSanitizer.TruncateByTextElements(parsed.Mood ?? string.Empty, safeCaptionChars),
+            ShotScale = OverlayTextSanitizer.TruncateByTextElements(parsed.ShotScale ?? string.Empty, safeCaptionChars),
+            CameraAngle = OverlayTextSanitizer.TruncateByTextElements(parsed.CameraAngle ?? string.Empty, safeCaptionChars),
+            Subjects = CapList(parsed.Subjects),
+            OnScreenText = CapList(parsed.OnScreenText),
+            Tags = CapList(parsed.Tags)
+        };
+    }
+
+    /// <summary>
+    /// Caps a model-returned list field to at most <see cref="MaxListItems"/> entries, each
+    /// truncated (grapheme-safe) to at most <see cref="MaxListItemChars"/> characters — so an
+    /// unbounded/oversized list from a captioning backend can't inflate the analysis
+    /// artifact/bounded view (Item H cleanup). Null input (a nullable-unaware deserialization) and
+    /// null entries both become empty rather than throwing.
+    /// </summary>
+    private static IReadOnlyList<string> CapList(IReadOnlyList<string>? items)
+    {
+        if (items is null || items.Count == 0)
+            return Array.Empty<string>();
+
+        return items
+            .Take(MaxListItems)
+            .Select(item => OverlayTextSanitizer.TruncateByTextElements(item ?? string.Empty, MaxListItemChars))
+            .ToList();
     }
 }

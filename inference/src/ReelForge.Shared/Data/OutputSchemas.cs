@@ -416,7 +416,20 @@ public class MotionGraphicsOverlay
     /// <summary>Must be one of the ids in <c>VideoAnalysisArtifact.OfferedPlacementIds</c> — never invented.</summary>
     public string PlacementId { get; set; } = string.Empty;
 
-    /// <summary>One of: LowerThird | Title | Callout | Tag.</summary>
+    /// <summary>
+    /// One of: LowerThird | Title | Callout | Tag.
+    /// </summary>
+    /// <remarks>
+    /// Currently DESCRIPTIVE/RESERVED ONLY: <c>DrawtextFilterBuilder</c> does not read this value
+    /// at all — every <see cref="Kind"/> renders identically (position/size come entirely from the
+    /// chosen placement's <c>Rect</c> and from <see cref="Emphasis"/>, not from <see cref="Kind"/>).
+    /// A per-kind rendering difference was considered during the audit cleanup pass but rejected as
+    /// out of scope for a small change: the placement's region (LowerThird/UpperThird/CenterBand) is
+    /// already resolved server-side from <c>view.placements</c>, so having <see cref="Kind"/> ALSO
+    /// influence position would create two disagreeing sources of geometry for the same overlay.
+    /// Reserved for a future rendering differentiation (e.g. a distinct style per kind) should that
+    /// be designed deliberately. See docs/video-editing.md "Motion graphics (Phase 3)".
+    /// </remarks>
     public string Kind { get; set; } = string.Empty;
 
     public string Text { get; set; } = string.Empty;

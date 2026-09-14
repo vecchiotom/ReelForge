@@ -152,6 +152,44 @@ public class FrameGridAnalyzerTests
     }
 
     [Fact]
+    public void A_large_chained_duplicate_group_computes_its_mean_similarity_in_bounded_time()
+    {
+        // Item E: the clustering step itself is correctly windowed (a shot is only ever compared
+        // against the previous windowShots shots), but single-linkage chaining can still grow one
+        // group arbitrarily large when there's a long run of consecutively-similar shots — e.g. a
+        // long, static-camera video. MeanPairwiseSimilarity must not then compute all O(m^2) pairs
+        // within that group. 200 identical shots here all chain into a single group.
+        const int width = 8, height = 8;
+        const int shotCount = 200;
+        byte[] frame = MakeFrame(width, height, (x, y) => (byte)((x * 20 + y * 10) % 256));
+
+        var shotIds = new List<string>(shotCount);
+        var signatures = new List<FrameGridAnalyzer.ShotSignature>(shotCount);
+        var takeQualities = new List<double>(shotCount);
+        for (int i = 0; i < shotCount; i++)
+        {
+            shotIds.Add($"s{i}");
+            signatures.Add(FrameGridAnalyzer.ComputeSignature([frame, frame], width, height));
+            takeQualities.Add(0.5);
+        }
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        IReadOnlyList<VideoAnalysisDuplicateGroup> groups = FrameGridAnalyzer.GroupDuplicates(
+            shotIds, signatures, takeQualities,
+            similarityThreshold: 0.90, windowShots: 20,
+            out IReadOnlyDictionary<string, (string GroupId, int GroupRank, bool IsBestTake)> assignments);
+        stopwatch.Stop();
+
+        stopwatch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2),
+            "MeanPairwiseSimilarity must bound its cost instead of computing all O(m^2) pairs in a large chained group");
+
+        groups.Should().HaveCount(1);
+        groups[0].ShotIds.Should().HaveCount(shotCount);
+        groups[0].MeanSimilarity.Should().BeApproximately(1.0, 1e-6);
+        assignments.Should().HaveCount(shotCount);
+    }
+
+    [Fact]
     public void AnalyzeShot_still_windows_are_reported_in_absolute_source_timeline_seconds_not_shot_relative()
     {
         const int width = 4, height = 4;

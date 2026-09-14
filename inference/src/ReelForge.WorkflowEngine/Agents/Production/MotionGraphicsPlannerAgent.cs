@@ -23,8 +23,9 @@ public class MotionGraphicsPlannerAgent : ReelForgeAgentBase
     // Mirrors the prompt seeded in Inference.Api/Data/DatabaseSeeder.cs's BuiltInAgents table for
     // AgentType.MotionGraphicsPlanner verbatim, so the built-in AgentDefinition row seeded there
     // and this in-process fallback (used only if that config-driven SystemPrompt is ever absent)
-    // stay in lockstep with the same hard constraints. Enforced by
-    // MotionGraphicsPlannerPromptConsistencyTests.
+    // stay in lockstep with the same hard constraints. Enforced by the second [Fact] in
+    // VideoStoryEditorPromptConsistencyTests.cs (there is no separate
+    // MotionGraphicsPlannerPromptConsistencyTests class).
     private const string DefaultPrompt =
         """
         You are a motion-graphics planner for an edited video. You are given the story

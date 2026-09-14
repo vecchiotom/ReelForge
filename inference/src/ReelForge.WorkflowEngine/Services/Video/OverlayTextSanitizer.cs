@@ -18,26 +18,35 @@ public static class OverlayTextSanitizer
 {
     /// <summary>
     /// An ALLOWLIST — never a denylist/blocklist of "bad" characters, which is only ever safe
-    /// against characters someone thought of. Letters, digits, spaces, and a small safe
-    /// punctuation set.
+    /// against characters someone thought of. Letters, digits, combining marks, spaces, and a
+    /// small safe punctuation set.
     /// </summary>
     /// <remarks>
-    /// Colon (<c>:</c>) and percent (<c>%</c>) are deliberately EXCLUDED from the punctuation set,
-    /// even though this feature's architecture already neutralizes drawtext's own use of those
-    /// characters (option separator, expansion syntax) — the text never enters the filter STRING
-    /// at all (see <c>DrawtextFilterBuilder</c>'s <c>textfile=</c>/<c>expansion=none</c>
-    /// discipline). Excluding them here anyway is defense-in-depth, not the primary safety
-    /// mechanism: it means a future refactor that accidentally interpolated this text directly
-    /// into a filter string could still not use it to terminate a drawtext option list or invoke
-    /// an <c>%{eif:...}</c>/<c>%{pts}</c> expansion. Backslash is excluded outright (not part of
+    /// <b>The real safety property is architectural, not this allowlist.</b> Sanitized text is
+    /// NEVER interpolated into an ffmpeg filter/argv string — it is written to its own scratch
+    /// file and referenced only via drawtext's <c>textfile=</c> option (with <c>expansion=none</c>
+    /// also set on every drawtext filter), so no character this allowlist admits — including the
+    /// ones below that are individually meaningful to a filter-string parser — can ever terminate
+    /// a drawtext option or invoke a <c>%{eif:...}</c> expansion, because the text literally never
+    /// appears in that string (see <c>DrawtextFilterBuilder</c>). This allowlist exists as a
+    /// second, independent layer only — narrow the set of characters a caption/lower-third could
+    /// plausibly need, not "prove no character here is filter-syntax-significant": <c>'</c>,
+    /// <c>,</c>, and <c>;</c> are deliberately EXCLUDED even though none of them terminate a
+    /// drawtext option value the way <c>:</c>/<c>%</c> would, simply because they aren't essential
+    /// to a lower-third/title/callout and a smaller allowlist is a smaller attack surface for a
+    /// layer that is defense-in-depth, not the primary control. Colon (<c>:</c>) and percent
+    /// (<c>%</c>) are excluded for the same reason. Backslash is excluded outright (not part of
     /// any punctuation a video overlay plausibly needs). Emoji are also excluded — they fall
-    /// outside <c>\p{L}</c>/<c>\p{N}</c> (Unicode Symbol/Other categories, not Letter/Number), and
-    /// this is a deliberate choice, not an oversight: an overlay-safe font (see
-    /// <c>VideoEditingOptions.FontFilePath</c>) is not guaranteed to carry emoji glyphs, so
-    /// admitting them risks silently rendering tofu boxes instead of the intended character.
+    /// outside <c>\p{L}</c>/<c>\p{N}</c>/<c>\p{M}</c> (Unicode Symbol/Other categories, not
+    /// Letter/Number/Mark), and this is a deliberate choice, not an oversight: an overlay-safe
+    /// font (see <c>VideoEditingOptions.FontFilePath</c>) is not guaranteed to carry emoji glyphs,
+    /// so admitting them risks silently rendering tofu boxes instead of the intended character.
+    /// Combining marks (<c>\p{M}</c>) ARE admitted so NFC-normalized text in scripts without
+    /// precomposed forms (e.g. Devanagari vowel signs) survives sanitization instead of being
+    /// silently mangled character-by-character.
     /// </remarks>
     private static readonly Regex AllowedCharsPattern = new(
-        @"[^\p{L}\p{N} .,!?'""()\-—;/&#@+]", RegexOptions.Compiled);
+        @"[^\p{L}\p{N}\p{M} .!?""()\-—/&#@+]", RegexOptions.Compiled);
 
     private static readonly Regex WhitespacePattern = new(@"\s+", RegexOptions.Compiled);
 
@@ -75,9 +84,11 @@ public static class OverlayTextSanitizer
     /// <summary>
     /// Truncates by Unicode text element (grapheme cluster, via <see cref="StringInfo"/>) rather
     /// than raw UTF-16 code unit, so a surrogate pair or a base-character-plus-combining-mark
-    /// sequence is never split mid-character.
+    /// sequence is never split mid-character. <c>internal</c> (not <c>private</c>) so other
+    /// grapheme-safe-truncation needs in this project (e.g. <c>VisionShotCaptioner</c> capping
+    /// model-authored caption fields) can reuse it instead of reimplementing the same logic.
     /// </summary>
-    private static string TruncateByTextElements(string value, int maxChars)
+    internal static string TruncateByTextElements(string value, int maxChars)
     {
         if (maxChars <= 0)
             return string.Empty;

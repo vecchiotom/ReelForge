@@ -71,8 +71,6 @@ public static class DrawtextFilterBuilder
         if (overlays.Count == 0)
             throw new ArgumentException("BuildFilterChain requires at least one overlay.", nameof(overlays));
 
-        int fontSize = ComputeFontSize(probedHeight, fontSizePct);
-        int subFontSize = Math.Max(10, (int)Math.Round(fontSize * 0.7));
         double fadeSec = Math.Max(0.01, fadeMs) / 1000.0;
 
         List<string> segments = new();
@@ -83,6 +81,14 @@ public static class DrawtextFilterBuilder
             ResolvedOverlay overlay = overlays[i];
             bool isLast = i == overlays.Count - 1;
             bool hasSubtext = overlay.SanitizedSubtext.Length > 0;
+
+            // Emphasis (Subtle/Normal/Strong) is the one MotionGraphicsOverlay field the model
+            // controls that previously did nothing downstream — see docs/video-editing.md "Motion
+            // graphics (Phase 3)". A small, deliberately simple effect: it nudges the per-overlay
+            // font size, computed fresh per overlay (not once for the whole chain) since different
+            // overlays in the same compile can carry different emphasis.
+            int fontSize = ComputeFontSize(probedHeight, fontSizePct, overlay.Emphasis);
+            int subFontSize = Math.Max(10, (int)Math.Round(fontSize * 0.7));
 
             (int boxX, int boxY, int boxW, int boxH) = ComputeBoxPixels(overlay.Rect, probedWidth, probedHeight);
             string start = FfmpegArgvFormat.Number(overlay.OutputStartSec);
@@ -137,9 +143,25 @@ public static class DrawtextFilterBuilder
         return string.Join(";", segments);
     }
 
-    /// <summary><c>max(12, round(probedHeight * fontSizePct / 100))</c> — never below 12px regardless of a tiny/misconfigured percentage.</summary>
-    internal static int ComputeFontSize(int probedHeight, int fontSizePct) =>
-        Math.Max(12, (int)Math.Round(probedHeight * Math.Clamp(fontSizePct, 2, 12) / 100.0));
+    /// <summary>
+    /// <c>max(12, round(probedHeight * effectivePct / 100))</c> — never below 12px regardless of a
+    /// tiny/misconfigured percentage. <paramref name="emphasis"/> ("Subtle"/"Normal"/"Strong")
+    /// scales <paramref name="fontSizePct"/> by 0.8x/1x/1.25x respectively before clamping the
+    /// result to the same valid percentage range (<c>[2, 12]</c>) the unscaled value is clamped
+    /// to — so Strong/Subtle nudge the size within the existing bounds rather than escaping them.
+    /// Any value other than the three recognized words is treated as "Normal" (no scaling).
+    /// </summary>
+    internal static int ComputeFontSize(int probedHeight, int fontSizePct, string emphasis = "Normal")
+    {
+        double multiplier = emphasis switch
+        {
+            "Strong" => 1.25,
+            "Subtle" => 0.8,
+            _ => 1.0
+        };
+        double effectivePct = Math.Clamp(fontSizePct * multiplier, 2, 12);
+        return Math.Max(12, (int)Math.Round(probedHeight * effectivePct / 100.0));
+    }
 
     internal static (int X, int Y, int W, int H) ComputeBoxPixels(VideoAnalysisRect rect, int probedWidth, int probedHeight)
     {
@@ -166,11 +188,35 @@ public static class DrawtextFilterBuilder
     }
 
     /// <summary>
-    /// Escapes ffmpeg filter-option-value metacharacters (<c>:</c>, <c>'</c>, <c>\</c>) in a
-    /// PATH — never in overlay text, which never appears here at all. Paths originate from our
+    /// Escapes a PATH for embedding inside a SINGLE-QUOTED ffmpeg filter option value (every call
+    /// site here wraps the result in <c>'...'</c>, e.g. <c>fontfile='{EscapeFilterPath(path)}'</c>)
+    /// — never used for overlay text, which never appears here at all. Paths originate from our
     /// own scratch-space naming, never from model output, but are escaped anyway since a project
     /// name or execution id could in principle contain one of these characters on some platform.
     /// </summary>
+    /// <remarks>
+    /// ffmpeg's filtergraph parser does NOT process backslash escapes inside a single-quoted
+    /// value — everything between the quotes is literal except the closing quote itself. That
+    /// means, for a value already wrapped in single quotes:
+    /// <list type="bullet">
+    /// <item><c>:</c> needs no escaping — the surrounding quotes already protect it from being
+    /// read as the option separator.</item>
+    /// <item><c>\</c> needs no escaping either — it has no special meaning inside single quotes,
+    /// so a literal backslash in the path passes through unchanged.</item>
+    /// <item><c>'</c> is the one character that DOES need handling: since a single-quoted value
+    /// cannot contain a literal quote directly, the standard (shell-like) idiom is used — close
+    /// the quote, insert an escaped literal quote via a backslash OUTSIDE any quotes
+    /// (<c>\'</c>), then reopen a new quoted segment: <c>'</c> becomes <c>'\''</c>. ffmpeg
+    /// concatenates adjacent quoted/escaped segments, so this reconstructs the literal quote
+    /// correctly (see <c>DrawtextFilterBuilderTests</c> for a worked example).</item>
+    /// </list>
+    /// A previous version of this method escaped <c>:</c>/<c>\</c> with a bare backslash and
+    /// <c>'</c> with <c>\'</c> — none of which ffmpeg's single-quoted-value parser actually
+    /// processes, so a path containing a literal quote would have broken out of the quoted value
+    /// instead of being escaped. Harmless in practice (real scratch paths are
+    /// <c>{ScratchPath}/{guid}/{guid}/ov-N.txt</c>, which never contain any of these characters),
+    /// but incorrect in isolation — fixed here regardless.
+    /// </remarks>
     internal static string EscapeFilterPath(string path) =>
-        path.Replace("\\", "\\\\").Replace(":", "\\:").Replace("'", "\\'");
+        path.Replace("'", "'\\''");
 }

@@ -340,6 +340,58 @@ public class VideoCompileStepExecutorTests
         ltCount.Should().Be(shots.Length * 2);
     }
 
+    [Fact]
+    public async Task No_overlay_compile_with_many_segments_stays_on_the_inline_filter_complex_path()
+    {
+        // Item F: EnableGraphics=false (default) is documented as byte-identical to the
+        // pre-Phase-3 compile path. The filterComplex.Length > 4000 clause added for Phase 3
+        // overlays must NOT apply when there are no overlays — otherwise a plain cut-only compile
+        // with ~50 segments (well under the 64-segment/count-only threshold) already produces a
+        // >4000-char filter string from the between(t,...)-equivalent terms alone and silently
+        // switches to -filter_complex_script, breaking the byte-identical claim.
+        const int segmentCount = 50;
+        var shots = Enumerable.Range(0, segmentCount)
+            .Select(i => ($"s{i}", 3.0 * i, 3.0 * i + 1.0)) // 1s shots, 2s gaps — well under MaxSegments=200
+            .ToArray();
+
+        // NTSC-style non-integer fps (30000/1001): frame-quantized SnappedStart/SnappedEnd then
+        // have long, non-terminating decimal representations (the same reason the audit's own
+        // estimate is "~45 chars" per between(t,...)-equivalent term, not a short round number) —
+        // a clean fps like 30/1 would frame-quantize these shot boundaries back to short round
+        // decimals and this test wouldn't actually exercise the >4000-char scenario Item F fixes.
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            durationSec: 3.0 * shots.Length + 2.0,
+            shots: shots,
+            offeredIds: shots.Select(s => s.Item1).ToArray(),
+            fpsNum: 30000, fpsDen: 1001);
+
+        (string, string, string)[] spans = shots.Select(s => (s.Item1, s.Item1, "keep")).ToArray();
+        string decisionJson = BuildDecisionJson(spans);
+
+        StepExecutionContext context = CreateContext(
+            artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with { PrePaddingMs = 0, PostPaddingMs = 0, MinSegmentMs = 0 });
+
+        IReadOnlyList<string>? capturedArgs = null;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, ffmpegArgsCaptured: args => capturedArgs ??= args).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        capturedArgs.Should().NotBeNull();
+
+        List<string> argsList = capturedArgs!.ToList();
+        int filterIndex = argsList.IndexOf("-filter_complex");
+        filterIndex.Should().BeGreaterThanOrEqualTo(0,
+            "a no-overlay compile must stay on the count-only threshold (50 segments < 64), " +
+            "even though its filter string exceeds 4000 characters");
+
+        string filterComplex = argsList[filterIndex + 1];
+        filterComplex.Length.Should().BeGreaterThan(4000,
+            "the test is only meaningful if this compile would actually have tripped the length clause");
+
+        argsList.Should().NotContain("-filter_complex_script");
+    }
+
     // ---------------------------------------------------------------------
     // Codec / preset allowlist (R11)
     // ---------------------------------------------------------------------

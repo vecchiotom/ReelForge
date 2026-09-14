@@ -637,7 +637,7 @@ public class VideoAnalyzeStepExecutorTests
         var frameGridSampler = new Mock<IFrameGridSampler>();
         frameGridSampler
             .Setup(g => g.SampleAsync(
-                It.IsAny<string>(), It.IsAny<double>(), It.IsAny<int>(), It.IsAny<int>(),
+                It.IsAny<string>(), It.IsAny<VideoScratchSpace>(), It.IsAny<double>(), It.IsAny<int>(), It.IsAny<int>(),
                 It.IsAny<double>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new InvalidOperationException("ffmpeg grid sampling exploded"));
 
@@ -698,7 +698,7 @@ public class VideoAnalyzeStepExecutorTests
             {
                 frameGridSampler
                     .Setup(g => g.SampleAsync(
-                        It.IsAny<string>(), It.IsAny<double>(), It.IsAny<int>(), It.IsAny<int>(),
+                        It.IsAny<string>(), It.IsAny<VideoScratchSpace>(), It.IsAny<double>(), It.IsAny<int>(), It.IsAny<int>(),
                         It.IsAny<double>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
                     .ReturnsAsync(grid);
             }
@@ -741,6 +741,60 @@ public class VideoAnalyzeStepExecutorTests
     }
 
     [Fact]
+    public async Task Oversized_visual_grid_dimensions_are_clamped_to_a_sane_range()
+    {
+        // Item D: an oversized workflow-author-supplied VisualGridWidth/Height (e.g. 2048x2048)
+        // must be clamped before it ever reaches the sampler, rather than allocating an enormous
+        // grid.rgb scratch file / forcing a huge single in-memory byte[] read of it.
+        var shots = new[] { (0.0, 5.0) };
+
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out _, out _,
+            configOverride: cfg => cfg with
+            {
+                DetectSilence = false, Transcription = VideoTranscriptionMode.Off,
+                AnalyzeVisuals = true, AnalyzeAudioLevels = false, DetectNearDuplicates = false,
+                VisualGridWidth = 2048, VisualGridHeight = 4096
+            });
+
+        probe.Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MediaProbeResult(5, 30, 1, 1920, 1080, "h264", "aac", 48000));
+        shotDetector
+            .Setup(s => s.DetectShotsAsync(It.IsAny<string>(), It.IsAny<double>(), It.IsAny<double>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(shots);
+
+        FrameGridResult grid = BuildSyntheticGrid(gridWidth: 4, gridHeight: 4, frameCount: 10, fps: 2.0);
+        var frameGridSampler = new Mock<IFrameGridSampler>();
+        frameGridSampler
+            .Setup(g => g.SampleAsync(
+                It.IsAny<string>(), It.IsAny<VideoScratchSpace>(), It.IsAny<double>(), It.IsAny<int>(), It.IsAny<int>(),
+                It.IsAny<double>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(grid);
+
+        VideoAnalyzeStepExecutor executor = CreateExecutor(
+            workspace, probe, silence, shotDetector,
+            new Mock<ITranscriptionClientFactory>(), new Mock<IInferenceProviderResolver>(),
+            audioExtractor: null, frameGridSampler: frameGridSampler);
+
+        StepExecutionResult result = await executor.ExecuteAsync(context);
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+
+        frameGridSampler.Verify(g => g.SampleAsync(
+            It.IsAny<string>(), It.IsAny<VideoScratchSpace>(), It.IsAny<double>(),
+            It.Is<int>(w => w <= 256), It.Is<int>(h => h <= 256),
+            It.IsAny<double>(), It.IsAny<int>(), It.IsAny<CancellationToken>()), Times.Once);
+
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        JsonElement visual = doc.RootElement.GetProperty("meta").GetProperty("visual");
+        visual.GetProperty("gridWidth").GetInt32().Should().Be(256);
+        visual.GetProperty("gridHeight").GetInt32().Should().Be(256);
+    }
+
+    [Fact]
     public async Task Visual_and_audio_numbers_in_the_view_are_rounded()
     {
         var shots = new[] { (0.0, 5.0) };
@@ -769,7 +823,7 @@ public class VideoAnalyzeStepExecutorTests
         var frameGridSampler = new Mock<IFrameGridSampler>();
         frameGridSampler
             .Setup(g => g.SampleAsync(
-                It.IsAny<string>(), It.IsAny<double>(), It.IsAny<int>(), It.IsAny<int>(),
+                It.IsAny<string>(), It.IsAny<VideoScratchSpace>(), It.IsAny<double>(), It.IsAny<int>(), It.IsAny<int>(),
                 It.IsAny<double>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(grid);
 
@@ -983,6 +1037,71 @@ public class VideoAnalyzeStepExecutorTests
         JsonElement vision = doc.RootElement.GetProperty("meta").GetProperty("vision");
         vision.GetProperty("applied").GetBoolean().Should().BeFalse();
         vision.GetProperty("degraded").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Vision_optional_degrades_cleanly_when_provider_resolution_throws()
+    {
+        // Regression for the audit's Item B: ResolveVisionAsync throwing (a transient DB/scope
+        // exception) must degrade like every other Optional failure mode, not escape as
+        // UNEXPECTED_ERROR and discard all the completed deterministic work.
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out Mock<ITranscriptionClientFactory> transcriptionFactory,
+            out Mock<IInferenceProviderResolver> providerResolver,
+            configOverride: cfg => cfg with
+            {
+                Vision = VideoVisionMode.Optional, DetectSilence = false, DetectShots = false,
+                Transcription = VideoTranscriptionMode.Off
+            });
+
+        SetupBasicProbeAndDetectors(probe, silence, shotDetector);
+        providerResolver
+            .Setup(r => r.ResolveVisionAsync(It.IsAny<Guid?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("transient resolver failure"));
+
+        StepExecutionResult result = await CreateExecutor(workspace, probe, silence, shotDetector, transcriptionFactory, providerResolver)
+            .ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        JsonElement vision = doc.RootElement.GetProperty("meta").GetProperty("vision");
+        vision.GetProperty("applied").GetBoolean().Should().BeFalse();
+        vision.GetProperty("degraded").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Vision_required_fails_clearly_when_provider_resolution_throws()
+    {
+        // Mirror of the Optional case above: when Vision is Required, a resolver exception must
+        // still surface as a clean VISION_FAILED result, not an unhandled exception/UNEXPECTED_ERROR.
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out Mock<ITranscriptionClientFactory> transcriptionFactory,
+            out Mock<IInferenceProviderResolver> providerResolver,
+            configOverride: cfg => cfg with
+            {
+                Vision = VideoVisionMode.Required, DetectSilence = false, DetectShots = false,
+                Transcription = VideoTranscriptionMode.Off
+            });
+
+        SetupBasicProbeAndDetectors(probe, silence, shotDetector);
+        providerResolver
+            .Setup(r => r.ResolveVisionAsync(It.IsAny<Guid?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("transient resolver failure"));
+
+        StepExecutionResult result = await CreateExecutor(workspace, probe, silence, shotDetector, transcriptionFactory, providerResolver)
+            .ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Failed);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        doc.RootElement.GetProperty("error").GetProperty("code").GetString().Should().Be("VISION_FAILED");
     }
 
     [Fact]
