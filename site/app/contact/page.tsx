@@ -1,11 +1,13 @@
-import type { Metadata } from 'next';
 import { Container } from '@/components/layout/Container';
 import { ContactForm } from '@/components/contact/ContactForm';
+import { buildMetadata } from '@/lib/seo';
 
-export const metadata: Metadata = {
+export const metadata = buildMetadata({
   title: 'Contact',
-  description: 'Get in touch about using ReelForge for your project.',
-};
+  description:
+    'Tell us about your project and what you want to use ReelForge for — reach our team directly and we will get back to you shortly.',
+  path: '/contact',
+});
 
 export default function ContactPage() {
   return (

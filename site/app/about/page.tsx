@@ -1,12 +1,13 @@
-import type { Metadata } from 'next';
 import { Container } from '@/components/layout/Container';
 import { Section } from '@/components/layout/Section';
+import { buildMetadata } from '@/lib/seo';
 
-export const metadata: Metadata = {
+export const metadata = buildMetadata({
   title: 'About',
   description:
-    "What ReelForge is building and how it's built: a self-hostable, agentic workflow platform for promotional video generation.",
-};
+    "How ReelForge is built: a self-hostable microservices platform where specialized AI agents produce and edit promotional video from your own codebase.",
+  path: '/about',
+});
 
 export default function AboutPage() {
   return (

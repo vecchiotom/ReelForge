@@ -1,5 +1,13 @@
 import Link from 'next/link';
 import { Section } from '@/components/layout/Section';
+import { buildMetadata } from '@/lib/seo';
+
+export const metadata = buildMetadata({
+  title: 'AI Agents for Promotional Video Generation',
+  description:
+    'ReelForge turns your codebase into a promotional video with agentic workflows, Remotion rendering, and a review loop that scores and refines every draft.',
+  path: '/',
+});
 
 const steps = [
   {
@@ -156,6 +164,7 @@ export default function HomePage() {
                 viewBox="0 0 24 24"
                 fill="none"
                 aria-hidden="true"
+                focusable="false"
                 className="text-brand-600"
               >
                 {feature.icon}

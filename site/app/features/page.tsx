@@ -1,13 +1,14 @@
-import type { Metadata } from 'next';
 import Link from 'next/link';
 import { Container } from '@/components/layout/Container';
 import { Section } from '@/components/layout/Section';
+import { buildMetadata } from '@/lib/seo';
 
-export const metadata: Metadata = {
+export const metadata = buildMetadata({
   title: 'Features',
   description:
-    'The agentic workflow engine, agent library, Remotion rendering, video derushing, review loop, and bring-your-own inference provider behind ReelForge.',
-};
+    'Explore the agentic workflow engine, full agent library, Remotion rendering, ffmpeg-based video derushing, and review-loop scoring that power ReelForge.',
+  path: '/features',
+});
 
 export default function FeaturesPage() {
   return (

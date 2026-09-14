@@ -13,6 +13,7 @@ function Wordmark() {
         viewBox="0 0 28 28"
         fill="none"
         aria-hidden="true"
+        focusable="false"
         className="shrink-0"
       >
         <rect width="28" height="28" rx="7" className="fill-brand-600" />
@@ -67,7 +68,7 @@ export function SiteHeader() {
           className="flex h-11 w-11 items-center justify-center rounded-md text-neutral-700 hover:bg-neutral-100 md:hidden"
         >
           {menuOpen ? (
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">
               <path
                 d="M6 6L18 18M18 6L6 18"
                 stroke="currentColor"
@@ -76,7 +77,7 @@ export function SiteHeader() {
               />
             </svg>
           ) : (
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">
               <path
                 d="M4 7H20M4 12H20M4 17H20"
                 stroke="currentColor"

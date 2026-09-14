@@ -1,11 +1,13 @@
-import type { Metadata } from 'next';
 import Link from 'next/link';
 import { Container } from '@/components/layout/Container';
+import { buildMetadata } from '@/lib/seo';
 
-export const metadata: Metadata = {
+export const metadata = buildMetadata({
   title: 'Thanks',
-  description: 'Your message has been received.',
-};
+  description: 'Your message has been received. Our team will follow up with you soon about your ReelForge project.',
+  path: '/contact/thank-you',
+  noIndex: true,
+});
 
 // Placeholder for now — Phase 4 finishes this page properly.
 export default function ContactThankYouPage() {
