@@ -6,10 +6,12 @@ import { useRouter } from 'next/navigation';
 export function ContactForm() {
   const router = useRouter();
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitting(true);
+    setError(null);
 
     const form = event.currentTarget;
     const data = new FormData(form);
@@ -22,12 +24,21 @@ export function ContactForm() {
     };
 
     try {
-      await fetch('/api/contact', {
+      const response = await fetch('/api/contact', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      router.push('/contact/thank-you');
+
+      if (response.ok) {
+        router.push('/contact/thank-you');
+      } else {
+        console.error('[contact] submission failed', response.status);
+        setError('Something went wrong sending your message. Please try again.');
+      }
+    } catch (err) {
+      console.error('[contact] submission failed', err);
+      setError('Something went wrong sending your message. Please try again.');
     } finally {
       setSubmitting(false);
     }
@@ -102,6 +113,12 @@ export function ContactForm() {
           aria-hidden="true"
         />
       </div>
+
+      {error && (
+        <p role="alert" className="text-sm text-red-600">
+          {error}
+        </p>
+      )}
 
       <button
         type="submit"

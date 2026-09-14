@@ -1,5 +1,6 @@
 import { Container } from '@/components/layout/Container';
 import { ContactForm } from '@/components/contact/ContactForm';
+import { ContactAddress } from '@/components/contact/ContactAddress';
 import { buildMetadata } from '@/lib/seo';
 
 export const metadata = buildMetadata({
@@ -28,18 +29,7 @@ export default function ContactPage() {
 
           <aside className="lg:col-span-1">
             <h2 className="text-sm font-semibold text-neutral-900">Other ways to reach us</h2>
-            {/*
-              Minimal/structural for now. Phase 4 replaces this mailto placeholder and
-              adds the real postal address using the bracketed tokens from
-              site/lib/legal-placeholders.ts.
-            */}
-            <address className="not-italic mt-4 space-y-1 text-sm text-neutral-600">
-              <p>
-                <a href="mailto:hello@example.com" className="text-brand-600 hover:text-brand-700">
-                  hello@example.com
-                </a>
-              </p>
-            </address>
+            <ContactAddress showPhone showResponseTime className="mt-4" />
           </aside>
         </div>
       </Container>

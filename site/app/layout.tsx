@@ -3,6 +3,8 @@ import { SiteHeader } from '@/components/layout/SiteHeader';
 import { SiteFooter } from '@/components/layout/SiteFooter';
 import { StickyMobileCta } from '@/components/layout/StickyMobileCta';
 import { JsonLd } from '@/components/seo/JsonLd';
+import { CookieConsentProvider } from '@/components/consent/CookieConsentProvider';
+import { CookieBanner } from '@/components/consent/CookieBanner';
 import { siteConfig } from '@/lib/site-config';
 import { organizationSchema, websiteSchema } from '@/lib/structured-data';
 import './globals.css';
@@ -39,12 +41,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         >
           Skip to content
         </a>
-        <SiteHeader />
-        <main id="main" className="flex-1 pb-20 md:pb-0">
-          {children}
-        </main>
-        <SiteFooter />
-        <StickyMobileCta />
+        <CookieConsentProvider>
+          <SiteHeader />
+          <main id="main" className="flex-1 pb-20 md:pb-0">
+            {children}
+          </main>
+          <SiteFooter />
+          <StickyMobileCta />
+          <CookieBanner />
+        </CookieConsentProvider>
         <JsonLd data={organizationSchema()} />
         <JsonLd data={websiteSchema()} />
       </body>

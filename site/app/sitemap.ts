@@ -9,12 +9,13 @@ interface SitemapEntry {
 
 // Only routes that are actually live belong here — a submitted sitemap that repeatedly 404s is a
 // negative quality signal to crawlers, so don't pre-list a page ahead of the phase that ships it.
-// /legal/privacy and /legal/terms are added here once Phase 4 creates those routes.
 const routes: SitemapEntry[] = [
   { path: '/', changeFrequency: 'weekly', priority: 1.0 },
   { path: '/features', changeFrequency: 'monthly', priority: 0.8 },
   { path: '/about', changeFrequency: 'monthly', priority: 0.8 },
   { path: '/contact', changeFrequency: 'monthly', priority: 0.6 },
+  { path: '/legal/privacy', changeFrequency: 'yearly', priority: 0.2 },
+  { path: '/legal/terms', changeFrequency: 'yearly', priority: 0.2 },
 ];
 
 export default function sitemap(): MetadataRoute.Sitemap {

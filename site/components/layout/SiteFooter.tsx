@@ -1,5 +1,7 @@
 import Link from 'next/link';
 import { siteConfig } from '@/lib/site-config';
+import { ContactAddress } from '@/components/contact/ContactAddress';
+import { CookiePreferencesLink } from '@/components/consent/CookiePreferencesLink';
 
 export function SiteFooter() {
   return (
@@ -52,23 +54,15 @@ export function SiteFooter() {
                   Terms of service
                 </Link>
               </li>
+              <li>
+                <CookiePreferencesLink />
+              </li>
             </ul>
           </div>
 
           <div>
             <h2 className="text-sm font-semibold text-neutral-900">Contact</h2>
-            {/*
-              Minimal/structural for now. Phase 4 replaces the mailto placeholder and
-              adds the real postal address using the bracketed tokens defined in
-              site/lib/legal-placeholders.ts.
-            */}
-            <address className="not-italic mt-4 space-y-3 text-sm text-neutral-600">
-              <p>
-                <a href="mailto:hello@example.com" className="hover:text-neutral-900">
-                  hello@example.com
-                </a>
-              </p>
-            </address>
+            <ContactAddress className="mt-4" />
           </div>
         </div>
 
