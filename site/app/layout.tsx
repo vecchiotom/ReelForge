@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { Suspense } from 'react';
+import { Chakra_Petch, JetBrains_Mono } from 'next/font/google';
 import { SiteHeader } from '@/components/layout/SiteHeader';
 import { SiteFooter } from '@/components/layout/SiteFooter';
 import { StickyMobileCta } from '@/components/layout/StickyMobileCta';
@@ -11,6 +12,19 @@ import { PageViewTracker } from '@/components/analytics/PageViewTracker';
 import { siteConfig } from '@/lib/site-config';
 import { organizationSchema, websiteSchema } from '@/lib/structured-data';
 import './globals.css';
+
+const display = Chakra_Petch({
+  subsets: ['latin'],
+  weight: ['400', '600', '700'],
+  variable: '--font-display-face',
+  display: 'swap',
+});
+const mono = JetBrains_Mono({
+  subsets: ['latin'],
+  weight: ['400', '500', '700'],
+  variable: '--font-mono-face',
+  display: 'swap',
+});
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteConfig.url),
@@ -42,11 +56,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const gaId = process.env.NEXT_PUBLIC_GA_MEASUREMENT_ID;
 
   return (
-    <html lang="en">
-      <body className="font-sans antialiased min-h-screen flex flex-col bg-white text-neutral-900">
+    <html lang="en" className={`${display.variable} ${mono.variable}`}>
+      <body className="font-sans antialiased min-h-screen flex flex-col bg-paper text-ink">
         <a
           href="#main"
-          className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-brand-600 focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-white"
+          className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-accent-strong focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-white"
         >
           Skip to content
         </a>
