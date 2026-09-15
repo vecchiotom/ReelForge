@@ -11,6 +11,7 @@ import { theme } from './theme';
 export const metadata = {
   title: 'ReelForge',
   description: 'AI-powered promotional video generation',
+  robots: { index: false, follow: false },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

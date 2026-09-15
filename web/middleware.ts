@@ -16,24 +16,35 @@ export function middleware(request: NextRequest) {
 
   // No auth → redirect to login
   if (!tokenCookie || !userCookie) {
-    return NextResponse.redirect(new URL('/login', request.url));
+    // request.nextUrl.clone() preserves the app's basePath ('/app') when
+    // re-serialized; building a URL from a bare path plus request.url instead
+    // would silently drop it.
+    const url = request.nextUrl.clone();
+    url.pathname = '/login';
+    return NextResponse.redirect(url);
   }
 
   let user: { email: string; isAdmin: boolean; mustChangePassword: boolean } | null = null;
   try {
     user = JSON.parse(decodeURIComponent(userCookie));
   } catch {
-    return NextResponse.redirect(new URL('/login', request.url));
+    const url = request.nextUrl.clone();
+    url.pathname = '/login';
+    return NextResponse.redirect(url);
   }
 
   // Must change password → force to change-password page
   if (user?.mustChangePassword && pathname !== '/change-password') {
-    return NextResponse.redirect(new URL('/change-password', request.url));
+    const url = request.nextUrl.clone();
+    url.pathname = '/change-password';
+    return NextResponse.redirect(url);
   }
 
   // Admin routes require isAdmin
   if (pathname.startsWith('/admin') && !user?.isAdmin) {
-    return NextResponse.redirect(new URL('/dashboard', request.url));
+    const url = request.nextUrl.clone();
+    url.pathname = '/dashboard';
+    return NextResponse.redirect(url);
   }
 
   return NextResponse.next();

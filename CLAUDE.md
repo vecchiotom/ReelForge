@@ -6,7 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ReelForge is a microservices platform for generating promotional videos using [Remotion](https://www.remotion.dev/) via agentic workflows. Four services coordinate to handle the frontend, API requests, and AI/agent inference:
 
-- **`/web`** — Next.js 15 App Router + Mantine v8 frontend
+- **`/site`** — Next.js 15 App Router + Tailwind CSS v4 public marketing site, served at the root domain (`/`)
+- **`/web`** — Next.js 15 App Router + Mantine v8 authenticated platform dashboard, served under `/app`
 - **`/api`** — Go REST API (Gorilla Mux, GORM, PostgreSQL)
 - **`/inference/src/ReelForge.Inference.Api`** — .NET 9 REST API for projects, files, agents, workflows CRUD
 - **`/inference/src/ReelForge.WorkflowEngine`** — .NET 9 workflow execution engine consuming from RabbitMQ
@@ -39,6 +40,8 @@ All services are containerized and accessed through an nginx reverse proxy on a 
 ```
 
 Nginx is the single entry point (port 80). It routes requests to the appropriate backend and translates httpOnly cookies into Authorization headers. The Go API is the authority for user management and JWT issuance. The Inference API handles CRUD and publishes execution requests to RabbitMQ. The Workflow Engine consumes execution requests and runs AI agents.
+
+See [`docs/marketing-site.md`](docs/marketing-site.md) for the public marketing site's routing split (`/` → `site`, `/app/*` → `web`) and its launch checklist. `/site` also ships a WebGL/three.js hero (homepage-only, lazy-loaded behind `next/dynamic`) and a Chakra Petch/JetBrains Mono type system — see [`docs/site-design-system.md`](docs/site-design-system.md).
 
 ### Go API
 
@@ -441,7 +444,8 @@ web/
 | `/api/v1/*` | `inference:8080` | Cookie → Authorization header |
 | `/health` | `go-api:8080` | None |
 | `/api/auth/logout` | — | Nginx clears cookies |
-| `/*` | `web:3000` | None (frontend) |
+| `/app/*` | `web:3000` | None (dashboard, basePath `/app`) |
+| `/*` | `site:3000` | None (public marketing site) |
 
 ## Commands
 
@@ -500,7 +504,8 @@ All services have Dockerfiles and are orchestrated via `docker-compose.yml` at t
 |---------|-------|-----------|---------------|-------|
 | `nginx` | Built from `./nginx` (`nginx:alpine` + openssl/gettext) | 80 (`APP_PORT`), 443 (`HTTPS_PORT`) | 80, 443 | Single entry point, njs cookie↔header translation, TLS termination (self-signed by default; see [`docs/tls.md`](docs/tls.md)) |
 | `caddy` | `caddy:2-alpine` | — (internal) | 80, 443 | ACME client only — obtains/renews the Let's Encrypt cert nginx reads off the shared `caddy_certs` volume; never serves traffic. Opt-in via the `tls` compose profile, requires `DOMAIN`/`ACME_EMAIL`. See [`docs/tls.md`](docs/tls.md) |
-| `web` | Built from `./web` | — (internal) | 3000 | Next.js frontend |
+| `site` | Built from `./site` | 127.0.0.1:3100 (dev convenience only) | 3000 | Public marketing site (Next.js, Tailwind v4), no `depends_on` — must come up even if the backend is down |
+| `web` | Built from `./web` | — (internal) | 3000 | Next.js dashboard, basePath `/app` |
 | `go-api` | Built from `./api` | — (internal) | 8080 | Depends on postgres (healthy) |
 | `inference` | Built from `./inference` | — (internal) | 8080 | Inference API, depends on go-api + rabbitmq; mounts `dpkeys` at `/keys` (Data Protection key ring) |
 | `workflow-engine` | Built from `./inference` | — (internal) | 8080 | Workflow engine, depends on inference + rabbitmq; mounts `dpkeys` at `/keys` (Data Protection key ring) and `videoscratch` at `/var/tmp/reelforge-video` (per-execution ffmpeg scratch space, `VideoEditing:ScratchPath`); image includes `ffmpeg`/`ffprobe` (see Video Editing above) |
@@ -576,6 +581,11 @@ All configuration is driven by `.env` at the repo root (copy `.env.example` to `
 | `VIDEO_ANALYZE_TIMEOUT_SECONDS` | `900` | Hard wall-clock timeout for a `VideoAnalyze` step's ffmpeg/ffprobe/ASR calls (`VideoEditing:AnalyzeTimeoutSeconds`) |
 | `VIDEO_COMPILE_TIMEOUT_SECONDS` | `1800` | Hard wall-clock timeout for a `VideoCompile` step's ffmpeg encode (`VideoEditing:CompileTimeoutSeconds`) |
 | `VIDEO_FONT_FILE` | `/usr/share/fonts/dejavu/DejaVuSans.ttf` | Font file passed to drawtext's `fontfile=` for Phase 3 motion-graphics overlays (`VideoEditing:FontFilePath`) — must exist in the `workflow-engine` image; the default matches the `font-dejavu` Alpine package the Dockerfile installs alongside ffmpeg |
+| `SITE_BUILD_TARGET` | `development` | Dockerfile build target for the `site` service (`development` for Turbopack hot reload, `production` for the precompiled standalone build) |
+| `SITE_NODE_ENV` | `development` | `NODE_ENV` for the `site` container; set to `production` alongside `SITE_BUILD_TARGET=production` |
+| `NEXT_PUBLIC_SITE_URL` | `https://reelforge.com` | Canonical absolute origin for the marketing site — the single value `site/lib/site-config.ts` reads for canonical URLs, `sitemap.xml`, `robots.txt`, Open Graph/Twitter cards, and JSON-LD. Baked in at build time via a Docker build arg, so the `site` image must be rebuilt after changing it. See [`docs/marketing-site.md`](docs/marketing-site.md) |
+| `NEXT_PUBLIC_GA_MEASUREMENT_ID` | — | GA4 measurement ID (`G-XXXXXXXXXX`) for the marketing site. Leave empty to ship without analytics — no script is injected either way unless a visitor also accepts the cookie banner |
+| `CONTACT_WEBHOOK_URL` | — | Where the marketing site's `/api/contact` route POSTs submissions as JSON. Leave empty and submissions are only logged to the `site` container's stdout |
 
 ### Inference `appsettings.json` Keys
 
