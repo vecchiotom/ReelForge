@@ -480,6 +480,38 @@ public class VideoCompileStepExecutorTests
     }
 
     [Fact]
+    public async Task Source_with_no_audio_stream_produces_a_video_only_filtergraph_and_skips_audio_map()
+    {
+        // Real B-roll/stock footage routinely ships with no audio stream at all. Before this fix,
+        // the compile unconditionally built "[0:a]aselect=...[aout]" and unconditionally
+        // "-map [aout]"/"-c:a", which made ffmpeg fail outright with "Stream specifier ':a' ...
+        // matches no streams" on exactly this kind of source.
+        VideoAnalysisArtifact artifact = BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" });
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        IReadOnlyList<string>? capturedArgs = null;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, ffmpegArgsCaptured: args => capturedArgs ??= args,
+            configureMediaProbe: mock => mock
+                .Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new MediaProbeResult(10, 30, 1, 1920, 1080, "h264", null, null)))
+            .ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        capturedArgs.Should().NotBeNull();
+
+        string filterComplex = ExtractFilterComplexValue(capturedArgs!);
+        filterComplex.Should().NotContain("[0:a]", "the source has no audio stream, so \"[0:a]\" would fail ffmpeg outright");
+        filterComplex.Should().NotContain("aselect");
+        filterComplex.Should().NotContain("[aout]", "there is no audio output at all, not even an empty one");
+
+        List<string> argsList = capturedArgs!.ToList();
+        argsList.Should().NotContain("[aout]");
+        argsList.Should().NotContain("-c:a");
+    }
+
+    [Fact]
     public async Task No_overlay_compile_with_many_segments_stays_on_the_inline_filter_complex_path()
     {
         // Item F: EnableGraphics=false (default) is documented as byte-identical to the
@@ -1714,6 +1746,39 @@ public class VideoCompileStepExecutorTests
         filterComplex.Should().Contain("[amus]");
         filterComplex.Should().Contain("amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]");
         filterComplex.Should().Contain("[1:a]atrim=end=", "music is ffmpeg input index 1 here (no asset overlays present)");
+    }
+
+    [Fact]
+    public async Task Source_with_no_audio_stream_and_music_uses_the_music_track_alone_as_output_audio()
+    {
+        // No dialogue anywhere in the compile to duck against, so the music branch's own output
+        // becomes [aout] directly — no [adial], no amix mixing stage — rather than either crashing
+        // ffmpeg (the pre-fix bug) or silently dropping the music the user explicitly configured.
+        VideoAnalysisArtifact artifact = BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" });
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateMusicContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        IReadOnlyList<string>? capturedArgs = null;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, ffmpegArgsCaptured: args => capturedArgs ??= args,
+            configureMediaProbe: mock => mock
+                .Setup(p => p.ProbeAsync(It.Is<string>(path => !path.Contains("music")), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new MediaProbeResult(10, 30, 1, 1920, 1080, "h264", null, null)))
+            .ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        capturedArgs.Should().NotBeNull();
+
+        string filterComplex = ExtractFilterComplexValue(capturedArgs!);
+        filterComplex.Should().NotContain("[0:a]", "the source has no audio stream");
+        filterComplex.Should().NotContain("[adial]", "there is no dialogue branch to duck the music against");
+        filterComplex.Should().NotContain("amix", "amix only makes sense when mixing two real inputs");
+        filterComplex.Should().Contain("[1:a]atrim=end=", "the music branch itself still runs, as ffmpeg input 1");
+        filterComplex.Should().Contain("[aout]", "the music branch's own output becomes the final audio output directly");
+
+        List<string> argsList = capturedArgs!.ToList();
+        argsList.Should().Contain("[aout]", "there IS audio output overall — it just comes from music alone");
+        argsList.Should().Contain("-c:a");
     }
 
     [Fact]

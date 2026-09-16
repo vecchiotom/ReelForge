@@ -883,6 +883,54 @@ public class VideoMultiSourceTests
     }
 
     [Fact]
+    public async Task Multi_source_compile_where_one_clip_has_no_audio_drops_audio_from_the_whole_output()
+    {
+        // concat's own "a=" stream count must be uniform across every concatenated segment, so a
+        // mix of audio-having and audio-less source clips can't produce a per-segment audio
+        // branch for only some of them. The correct, safe degrade is to drop audio for the WHOLE
+        // compiled output — exactly mirroring the single-source path's own per-clip behavior —
+        // rather than crashing ffmpeg on the audio-less clip's "[N:a]" (the pre-fix bug) or
+        // fabricating silence to paper over the gap.
+        VideoAnalysisArtifact artifact = BuildTwoSourceArtifact(out string keyA, out string keyB);
+        string decisionJson = BuildDecisionJson(("s0", "s0", "from clip A"), ("s1", "s1", "from clip B"));
+
+        List<string>? capturedArgs = null;
+        string? capturedFilterComplex = null;
+        StepExecutionContext context = CreateCompileContext(artifact, decisionJson, keyA, keyB, out Mock<IProjectFileWorkspace> workspace);
+        VideoCompileStepExecutor executor = CreateCompileExecutor(
+            workspace,
+            args =>
+            {
+                // Read the scripted filter_complex file INSIDE the callback, while the ffmpeg
+                // mock is invoked — not after ExecuteAsync returns, at which point the executor's
+                // own `finally { scratch?.Dispose(); }` has already recursively deleted the whole
+                // scratch directory (by design, for a real run) and the file would be gone.
+                capturedArgs = args.ToList();
+                int idx = capturedArgs.IndexOf("-filter_complex_script");
+                if (idx >= 0) capturedFilterComplex = File.ReadAllText(capturedArgs[idx + 1]);
+            },
+            configureMediaProbe: mock => mock
+                .Setup(p => p.ProbeAsync(It.Is<string>(path => path.Contains("source-1")), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new MediaProbeResult(10, 30, 1, 1920, 1080, "h264", null, null)));
+
+        StepExecutionResult result = await executor.ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        capturedArgs.Should().NotBeNull();
+        capturedFilterComplex.Should().NotBeNull();
+        string filterComplex = capturedFilterComplex!;
+
+        filterComplex.Should().Contain("[0:v]trim=", "source 0's video still concatenates normally");
+        filterComplex.Should().Contain("[1:v]trim=", "source 1's video still concatenates normally");
+        filterComplex.Should().NotContain("[0:a]atrim=", "audio is dropped for the whole output, not just the audio-less clip");
+        filterComplex.Should().NotContain("[1:a]atrim=");
+        filterComplex.Should().Contain("concat=n=2:v=1:a=0", "the concat filter itself must declare zero audio streams");
+
+        capturedArgs.Should().NotContain("[aout]");
+        capturedArgs.Should().NotContain("-c:a");
+    }
+
+    [Fact]
     public async Task Single_distinct_source_referenced_by_a_multi_source_artifact_uses_the_original_single_input_path()
     {
         // The artifact declares two sources, but the decision only keeps material from one of
@@ -1003,7 +1051,7 @@ public class VideoMultiSourceTests
 
     private static VideoCompileStepExecutor CreateCompileExecutor(
         Mock<IProjectFileWorkspace> workspace, Action<IReadOnlyList<string>>? ffmpegArgsCaptured = null,
-        bool amixNormalizeAvailable = true)
+        bool amixNormalizeAvailable = true, Action<Mock<IMediaProbe>>? configureMediaProbe = null)
     {
         VideoCompileStepExecutor.ResetDrawtextAvailabilityCacheForTests();
         VideoCompileStepExecutor.ResetAmixNormalizeCacheForTests();
@@ -1031,6 +1079,10 @@ public class VideoMultiSourceTests
         mediaProbe
             .Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new MediaProbeResult(10, 30, 1, 1920, 1080, "h264", "aac", 48000));
+        // Applied after the catch-all above, mirroring VideoCompileStepExecutorTests.CreateExecutor's
+        // identical override precedence — a test-supplied probe (e.g. "this one source has no audio
+        // stream") wins over the default success response.
+        configureMediaProbe?.Invoke(mediaProbe);
 
         workspace
             .Setup(w => w.UploadArtifactAsync(

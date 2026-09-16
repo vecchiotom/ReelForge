@@ -517,6 +517,7 @@ public class VideoCompileStepExecutor : IStepExecutor
             // re-deriving it the original way, by walking the VideoAnalyze step's own config. ----
 
             var localPathBySource = new Dictionary<int, string>();
+            var sourceHasAudioByIndex = new Dictionary<int, bool>();
             foreach (int idx in usedSourceIndices)
             {
                 string? key = GetRecordedSourceStorageKey(artifact, idx);
@@ -543,6 +544,14 @@ public class VideoCompileStepExecutor : IStepExecutor
                     $"source-{idx}" + Path.GetExtension(key) switch { "" => ".mp4", var e => e });
                 await _workspace.DownloadStorageKeyToFileAsync(context.Execution.ProjectId, key, localPath, context.CancellationToken);
                 localPathBySource[idx] = localPath;
+
+                // Real stock/B-roll footage routinely ships with no audio stream at all — probing
+                // here (once per distinct source, cheap) is what lets the encode methods below
+                // build a video-only filtergraph instead of crashing ffmpeg on a "[N:a]" that
+                // matches no streams. Mirrors the exact ProbeAsync/AudioCodec-null pattern already
+                // used for the background-music track in ResolveMusicAsync.
+                MediaProbeResult sourceProbe = await _mediaProbe.ProbeAsync(localPath, context.CancellationToken);
+                sourceHasAudioByIndex[idx] = sourceProbe.AudioCodec is not null;
             }
 
             string encodedLocalPath = scratch.GetPath(outputFileName);
@@ -553,19 +562,22 @@ public class VideoCompileStepExecutor : IStepExecutor
             if (isMultiSource)
             {
                 // Guaranteed Mode=Reencode by the MULTI_SOURCE_REQUIRES_REENCODE check above.
+                bool allSourcesHaveAudio = usedSourceIndices.All(i => sourceHasAudioByIndex[i]);
                 encodeResult = await EncodeReencodeMultiSourceAsync(
                     scratch, localPathBySource, encodedLocalPath, resolvedSpans, config.VideoCodec, config.AudioCodec, config.Preset, crf,
                     canonicalMedia, timeout, context.CancellationToken,
                     overlays: resolvedOverlays, graphicsConfig: resolvedOverlays.Count > 0 ? config : null,
                     progressContext: context, totalOutputSeconds: totalOutputSeconds,
-                    music: resolvedMusic);
+                    music: resolvedMusic, allSourcesHaveAudio: allSourcesHaveAudio);
             }
             else
             {
                 // Exactly one distinct source referenced — the ORIGINAL single-input code path,
-                // completely unchanged, so a single-source (or single-clip-in-practice) compile's
-                // ffmpeg argv/behavior stays byte-identical to before this addition.
+                // completely unchanged when the source has audio, so a single-source (or
+                // single-clip-in-practice) compile's ffmpeg argv/behavior stays byte-identical to
+                // before this addition.
                 string localVideoPath = localPathBySource[usedSourceIndices[0]];
+                bool sourceHasAudio = sourceHasAudioByIndex[usedSourceIndices[0]];
                 encodeResult = config.Mode == VideoCompileMode.Reencode
                     ? await EncodeReencodeAsync(
                         scratch, localVideoPath, encodedLocalPath, resolvedSpans, config.VideoCodec, config.AudioCodec, config.Preset, crf,
@@ -573,7 +585,7 @@ public class VideoCompileStepExecutor : IStepExecutor
                         overlays: resolvedOverlays, probedWidth: canonicalMedia.Width, probedHeight: canonicalMedia.Height,
                         graphicsConfig: resolvedOverlays.Count > 0 ? config : null,
                         progressContext: context, totalOutputSeconds: totalOutputSeconds,
-                        music: resolvedMusic)
+                        music: resolvedMusic, sourceHasAudio: sourceHasAudio)
                     : await EncodeStreamCopyAsync(scratch, localVideoPath, encodedLocalPath, resolvedSpans, timeout, context.CancellationToken);
             }
 
@@ -1888,7 +1900,8 @@ public class VideoCompileStepExecutor : IStepExecutor
         VideoCompileStepConfig? graphicsConfig = null,
         StepExecutionContext? progressContext = null,
         double totalOutputSeconds = 0,
-        ResolvedMusic? music = null)
+        ResolvedMusic? music = null,
+        bool sourceHasAudio = true)
     {
         // Half-open [SnappedStart, SnappedEnd) per span, matching ToStartFrame(floor)/ToEndFrame
         // (ceiling)'s own semantics (EndFrame is the first EXCLUDED frame — see MapSourceToOutputSec's
@@ -1923,15 +1936,26 @@ public class VideoCompileStepExecutor : IStepExecutor
         // music is present, mirroring the [vcut]/[vtxt]/[vout] video-label-chaining convention
         // Phase 3 already established. When music is null this whole audio branch is
         // byte-identical to the pre-music compile path.
+        //
+        // sourceHasAudio=false (the source clip has no audio stream at all — real, not
+        // hypothetical: free stock B-roll routinely ships video-only) means "[0:a]" would fail
+        // ffmpeg outright ("Stream specifier ':a' ... matches no streams"), so that whole branch
+        // is skipped. With no music either, audioPart is null and the output has no audio track
+        // at all (map/-c:a below become conditional on this). With music, there is nothing to
+        // duck against, so the music branch's own output becomes [aout] directly — it is the
+        // entire output audio, not mixed with anything.
         string audioCutLabel = music is not null ? "[adial]" : "[aout]";
         string musicAwareAudioFilter = music is not null
             ? $"{audioFilter},aformat=sample_rates=48000:channel_layouts=stereo"
             : audioFilter;
-        string audioPart = music is null
-            ? $"[0:a]{audioFilter}[aout]"
-            : $"[0:a]{musicAwareAudioFilter}{audioCutLabel};" +
-              MusicMixFilterBuilder.BuildMusicBranch(musicInputIndex, music) + ";" +
-              MusicMixFilterBuilder.BuildMixStage(audioCutLabel);
+        string? audioPart = !sourceHasAudio
+            ? (music is null ? null : MusicMixFilterBuilder.BuildMusicBranch(musicInputIndex, music, outLabel: "[aout]"))
+            : (music is null
+                ? $"[0:a]{audioFilter}[aout]"
+                : $"[0:a]{musicAwareAudioFilter}{audioCutLabel};" +
+                  MusicMixFilterBuilder.BuildMusicBranch(musicInputIndex, music) + ";" +
+                  MusicMixFilterBuilder.BuildMixStage(audioCutLabel));
+        bool hasAudioOutput = audioPart is not null;
 
         string filterComplex;
         if ((textOverlays.Count > 0 || assetOverlays.Count > 0) && graphicsConfig is not null)
@@ -1982,11 +2006,15 @@ public class VideoCompileStepExecutor : IStepExecutor
                     boxWidthPct: graphicsConfig.OverlayBoxWidthPct));
             }
 
-            filterComplex = $"[0:v]{videoFilter}[vcut];{audioPart};{string.Join(";", chainParts)}";
+            filterComplex = audioPart is not null
+                ? $"[0:v]{videoFilter}[vcut];{audioPart};{string.Join(";", chainParts)}"
+                : $"[0:v]{videoFilter}[vcut];{string.Join(";", chainParts)}";
         }
         else
         {
-            filterComplex = $"[0:v]{videoFilter}[vout];{audioPart}";
+            filterComplex = audioPart is not null
+                ? $"[0:v]{videoFilter}[vout];{audioPart}"
+                : $"[0:v]{videoFilter}[vout]";
         }
 
         // Real encode progress (best-effort — see BuildFfmpegProgressLineHandler): ffmpeg's
@@ -2061,11 +2089,17 @@ public class VideoCompileStepExecutor : IStepExecutor
         }
 
         args.Add("-map"); args.Add("[vout]");
-        args.Add("-map"); args.Add("[aout]");
+        if (hasAudioOutput)
+        {
+            args.Add("-map"); args.Add("[aout]");
+        }
         args.Add("-c:v"); args.Add(videoCodec);
         args.Add("-crf"); args.Add(FfmpegArgvFormat.Number(crf));
         args.Add("-preset"); args.Add(preset);
-        args.Add("-c:a"); args.Add(audioCodec);
+        if (hasAudioOutput)
+        {
+            args.Add("-c:a"); args.Add(audioCodec);
+        }
         args.Add(outputPath);
 
         return await _videoToolRunner.RunFfmpegAsync(args, timeout, ct, progressLineHandler);
@@ -2102,7 +2136,8 @@ public class VideoCompileStepExecutor : IStepExecutor
         VideoCompileStepConfig? graphicsConfig = null,
         StepExecutionContext? progressContext = null,
         double totalOutputSeconds = 0,
-        ResolvedMusic? music = null)
+        ResolvedMusic? music = null,
+        bool allSourcesHaveAudio = true)
     {
         // Deterministic ffmpeg -i order: sorted distinct source indices actually referenced. Input
         // 0 is not necessarily "the" primary source here (that's canonicalMedia's own index,
@@ -2140,12 +2175,26 @@ public class VideoCompileStepExecutor : IStepExecutor
                 $"scale={cw}:{ch}:force_original_aspect_ratio=decrease,pad={cw}:{ch}:(ow-iw)/2:(oh-ih)/2:color=black," +
                 $"setsar=1,fps={cfpsNum}/{cfpsDen}[v{i}]");
 
-            filterParts.Add(
-                $"[{ffInputIdx}:a]atrim=start={ss}:end={ee},asetpts=PTS-STARTPTS," +
-                "aformat=sample_rates=48000:channel_layouts=stereo" +
-                $"[a{i}]");
+            // allSourcesHaveAudio=false: at least one referenced clip has no audio stream at all
+            // (real B-roll routinely ships video-only), which would make "[N:a]" fail ffmpeg
+            // outright for that input. concat's own "a=" stream count must be uniform across every
+            // concatenated segment, so mixing audio-having and audio-less segments in one concat
+            // isn't an option here — the simplest correct behavior is to drop audio for the WHOLE
+            // compiled output whenever any one source lacks it, exactly mirroring the single-source
+            // path's per-clip fallback rather than attempting to synthesize matching silence.
+            if (allSourcesHaveAudio)
+            {
+                filterParts.Add(
+                    $"[{ffInputIdx}:a]atrim=start={ss}:end={ee},asetpts=PTS-STARTPTS," +
+                    "aformat=sample_rates=48000:channel_layouts=stereo" +
+                    $"[a{i}]");
 
-            concatInputLabels.Append($"[v{i}][a{i}]");
+                concatInputLabels.Append($"[v{i}][a{i}]");
+            }
+            else
+            {
+                concatInputLabels.Append($"[v{i}]");
+            }
         }
 
         List<ResolvedOverlay> textOverlays = overlays?.Where(o => !o.IsAssetOverlay).ToList() ?? [];
@@ -2162,8 +2211,10 @@ public class VideoCompileStepExecutor : IStepExecutor
         // dialogue side — every per-span atrim branch above already ends in
         // aformat=sample_rates=48000:channel_layouts=stereo, so the concat output already matches
         // the music branch's own format by construction.
-        string audioConcatLabel = music is not null ? "[adial]" : "[aout]";
-        filterParts.Add($"{concatInputLabels}concat=n={spans.Count}:v=1:a=1{videoConcatLabel}{audioConcatLabel}");
+        string? audioConcatLabel = allSourcesHaveAudio ? (music is not null ? "[adial]" : "[aout]") : null;
+        filterParts.Add(allSourcesHaveAudio
+            ? $"{concatInputLabels}concat=n={spans.Count}:v=1:a=1{videoConcatLabel}{audioConcatLabel}"
+            : $"{concatInputLabels}concat=n={spans.Count}:v=1:a=0{videoConcatLabel}");
 
         if (hasOverlays && graphicsConfig is not null)
         {
@@ -2217,10 +2268,20 @@ public class VideoCompileStepExecutor : IStepExecutor
             // offset here being orderedSourceIndices.Count (not the single-source path's fixed
             // "+1", since multiple sources may be present).
             int musicInputIndex = orderedSourceIndices.Count + assetOverlays.Count;
-            filterParts.Add(MusicMixFilterBuilder.BuildMusicBranch(musicInputIndex, music));
-            filterParts.Add(MusicMixFilterBuilder.BuildMixStage(audioConcatLabel));
+            if (allSourcesHaveAudio)
+            {
+                filterParts.Add(MusicMixFilterBuilder.BuildMusicBranch(musicInputIndex, music));
+                filterParts.Add(MusicMixFilterBuilder.BuildMixStage(audioConcatLabel!));
+            }
+            else
+            {
+                // No dialogue anywhere in this compile to duck against — the music branch's own
+                // output becomes [aout] directly, exactly as the single-source path does.
+                filterParts.Add(MusicMixFilterBuilder.BuildMusicBranch(musicInputIndex, music, outLabel: "[aout]"));
+            }
         }
 
+        bool hasAudioOutput = allSourcesHaveAudio || music is not null;
         string filterComplex = string.Join(";", filterParts);
 
         Action<string>? progressLineHandler = progressContext is not null && totalOutputSeconds > 0
@@ -2273,11 +2334,17 @@ public class VideoCompileStepExecutor : IStepExecutor
         args.Add(scriptPath);
 
         args.Add("-map"); args.Add("[vout]");
-        args.Add("-map"); args.Add("[aout]");
+        if (hasAudioOutput)
+        {
+            args.Add("-map"); args.Add("[aout]");
+        }
         args.Add("-c:v"); args.Add(videoCodec);
         args.Add("-crf"); args.Add(FfmpegArgvFormat.Number(crf));
         args.Add("-preset"); args.Add(preset);
-        args.Add("-c:a"); args.Add(audioCodec);
+        if (hasAudioOutput)
+        {
+            args.Add("-c:a"); args.Add(audioCodec);
+        }
         args.Add(outputPath);
 
         return await _videoToolRunner.RunFfmpegAsync(args, timeout, ct, progressLineHandler);

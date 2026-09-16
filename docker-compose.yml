@@ -86,6 +86,19 @@ services:
     networks:
       - reelforge
 
+  whisper:
+    image: ghcr.io/speaches-ai/speaches:latest-cpu
+    restart: unless-stopped
+    environment:
+      WHISPER__INFERENCE_DEVICE: cpu
+      WHISPER__COMPUTE_TYPE: int8
+    ports:
+      - "127.0.0.1:${WHISPER_PORT:-9002}:8000"
+    volumes:
+      - whisper-hf-cache:/home/ubuntu/.cache/huggingface/hub
+    networks:
+      - reelforge
+
   qdrant:
     image: qdrant/qdrant:latest
     restart: unless-stopped
@@ -484,6 +497,7 @@ volumes:
   dpkeys:
   videoscratch:
   caddy_certs:
+  whisper-hf-cache:
 
 networks:
   reelforge:
