@@ -20,6 +20,19 @@ public interface IWorkflowEventPublisher
         StepExecutionResult stepExecutionResult,
         CancellationToken ct);
 
+    /// <summary>
+    /// Publishes an ephemeral <see cref="Shared.IntegrationEvents.WorkflowStepProgress"/> signal
+    /// for a step that is still running. Best-effort only — never persisted, never awaited by the
+    /// caller's own correctness (see the event's doc comment).
+    /// </summary>
+    Task PublishStepProgressAsync(
+        WorkflowExecution execution,
+        WorkflowStep step,
+        WorkflowStepResult stepResult,
+        string stage,
+        int? percentComplete,
+        CancellationToken ct);
+
     Task PublishStepDiagnosticsAsync(
         WorkflowExecution execution,
         WorkflowStep step,

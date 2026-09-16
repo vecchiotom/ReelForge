@@ -410,6 +410,124 @@ public class VideoAnalyzeStepExecutorTests
     }
 
     // =======================================================================
+    // Background music (see docs/video-editing.md "Background music")
+    // =======================================================================
+
+    [Fact]
+    public async Task OfferMusicTracks_false_produces_no_musicTracks_key_byte_identical_to_before_this_addition()
+    {
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out _, out _,
+            configOverride: cfg => cfg with { OfferMusicTracks = false });
+
+        SetupBasicProbeAndDetectors(probe, silence, shotDetector);
+
+        // ListFilesAsync must never even be called when OfferMusicTracks=false.
+        workspace
+            .Setup(w => w.ListFilesAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("ListFilesAsync should not be called when OfferMusicTracks=false"));
+
+        StepExecutionResult result = await CreateExecutor(workspace, probe, silence, shotDetector, out _, out _).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        doc.RootElement.GetProperty("view").TryGetProperty("musicTracks", out _).Should().BeFalse();
+        doc.RootElement.GetProperty("meta").GetProperty("offeredMusicTrackCount").GetInt32().Should().Be(0);
+    }
+
+    [Fact]
+    public async Task OfferMusicTracks_true_lists_audio_files_as_m_ids_in_deterministic_name_order_excluding_non_audio()
+    {
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out _, out _,
+            configOverride: cfg => cfg with { OfferMusicTracks = true, MaxMusicTracks = 20 });
+
+        SetupBasicProbeAndDetectors(probe, silence, shotDetector);
+
+        Guid zTrack = Guid.NewGuid(), aTrack = Guid.NewGuid(), videoFile = Guid.NewGuid();
+        workspace
+            .Setup(w => w.ListFilesAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ProjectWorkspaceFile>
+            {
+                new(zTrack, ProjectId, "zebra.mp3", null, "userFiles", "k1", "audio/mpeg", 100, DateTime.UtcNow, null),
+                new(aTrack, ProjectId, "ambient.wav", null, "userFiles", "k2", "audio/wav", 200, DateTime.UtcNow, null),
+                new(videoFile, ProjectId, "clip.mp4", null, "userFiles", "k3", "video/mp4", 300, DateTime.UtcNow, null)
+            });
+
+        StepExecutionResult result = await CreateExecutor(workspace, probe, silence, shotDetector, out _, out _).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        JsonElement musicTracks = doc.RootElement.GetProperty("view").GetProperty("musicTracks");
+        musicTracks.GetArrayLength().Should().Be(2, "only the two audio/* files, never the video/mp4 one");
+        musicTracks[0].GetProperty("id").GetString().Should().Be("m0");
+        musicTracks[0].GetProperty("name").GetString().Should().Be("ambient.wav", "deterministic ordinal name order — 'ambient' sorts before 'zebra'");
+        musicTracks[1].GetProperty("id").GetString().Should().Be("m1");
+        musicTracks[1].GetProperty("name").GetString().Should().Be("zebra.mp3");
+        doc.RootElement.GetProperty("meta").GetProperty("offeredMusicTrackCount").GetInt32().Should().Be(2);
+    }
+
+    [Fact]
+    public async Task OfferMusicTracks_true_ListFilesAsync_throwing_degrades_to_zero_candidates_not_a_failed_step()
+    {
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out _, out _,
+            configOverride: cfg => cfg with { OfferMusicTracks = true });
+
+        SetupBasicProbeAndDetectors(probe, silence, shotDetector);
+
+        workspace
+            .Setup(w => w.ListFilesAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new IOException("S3 unavailable"));
+
+        StepExecutionResult result = await CreateExecutor(workspace, probe, silence, shotDetector, out _, out _).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, "a music-candidate listing failure must degrade, never fail the whole step");
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        doc.RootElement.GetProperty("view").TryGetProperty("musicTracks", out _).Should().BeFalse();
+        doc.RootElement.GetProperty("meta").GetProperty("offeredMusicTrackCount").GetInt32().Should().Be(0);
+    }
+
+    [Fact]
+    public async Task OfferMusicTracks_true_caps_at_MaxMusicTracks()
+    {
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out _, out _,
+            configOverride: cfg => cfg with { OfferMusicTracks = true, MaxMusicTracks = 2 });
+
+        SetupBasicProbeAndDetectors(probe, silence, shotDetector);
+
+        workspace
+            .Setup(w => w.ListFilesAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Enumerable.Range(0, 5)
+                .Select(i => new ProjectWorkspaceFile(
+                    Guid.NewGuid(), ProjectId, $"track{i}.mp3", null, "userFiles", $"k{i}", "audio/mpeg", 100, DateTime.UtcNow, null))
+                .ToList());
+
+        StepExecutionResult result = await CreateExecutor(workspace, probe, silence, shotDetector, out _, out _).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        doc.RootElement.GetProperty("view").GetProperty("musicTracks").GetArrayLength().Should().Be(2);
+    }
+
+    // =======================================================================
     // Test infrastructure
     // =======================================================================
 
@@ -449,7 +567,8 @@ public class VideoAnalyzeStepExecutorTests
         Mock<IAudioExtractor>? audioExtractor = null,
         Mock<IFrameGridSampler>? frameGridSampler = null,
         Mock<IKeyframeExtractor>? keyframeExtractor = null,
-        Mock<IShotCaptioner>? shotCaptioner = null)
+        Mock<IShotCaptioner>? shotCaptioner = null,
+        Mock<ISharpnessSampler>? sharpnessSampler = null)
     {
         // Only install the default 100-byte wav behaviour when the caller did not supply its own
         // audioExtractor mock — installing it unconditionally would add a setup AFTER a caller's
@@ -481,6 +600,10 @@ public class VideoAnalyzeStepExecutorTests
         keyframeExtractor ??= new Mock<IKeyframeExtractor>();
         shotCaptioner ??= new Mock<IShotCaptioner>();
 
+        // Phase 4: left unconfigured by default too — DetectSharpness defaults false, so most
+        // tests never call this mock at all.
+        sharpnessSampler ??= new Mock<ISharpnessSampler>();
+
         string tempScratchRoot = Path.Combine(Path.GetTempPath(), "video-analyze-tests", Guid.NewGuid().ToString("N"));
         var options = Options.Create(new VideoEditingOptions
         {
@@ -506,6 +629,7 @@ public class VideoAnalyzeStepExecutorTests
             audioExtractor.Object,
             frameGridSampler.Object,
             keyframeExtractor.Object,
+            sharpnessSampler.Object,
             shotCaptioner.Object,
             workspace.Object,
             transcriptionFactory.Object,
@@ -611,6 +735,39 @@ public class VideoAnalyzeStepExecutorTests
         }
 
         return new FrameGridResult(pixels, gridWidth, gridHeight, fps, frameCount);
+    }
+
+    /// <summary>
+    /// Builds a grid buffer as a sequence of uniform-color segments (one per shot), so each shot's
+    /// D1-D3 color-temperature/tone/saturation classes are controllable and deterministic — unlike
+    /// <see cref="BuildSyntheticGrid"/>'s grayscale content, which can never produce a non-Neutral
+    /// ColorTemperatureClass.
+    /// </summary>
+    private static FrameGridResult BuildColoredGrid(
+        int gridWidth, int gridHeight, double fps, params (int FrameCount, byte R, byte G, byte B)[] segments)
+    {
+        int frameSize = gridWidth * gridHeight * 3;
+        int totalFrames = segments.Sum(s => s.FrameCount);
+        var pixels = new byte[totalFrames * frameSize];
+
+        int frameIndex = 0;
+        foreach ((int frameCount, byte r, byte g, byte b) in segments)
+        {
+            for (int f = 0; f < frameCount; f++)
+            {
+                for (int p = 0; p < gridWidth * gridHeight; p++)
+                {
+                    int idx = (frameIndex * frameSize) + p * 3;
+                    pixels[idx] = r;
+                    pixels[idx + 1] = g;
+                    pixels[idx + 2] = b;
+                }
+
+                frameIndex++;
+            }
+        }
+
+        return new FrameGridResult(pixels, gridWidth, gridHeight, fps, totalFrames);
     }
 
     [Fact]
@@ -962,6 +1119,38 @@ public class VideoAnalyzeStepExecutorTests
         return ms.ToArray();
     }
 
+    /// <summary>Same shape as <see cref="BuildSyntheticWav"/>, but a caller-chosen duration — for tests whose shots span more than 1 second.</summary>
+    private static byte[] BuildToneWav(int seconds)
+    {
+        const int sampleRate = 16000;
+        int sampleCount = sampleRate * seconds;
+        int dataBytes = sampleCount * 2;
+
+        using var ms = new MemoryStream();
+        using var w = new BinaryWriter(ms);
+        w.Write("RIFF"u8.ToArray());
+        w.Write(36 + dataBytes);
+        w.Write("WAVE"u8.ToArray());
+        w.Write("fmt "u8.ToArray());
+        w.Write(16);
+        w.Write((short)1); // PCM
+        w.Write((short)1); // mono
+        w.Write(sampleRate);
+        w.Write(sampleRate * 2); // byte rate
+        w.Write((short)2); // block align
+        w.Write((short)16); // bits per sample
+        w.Write("data"u8.ToArray());
+        w.Write(dataBytes);
+
+        for (int i = 0; i < sampleCount; i++)
+        {
+            short sample = (short)(5000 * Math.Sin(2 * Math.PI * 440 * i / sampleRate));
+            w.Write(sample);
+        }
+
+        return ms.ToArray();
+    }
+
     // =======================================================================
     // Phase 2: vision shot captioning
     // =======================================================================
@@ -1171,7 +1360,8 @@ public class VideoAnalyzeStepExecutorTests
             .Setup(c => c.CaptionAsync(
                 It.IsAny<ResolvedInferenceProvider>(), It.IsAny<ShotCaptionRequest>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((ResolvedInferenceProvider _, ShotCaptionRequest r, int _, CancellationToken _) =>
-                new VideoShotCaption(r.ShotId, "a caption", [], "action", "setting", "mood", "Medium", "Eye level", [], []));
+                new VideoShotCaption(r.ShotId, "a caption", [], "action", "setting", "mood", "Medium", "Eye level", [], [],
+                    "Unknown", "flat", "neutral", "centered", []));
         // Registered AFTER the general setup above so it wins the match for s1 specifically
         // (Moq resolves overlapping setups in most-recently-defined order) — every attempt for
         // s1 fails, exhausting CaptionWithRetryAsync's retries.
@@ -1245,7 +1435,8 @@ public class VideoAnalyzeStepExecutorTests
             .Setup(c => c.CaptionAsync(
                 It.IsAny<ResolvedInferenceProvider>(), It.IsAny<ShotCaptionRequest>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new VideoShotCaption(
-                "s999-not-the-real-shot", "a caption", [], "action", "setting", "mood", "Medium", "Eye level", [], []));
+                "s999-not-the-real-shot", "a caption", [], "action", "setting", "mood", "Medium", "Eye level", [], [],
+                "Unknown", "flat", "neutral", "centered", []));
 
         VideoAnalyzeStepExecutor executor = CreateExecutor(
             workspace, probe, silence, shotDetector, transcriptionFactory, providerResolver,
@@ -1270,5 +1461,649 @@ public class VideoAnalyzeStepExecutorTests
         shot0.GetProperty("id").GetString().Should().Be("s0");
         shot0.GetProperty("caption").GetProperty("shotId").GetString().Should().Be(
             "s0", "the executor must bind the caption to the shot it actually requested, never a model-returned id");
+    }
+
+    // =======================================================================
+    // Phase 4 §7: vision-phase changes (prompt priming, contact sheet, PersistKeyframes)
+    // =======================================================================
+
+    private async Task<(StepExecutionResult Result, Mock<IProjectFileWorkspace> Workspace, Mock<IKeyframeExtractor> KeyframeExtractor, List<ShotCaptionRequest> Requests)>
+        RunVisionCaptionTestAsync(
+            Func<VideoAnalyzeStepConfig, VideoAnalyzeStepConfig> extraOverride,
+            FrameGridResult? grid = null)
+    {
+        var shots = new[] { (0.0, 2.0) };
+
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out Mock<ITranscriptionClientFactory> transcriptionFactory,
+            out Mock<IInferenceProviderResolver> providerResolver,
+            configOverride: cfg => extraOverride(cfg with
+            {
+                Vision = VideoVisionMode.Required, DetectSilence = false, Transcription = VideoTranscriptionMode.Off,
+                AnalyzeAudioLevels = false, DetectNearDuplicates = false,
+                MaxCaptionedShots = 10, MinCaptionShotSeconds = 0.0
+            }));
+
+        probe.Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MediaProbeResult(2, 30, 1, 1920, 1080, "h264", "aac", 48000));
+        shotDetector
+            .Setup(s => s.DetectShotsAsync(It.IsAny<string>(), It.IsAny<double>(), It.IsAny<double>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(shots);
+
+        ResolvedInferenceProvider provider = new(
+            Guid.NewGuid(), "vision-test", InferenceProviderKind.OpenAICompatible, "http://localhost:9999", "vision-1", "", 30);
+        providerResolver
+            .Setup(r => r.ResolveVisionAsync(It.IsAny<Guid?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(provider);
+
+        var requests = new List<ShotCaptionRequest>();
+        var shotCaptioner = new Mock<IShotCaptioner>();
+        shotCaptioner
+            .Setup(c => c.CaptionAsync(It.IsAny<ResolvedInferenceProvider>(), It.IsAny<ShotCaptionRequest>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ResolvedInferenceProvider _, ShotCaptionRequest r, int _, CancellationToken _) =>
+            {
+                requests.Add(r);
+                return new VideoShotCaption(
+                    r.ShotId, "a caption", [], "action", "setting", "mood", "Medium", "Eye level", [], ["soft focus"],
+                    "Unknown", "flat", "neutral", "centered", ["soft focus"]);
+            });
+
+        var keyframeExtractor = new Mock<IKeyframeExtractor>();
+
+        Mock<IFrameGridSampler>? frameGridSampler = null;
+        if (grid is not null)
+        {
+            frameGridSampler = new Mock<IFrameGridSampler>();
+            frameGridSampler
+                .Setup(g => g.SampleAsync(It.IsAny<string>(), It.IsAny<VideoScratchSpace>(), It.IsAny<double>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<double>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(grid);
+        }
+
+        VideoAnalyzeStepExecutor executor = CreateExecutor(
+            workspace, probe, silence, shotDetector, transcriptionFactory, providerResolver,
+            audioExtractor: null, frameGridSampler: frameGridSampler, keyframeExtractor: keyframeExtractor, shotCaptioner: shotCaptioner);
+
+        StepExecutionResult result = await executor.ExecuteAsync(context);
+        return (result, workspace, keyframeExtractor, requests);
+    }
+
+    [Fact]
+    public async Task PersistKeyframes_true_uploads_one_jpeg_per_captioned_shot_under_the_video_analysis_prefix()
+    {
+        (StepExecutionResult result, Mock<IProjectFileWorkspace> workspace, _, _) = await RunVisionCaptionTestAsync(
+            cfg => cfg with { AnalyzeVisuals = false, PersistKeyframes = true });
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+
+        workspace.Invocations
+            .Where(i => i.Method.Name == nameof(IProjectFileWorkspace.UploadArtifactAsync))
+            .Select(i => (string)i.Arguments[2])
+            .Should().Contain(fileName => fileName.Contains("video-analysis/") && fileName.Contains("-keyframes/") && fileName.EndsWith("s0.jpg"));
+    }
+
+    [Fact]
+    public async Task PersistKeyframes_upload_failure_does_not_lose_the_caption()
+    {
+        (StepExecutionResult result, Mock<IProjectFileWorkspace> workspace, _, _) = await RunVisionCaptionTestAsync(
+            cfg => cfg with { AnalyzeVisuals = false, PersistKeyframes = true });
+
+        // The default `RunVisionCaptionTestAsync` workspace mock already succeeds every
+        // UploadArtifactAsync call; re-run with a failing one to prove the caption still lands.
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> failingWorkspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out Mock<ITranscriptionClientFactory> transcriptionFactory,
+            out Mock<IInferenceProviderResolver> providerResolver,
+            configOverride: cfg => cfg with
+            {
+                Vision = VideoVisionMode.Required, DetectSilence = false, Transcription = VideoTranscriptionMode.Off,
+                AnalyzeVisuals = false, AnalyzeAudioLevels = false, DetectNearDuplicates = false,
+                MaxCaptionedShots = 10, MinCaptionShotSeconds = 0.0, PersistKeyframes = true
+            });
+
+        probe.Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MediaProbeResult(2, 30, 1, 1920, 1080, "h264", "aac", 48000));
+        shotDetector
+            .Setup(s => s.DetectShotsAsync(It.IsAny<string>(), It.IsAny<double>(), It.IsAny<double>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([(0.0, 2.0)]);
+
+        ResolvedInferenceProvider provider = new(
+            Guid.NewGuid(), "vision-test", InferenceProviderKind.OpenAICompatible, "http://localhost:9999", "vision-1", "", 30);
+        providerResolver
+            .Setup(r => r.ResolveVisionAsync(It.IsAny<Guid?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(provider);
+
+        var shotCaptioner = new Mock<IShotCaptioner>();
+        shotCaptioner
+            .Setup(c => c.CaptionAsync(It.IsAny<ResolvedInferenceProvider>(), It.IsAny<ShotCaptionRequest>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ResolvedInferenceProvider _, ShotCaptionRequest r, int _, CancellationToken _) => new VideoShotCaption(
+                r.ShotId, "a caption", [], "action", "setting", "mood", "Medium", "Eye level", [], [],
+                "Unknown", "flat", "neutral", "centered", []));
+
+        VideoAnalyzeStepExecutor failingExecutor = CreateExecutor(
+            failingWorkspace, probe, silence, shotDetector, transcriptionFactory, providerResolver,
+            audioExtractor: null, frameGridSampler: null, keyframeExtractor: null, shotCaptioner: shotCaptioner);
+
+        // Override AFTER CreateExecutor so this wins: the artifact-upload path itself must still
+        // succeed (or the step fails for an unrelated reason) — only simulate the keyframe-persist
+        // upload failing by throwing for any path containing "-keyframes/".
+        failingWorkspace
+            .Setup(w => w.UploadArtifactAsync(
+                It.IsAny<Guid>(), It.IsAny<string>(), It.Is<string>(f => f.Contains("-keyframes/")), It.IsAny<string>(),
+                It.IsAny<CancellationToken>(), It.IsAny<string>()))
+            .ThrowsAsync(new InvalidOperationException("upload boom"));
+
+        StepExecutionResult failingResult = await failingExecutor.ExecuteAsync(context);
+
+        failingResult.Status.Should().Be(StepStatus.Completed, because: failingResult.ErrorDetails ?? failingResult.Output);
+        using JsonDocument doc = JsonDocument.Parse(failingResult.Output);
+        doc.RootElement.GetProperty("view").GetProperty("shots")[0].TryGetProperty("c", out _).Should().BeTrue(
+            "a keyframe-persist failure must never cost the caption itself");
+    }
+
+    [Fact]
+    public async Task KeyframesPerShot_greater_than_one_uses_the_contact_sheet_extractor()
+    {
+        (StepExecutionResult result, _, Mock<IKeyframeExtractor> keyframeExtractor, _) = await RunVisionCaptionTestAsync(
+            cfg => cfg with { AnalyzeVisuals = false, KeyframesPerShot = 3 });
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        keyframeExtractor.Invocations.Count(i => i.Method.Name == nameof(IKeyframeExtractor.ExtractContactSheetAsync)).Should().Be(1);
+        keyframeExtractor.Invocations.Count(i => i.Method.Name == nameof(IKeyframeExtractor.ExtractKeyframeAsync)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task KeyframesPerShot_equal_to_one_uses_the_single_frame_extractor()
+    {
+        (StepExecutionResult result, _, Mock<IKeyframeExtractor> keyframeExtractor, _) = await RunVisionCaptionTestAsync(
+            cfg => cfg with { AnalyzeVisuals = false, KeyframesPerShot = 1 });
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        keyframeExtractor.Invocations.Count(i => i.Method.Name == nameof(IKeyframeExtractor.ExtractKeyframeAsync)).Should().Be(1);
+        keyframeExtractor.Invocations.Count(i => i.Method.Name == nameof(IKeyframeExtractor.ExtractContactSheetAsync)).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Vision_prompt_is_primed_with_the_measured_tone_words_when_visual_analysis_succeeded()
+    {
+        FrameGridResult grid = BuildColoredGrid(4, 4, fps: 2.0, (4, 200, 120, 50));
+
+        (StepExecutionResult result, _, _, List<ShotCaptionRequest> requests) = await RunVisionCaptionTestAsync(
+            cfg => cfg with { AnalyzeVisuals = true }, grid);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        requests.Should().ContainSingle();
+        requests[0].MeasuredContext.Should().NotBeNull();
+        requests[0].MeasuredContext.Should().Contain("color temperature Warm");
+    }
+
+    [Fact]
+    public async Task MeasuredContext_is_null_when_visual_analysis_is_off_or_degraded()
+    {
+        (StepExecutionResult result, _, _, List<ShotCaptionRequest> requests) = await RunVisionCaptionTestAsync(
+            cfg => cfg with { AnalyzeVisuals = false });
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        requests.Should().ContainSingle();
+        requests[0].MeasuredContext.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Caption_technicalIssues_reach_the_view_at_Compact_detail()
+    {
+        (StepExecutionResult result, _, _, _) = await RunVisionCaptionTestAsync(
+            cfg => cfg with { AnalyzeVisuals = false, VisualDetail = VideoVisualDetail.Compact });
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        JsonElement caption = doc.RootElement.GetProperty("view").GetProperty("shots")[0].GetProperty("c");
+        caption.GetProperty("issues").EnumerateArray().Select(e => e.GetString()).Should().Contain("soft focus");
+    }
+
+    // =======================================================================
+    // Phase 4 §6: view — look groups, D1-D3 grading fields, char, ActiveCrop
+    // =======================================================================
+
+    private const int LookGridSize = 4;
+    private static readonly (double, double)[] ThreeOneSecondShots = { (0.0, 1.0), (1.0, 2.0), (2.0, 3.0) };
+
+    /// <summary>Shots s0/s1 share a warm look; s2 is a clearly different (cool) look and stays a singleton.</summary>
+    private static FrameGridResult TwoWarmOneCoolGrid() => BuildColoredGrid(
+        LookGridSize, LookGridSize, fps: 2.0,
+        (2, 200, 120, 50), (2, 195, 118, 55), (2, 50, 120, 200));
+
+    /// <summary>All three shots share one uniform warm look.</summary>
+    private static FrameGridResult ThreeUniformWarmGrid() => BuildColoredGrid(
+        LookGridSize, LookGridSize, fps: 2.0,
+        (2, 200, 120, 50), (2, 198, 121, 52), (2, 202, 119, 48));
+
+    private async Task<JsonDocument> RunLookTestAsync(
+        FrameGridResult grid, Func<VideoAnalyzeStepConfig, VideoAnalyzeStepConfig>? extraOverride = null)
+    {
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out _, out _,
+            configOverride: cfg =>
+            {
+                VideoAnalyzeStepConfig c = cfg with
+                {
+                    DetectSilence = false, Transcription = VideoTranscriptionMode.Off,
+                    AnalyzeVisuals = true, AnalyzeAudioLevels = true, DetectNearDuplicates = false,
+                    VisualDetail = VideoVisualDetail.Full, MaxOutputChars = 24_000
+                };
+                return extraOverride is not null ? extraOverride(c) : c;
+            });
+
+        probe.Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MediaProbeResult(3, 30, 1, 1920, 1080, "h264", "aac", 48000));
+        shotDetector
+            .Setup(s => s.DetectShotsAsync(It.IsAny<string>(), It.IsAny<double>(), It.IsAny<double>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ThreeOneSecondShots);
+
+        var frameGridSampler = new Mock<IFrameGridSampler>();
+        frameGridSampler
+            .Setup(g => g.SampleAsync(
+                It.IsAny<string>(), It.IsAny<VideoScratchSpace>(), It.IsAny<double>(), It.IsAny<int>(), It.IsAny<int>(),
+                It.IsAny<double>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(grid);
+
+        // A real, parseable WAV covering the FULL 3s shot timeline (not BuildSyntheticWav's
+        // 1-second default, and not the default 100 zero-bytes) so ComputeShotAudio actually
+        // produces an "a" node for every shot (AnalyzeAudioLevels is on above) instead of only
+        // the first one / none at all.
+        var audioExtractor = new Mock<IAudioExtractor>();
+        audioExtractor
+            .Setup(a => a.ExtractWavAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<string, string, CancellationToken>((_, outPath, _) =>
+            {
+                File.WriteAllBytes(outPath, BuildToneWav(seconds: 4));
+                return Task.CompletedTask;
+            });
+
+        VideoAnalyzeStepExecutor executor = CreateExecutor(
+            workspace, probe, silence, shotDetector,
+            new Mock<ITranscriptionClientFactory>(), new Mock<IInferenceProviderResolver>(),
+            audioExtractor: audioExtractor, frameGridSampler: frameGridSampler);
+
+        StepExecutionResult result = await executor.ExecuteAsync(context);
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        return JsonDocument.Parse(result.Output);
+    }
+
+    [Fact]
+    public async Task Look_groups_appear_in_the_view_and_each_grouped_shot_carries_a_look_id()
+    {
+        using JsonDocument doc = await RunLookTestAsync(TwoWarmOneCoolGrid());
+
+        JsonElement shots = doc.RootElement.GetProperty("view").GetProperty("shots");
+        string look0 = shots[0].GetProperty("v").GetProperty("look").GetString()!;
+        string look1 = shots[1].GetProperty("v").GetProperty("look").GetString()!;
+        look0.Should().Be(look1);
+
+        JsonElement lookGroups = doc.RootElement.GetProperty("view").GetProperty("lookGroups");
+        lookGroups.GetArrayLength().Should().Be(1);
+        List<string> memberIds = lookGroups[0].GetProperty("shotIds").EnumerateArray().Select(e => e.GetString()!).ToList();
+        memberIds.Should().BeEquivalentTo(new[] { "s0", "s1" });
+    }
+
+    [Fact]
+    public async Task A_shot_in_no_look_group_has_no_look_key()
+    {
+        using JsonDocument doc = await RunLookTestAsync(TwoWarmOneCoolGrid());
+
+        JsonElement shots = doc.RootElement.GetProperty("view").GetProperty("shots");
+        shots[2].GetProperty("v").TryGetProperty("look", out _).Should().BeFalse(
+            "s2's look is unlike any other analyzed shot, so it must be a singleton with no look id");
+    }
+
+    [Fact]
+    public async Task A_single_uniform_look_group_suppresses_every_per_shot_look_key_and_sets_meta_look_uniform()
+    {
+        using JsonDocument doc = await RunLookTestAsync(ThreeUniformWarmGrid());
+
+        JsonElement shots = doc.RootElement.GetProperty("view").GetProperty("shots");
+        foreach (JsonElement shot in shots.EnumerateArray())
+            shot.GetProperty("v").TryGetProperty("look", out _).Should().BeFalse();
+
+        doc.RootElement.GetProperty("meta").GetProperty("look").GetProperty("uniform").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task The_char_key_is_always_present_on_the_a_node_including_for_the_common_Dialogue_value()
+    {
+        using JsonDocument doc = await RunLookTestAsync(TwoWarmOneCoolGrid());
+
+        foreach (JsonElement shot in doc.RootElement.GetProperty("view").GetProperty("shots").EnumerateArray())
+            shot.GetProperty("a").TryGetProperty("char", out _).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Full_detail_adds_temp_tone_sat_black_white_but_Compact_does_not()
+    {
+        using JsonDocument fullDoc = await RunLookTestAsync(TwoWarmOneCoolGrid());
+        JsonElement fullVisual = fullDoc.RootElement.GetProperty("view").GetProperty("shots")[0].GetProperty("v");
+        fullVisual.TryGetProperty("temp", out _).Should().BeTrue();
+        fullVisual.TryGetProperty("tone", out _).Should().BeTrue();
+        fullVisual.TryGetProperty("sat", out _).Should().BeTrue();
+        fullVisual.TryGetProperty("black", out _).Should().BeTrue();
+        fullVisual.TryGetProperty("white", out _).Should().BeTrue();
+
+        using JsonDocument compactDoc = await RunLookTestAsync(
+            TwoWarmOneCoolGrid(), extraOverride: c => c with { VisualDetail = VideoVisualDetail.Compact });
+        JsonElement compactVisual = compactDoc.RootElement.GetProperty("view").GetProperty("shots")[0].GetProperty("v");
+        compactVisual.TryGetProperty("temp", out _).Should().BeFalse();
+        compactVisual.TryGetProperty("tone", out _).Should().BeFalse();
+        compactVisual.TryGetProperty("sat", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task AnalyzeColorGrading_false_leaves_every_grading_field_null_and_disables_look_grouping()
+    {
+        using JsonDocument doc = await RunLookTestAsync(
+            TwoWarmOneCoolGrid(), extraOverride: c => c with { AnalyzeColorGrading = false });
+
+        JsonElement shots = doc.RootElement.GetProperty("view").GetProperty("shots");
+        foreach (JsonElement shot in shots.EnumerateArray())
+        {
+            JsonElement v = shot.GetProperty("v");
+            v.TryGetProperty("temp", out _).Should().BeFalse();
+            v.TryGetProperty("look", out _).Should().BeFalse();
+        }
+
+        doc.RootElement.GetProperty("view").TryGetProperty("lookGroups", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task MaxViewLookGroups_caps_the_lookGroups_array()
+    {
+        // Two clearly-distinct pairs (warm/warm, cool/cool) -> two groups; cap it to one.
+        FrameGridResult grid = BuildColoredGrid(
+            LookGridSize, LookGridSize, fps: 2.0,
+            (2, 200, 120, 50), (2, 198, 121, 52), (2, 50, 120, 200));
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out _, out _,
+            configOverride: cfg => cfg with
+            {
+                DetectSilence = false, Transcription = VideoTranscriptionMode.Off,
+                AnalyzeVisuals = true, AnalyzeAudioLevels = false, DetectNearDuplicates = false,
+                VisualDetail = VideoVisualDetail.Full, MaxOutputChars = 24_000,
+                LookSimilarityThreshold = 0.5, MaxViewLookGroups = 1
+            });
+
+        probe.Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MediaProbeResult(3, 30, 1, 1920, 1080, "h264", "aac", 48000));
+        shotDetector
+            .Setup(s => s.DetectShotsAsync(It.IsAny<string>(), It.IsAny<double>(), It.IsAny<double>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(ThreeOneSecondShots);
+
+        var frameGridSampler = new Mock<IFrameGridSampler>();
+        frameGridSampler
+            .Setup(g => g.SampleAsync(
+                It.IsAny<string>(), It.IsAny<VideoScratchSpace>(), It.IsAny<double>(), It.IsAny<int>(), It.IsAny<int>(),
+                It.IsAny<double>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(grid);
+
+        VideoAnalyzeStepExecutor executor = CreateExecutor(
+            workspace, probe, silence, shotDetector,
+            new Mock<ITranscriptionClientFactory>(), new Mock<IInferenceProviderResolver>(),
+            audioExtractor: null, frameGridSampler: frameGridSampler);
+
+        StepExecutionResult result = await executor.ExecuteAsync(context);
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        doc.RootElement.GetProperty("view").GetProperty("lookGroups").GetArrayLength().Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ActiveCrop_only_appears_in_the_view_when_non_null()
+    {
+        // A plain uniform-color grid has no letterbox bars -> no crop.
+        using JsonDocument noBarDoc = await RunLookTestAsync(TwoWarmOneCoolGrid());
+        JsonElement noBarVisual = noBarDoc.RootElement.GetProperty("view").GetProperty("shots")[0].GetProperty("v");
+        noBarVisual.TryGetProperty("crop", out _).Should().BeFalse();
+
+        // A grid with real black bars top/bottom on every frame -> crop present.
+        const int size = 20;
+        int frameSize = size * size * 3;
+        var pixels = new byte[6 * frameSize]; // 6 frames total (2 per shot, 3 shots)
+        for (int f = 0; f < 6; f++)
+        {
+            for (int y = 0; y < size; y++)
+            {
+                bool bar = y < 4 || y >= size - 4;
+                byte v = bar ? (byte)0 : (byte)200;
+                for (int x = 0; x < size; x++)
+                {
+                    int idx = (f * frameSize) + (y * size + x) * 3;
+                    pixels[idx] = v; pixels[idx + 1] = v; pixels[idx + 2] = v;
+                }
+            }
+        }
+        var barredGrid = new FrameGridResult(pixels, size, size, 2.0, 6);
+
+        using JsonDocument barDoc = await RunLookTestAsync(barredGrid);
+        JsonElement barVisual = barDoc.RootElement.GetProperty("view").GetProperty("shots")[0].GetProperty("v");
+        barVisual.TryGetProperty("crop", out _).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task None_detail_view_carries_no_look_or_char_keys_at_all()
+    {
+        using JsonDocument doc = await RunLookTestAsync(
+            TwoWarmOneCoolGrid(), extraOverride: c => c with { VisualDetail = VideoVisualDetail.None });
+
+        JsonElement shots = doc.RootElement.GetProperty("view").GetProperty("shots");
+        foreach (JsonElement shot in shots.EnumerateArray())
+        {
+            shot.TryGetProperty("v", out _).Should().BeFalse();
+            shot.TryGetProperty("a", out _).Should().BeFalse();
+        }
+
+        doc.RootElement.GetProperty("view").TryGetProperty("lookGroups", out _).Should().BeFalse();
+    }
+
+    // =======================================================================
+    // Phase 4 §5.4-5.5: sharpness
+    // =======================================================================
+
+    private async Task<(StepExecutionResult Result, JsonDocument Artifact)> RunSharpnessTestAsync(
+        Mock<ISharpnessSampler> sharpnessSampler, Func<VideoAnalyzeStepConfig, VideoAnalyzeStepConfig>? extraOverride = null)
+    {
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out _, out _,
+            configOverride: cfg =>
+            {
+                VideoAnalyzeStepConfig c = cfg with
+                {
+                    DetectSilence = false, Transcription = VideoTranscriptionMode.Off,
+                    AnalyzeVisuals = true, AnalyzeAudioLevels = false, DetectNearDuplicates = false,
+                    VisualDetail = VideoVisualDetail.Full, MaxOutputChars = 24_000
+                };
+                return extraOverride is not null ? extraOverride(c) : c;
+            });
+
+        probe.Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MediaProbeResult(2, 30, 1, 1920, 1080, "h264", "aac", 48000));
+        shotDetector
+            .Setup(s => s.DetectShotsAsync(It.IsAny<string>(), It.IsAny<double>(), It.IsAny<double>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([(0.0, 1.0)]);
+
+        var frameGridSampler = new Mock<IFrameGridSampler>();
+        frameGridSampler
+            .Setup(g => g.SampleAsync(
+                It.IsAny<string>(), It.IsAny<VideoScratchSpace>(), It.IsAny<double>(), It.IsAny<int>(), It.IsAny<int>(),
+                It.IsAny<double>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(BuildSyntheticGrid(4, 4, frameCount: 4, fps: 2.0));
+
+        VideoAnalyzeStepExecutor executor = CreateExecutor(
+            workspace, probe, silence, shotDetector,
+            new Mock<ITranscriptionClientFactory>(), new Mock<IInferenceProviderResolver>(),
+            audioExtractor: null, frameGridSampler: frameGridSampler, sharpnessSampler: sharpnessSampler);
+
+        // Added AFTER CreateExecutor so this wins over its own default UploadArtifactAsync setup
+        // (Moq resolves overlapping setups in most-recently-defined order).
+        string? capturedArtifactJson = null;
+        workspace
+            .Setup(w => w.UploadArtifactAsync(
+                It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<CancellationToken>(), It.IsAny<string>()))
+            .Callback<Guid, string, string, string, CancellationToken, string>((_, path, _, _, _, _) =>
+                capturedArtifactJson = File.ReadAllText(path))
+            .ReturnsAsync("projects/p/agentFiles/video-analysis/e/step-1-analysis.json");
+
+        StepExecutionResult result = await executor.ExecuteAsync(context);
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        capturedArtifactJson.Should().NotBeNull();
+        return (result, JsonDocument.Parse(capturedArtifactJson!));
+    }
+
+    [Fact]
+    public async Task DetectSharpness_false_by_default_makes_no_sharpness_invocations()
+    {
+        var sharpnessSampler = new Mock<ISharpnessSampler>(MockBehavior.Strict);
+
+        (StepExecutionResult _, JsonDocument artifact) = await RunSharpnessTestAsync(sharpnessSampler);
+
+        sharpnessSampler.Invocations.Should().BeEmpty();
+        JsonElement shot0 = artifact.RootElement.GetProperty("shots")[0];
+        shot0.GetProperty("visual").GetProperty("sharpness").ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
+    [Fact]
+    public async Task DetectSharpness_true_populates_Sharpness_and_sets_provenance_SharpnessAvailable()
+    {
+        var sharpnessSampler = new Mock<ISharpnessSampler>();
+        sharpnessSampler
+            .Setup(s => s.MeasureAsync(It.IsAny<string>(), It.IsAny<VideoScratchSpace>(), It.IsAny<string>(), It.IsAny<double>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0.75);
+
+        (StepExecutionResult _, JsonDocument artifact) = await RunSharpnessTestAsync(
+            sharpnessSampler, extraOverride: c => c with { DetectSharpness = true });
+
+        sharpnessSampler.Invocations.Count(i => i.Method.Name == nameof(ISharpnessSampler.MeasureAsync)).Should().Be(1);
+        JsonElement shot0 = artifact.RootElement.GetProperty("shots")[0];
+        shot0.GetProperty("visual").GetProperty("sharpness").GetDouble().Should().BeApproximately(0.75, 1e-9);
+        artifact.RootElement.GetProperty("provenance").GetProperty("sharpnessAvailable").GetBoolean().Should().BeTrue();
+        artifact.RootElement.GetProperty("provenance").GetProperty("sharpnessShotCount").GetInt32().Should().Be(1);
+    }
+
+    [Fact]
+    public async Task A_sharpness_sampler_failure_degrades_to_null_sharpness_not_a_failed_step()
+    {
+        var sharpnessSampler = new Mock<ISharpnessSampler>();
+        sharpnessSampler
+            .Setup(s => s.MeasureAsync(It.IsAny<string>(), It.IsAny<VideoScratchSpace>(), It.IsAny<string>(), It.IsAny<double>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("ffmpeg boom"));
+
+        (StepExecutionResult result, JsonDocument artifact) = await RunSharpnessTestAsync(
+            sharpnessSampler, extraOverride: c => c with { DetectSharpness = true });
+
+        result.Status.Should().Be(StepStatus.Completed);
+        JsonElement shot0 = artifact.RootElement.GetProperty("shots")[0];
+        shot0.GetProperty("visual").GetProperty("sharpness").ValueKind.Should().Be(JsonValueKind.Null);
+        artifact.RootElement.GetProperty("provenance").GetProperty("sharpnessAvailable").GetBoolean().Should().BeFalse();
+    }
+
+    // =======================================================================
+    // Phase 4 §3: weighted step-progress plan wiring
+    // =======================================================================
+
+    [Fact]
+    public async Task Progress_percentages_reported_by_a_full_run_are_monotonic_and_reach_one_hundred()
+    {
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out Mock<ITranscriptionClientFactory> transcriptionFactory,
+            out Mock<IInferenceProviderResolver> providerResolver,
+            configOverride: cfg => cfg with
+            {
+                DetectSilence = false,
+                Transcription = VideoTranscriptionMode.Off,
+                AnalyzeVisuals = true,
+                AnalyzeAudioLevels = true,
+                DetectNearDuplicates = true,
+                Vision = VideoVisionMode.Optional,
+                MinCaptionShotSeconds = 0.0,
+                OfferMusicTracks = true
+            });
+
+        probe.Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MediaProbeResult(4, 30, 1, 32, 18, "h264", "aac", 48000));
+        var shots = new[] { (0.0, 1.0), (1.0, 2.0), (2.0, 3.0) };
+        shotDetector
+            .Setup(s => s.DetectShotsAsync(It.IsAny<string>(), It.IsAny<double>(), It.IsAny<double>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(shots);
+
+        var frameGridSampler = new Mock<IFrameGridSampler>();
+        frameGridSampler
+            .Setup(g => g.SampleAsync(It.IsAny<string>(), It.IsAny<VideoScratchSpace>(), It.IsAny<double>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<double>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(BuildSyntheticGrid(32, 18, frameCount: 8, fps: 2.0));
+
+        ResolvedInferenceProvider provider = new(
+            Guid.NewGuid(), "vision-test", InferenceProviderKind.OpenAICompatible, "http://localhost:9999", "vision-1", "", 30);
+        providerResolver
+            .Setup(r => r.ResolveVisionAsync(It.IsAny<Guid?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(provider);
+
+        var shotCaptioner = new Mock<IShotCaptioner>();
+        shotCaptioner
+            .Setup(c => c.CaptionAsync(It.IsAny<ResolvedInferenceProvider>(), It.IsAny<ShotCaptionRequest>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ResolvedInferenceProvider _, ShotCaptionRequest r, int _, CancellationToken _) => new VideoShotCaption(
+                r.ShotId, "a caption", [], "action", "setting", "mood", "Medium", "Eye level", [], [],
+                "Unknown", "flat", "neutral", "centered", []));
+
+        workspace
+            .Setup(w => w.ListFilesAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ProjectWorkspaceFile>
+            {
+                new(Guid.NewGuid(), ProjectId, "bed.mp3", null, "userFiles", "projects/p/userFiles/bed.mp3", "audio/mpeg", 4096, DateTime.UtcNow, null)
+            });
+        workspace
+            .Setup(w => w.UploadArtifactAsync(
+                It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<CancellationToken>(), It.IsAny<string>()))
+            .ReturnsAsync("projects/p/agentFiles/video-analysis/e/step-1-analysis.json");
+
+        VideoAnalyzeStepExecutor executor = CreateExecutor(
+            workspace, probe, silence, shotDetector, transcriptionFactory, providerResolver,
+            audioExtractor: null, frameGridSampler: frameGridSampler, keyframeExtractor: null, shotCaptioner: shotCaptioner);
+
+        var reported = new List<(string Stage, int? Percent)>();
+        context.ProgressReporter = (stage, percent, _) =>
+        {
+            reported.Add((stage, percent));
+            return Task.CompletedTask;
+        };
+
+        StepExecutionResult result = await executor.ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        reported.Should().NotBeEmpty();
+
+        List<int> percents = reported.Where(r => r.Percent.HasValue).Select(r => r.Percent!.Value).ToList();
+        percents.Should().NotBeEmpty();
+        percents.Should().BeInAscendingOrder("the monotonic clamp must prevent any reported percent from regressing");
+        percents[^1].Should().Be(100, "the last stage (UploadArtifact) must reach 100%");
     }
 }

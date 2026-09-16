@@ -16,7 +16,14 @@ public static class FrameGridAnalyzer
     public sealed record Options(
         double StillMotionThreshold = 0.02,
         int MinStillWindowMs = 400,
-        int MaxStillWindowsPerShot = 3);
+        int MaxStillWindowsPerShot = 3,
+        /// <summary>Gates D1-D3 (colour temperature, tone curve, saturation character) — see <see cref="VideoAnalyzeStepConfig.AnalyzeColorGrading"/>.</summary>
+        bool AnalyzeColorGrading = true,
+        /// <summary>Gates D6 (letterbox/pillarbox <c>ActiveCrop</c> detection) — see <see cref="VideoAnalyzeStepConfig.DetectLetterbox"/>.</summary>
+        bool DetectLetterbox = true);
+
+    /// <summary>Exact 8-bit luma precision (1 KB/shot) for the D2 tone-curve percentiles.</summary>
+    private const int LumaHistogramBins = 256;
 
     /// <summary>
     /// A shot's near-duplicate/best-take signature: <c>LumaSig</c> is the shot's per-pixel
@@ -109,6 +116,8 @@ public static class FrameGridAnalyzer
         long totalPixels = (long)frames.Count * pixelCount;
         int[] histogram = new int[HistogramBins];
         double[] perPixelLumaSum = new double[pixelCount];
+        double rSum = 0, gSum = 0, bSum = 0;
+        int[] lumaHist = new int[LumaHistogramBins]; // D2 — cumulative luma histogram for percentiles
 
         for (int i = 0; i < frames.Count; i++)
         {
@@ -135,6 +144,12 @@ public static class FrameGridAnalyzer
 
                 saturationSum += Saturation(r, g, b);
                 histogram[HistogramBin(r, g, b)]++;
+
+                // D1-D2 — always accumulated (branch-free in the innermost loop; four adds and an
+                // array increment over a 576-pixel grid is immeasurable), only the DERIVATION below
+                // is gated by AnalyzeColorGrading.
+                rSum += r; gSum += g; bSum += b;
+                lumaHist[Math.Clamp((int)Math.Round(l * 255.0), 0, 255)]++;
             }
 
             double frameMean = frameSum / pixelCount;
@@ -151,6 +166,52 @@ public static class FrameGridAnalyzer
         double clippedRatio = totalPixels > 0 ? (double)clippedCount / totalPixels : 0.0;
         double crushedRatio = totalPixels > 0 ? (double)crushedCount / totalPixels : 0.0;
         double saturationMean = totalPixels > 0 ? saturationSum / totalPixels : 0.0;
+
+        // ---- D1-D3: colour temperature, tone curve, saturation character. Free — derived from
+        //      accumulators the exposure/color loop above already filled. Null/0 when
+        //      AnalyzeColorGrading is off, matching ActiveCrop/Sharpness's "absent == not
+        //      computed" convention. ----
+        string? colorTemperatureClass = null;
+        double warmth = 0, tint = 0, blackPoint = 0, whitePoint = 0;
+        string? toneClass = null;
+        string? saturationClass = null;
+
+        if (options.AnalyzeColorGrading)
+        {
+            double meanR = totalPixels > 0 ? rSum / totalPixels / 255.0 : 0;
+            double meanG = totalPixels > 0 ? gSum / totalPixels / 255.0 : 0;
+            double meanB = totalPixels > 0 ? bSum / totalPixels / 255.0 : 0;
+
+            // D1. Warmth/Tint normalized so a ±0.25 raw channel-mean difference saturates the scale.
+            warmth = Math.Clamp((meanR - meanB) / 0.25, -1, 1);
+            tint = Math.Clamp((meanG - (meanR + meanB) / 2.0) / 0.25, -1, 1);
+
+            // A near-monochrome frame has no meaningful colour temperature to report.
+            colorTemperatureClass =
+                saturationMean < 0.05 ? "Neutral"
+                : warmth >= 0.20 ? "Warm"
+                : warmth <= -0.20 ? "Cool"
+                : "Neutral";
+
+            // D2. Percentiles from the cumulative luma histogram (nearest-rank).
+            blackPoint = Percentile(lumaHist, totalPixels, 0.05);
+            whitePoint = Percentile(lumaHist, totalPixels, 0.95);
+            double dynamicRange = Math.Max(0, whitePoint - blackPoint);
+
+            // ORDER IS LOAD-BEARING: an actual exposure defect outranks a stylistic read.
+            toneClass =
+                  clippedRatio > 0.05 ? "Blown"
+                : crushedRatio > 0.05 ? "Crushed"
+                : dynamicRange < 0.45 && blackPoint > 0.10 ? "Flat"       // lifted blacks + compressed range == log/ungraded
+                : dynamicRange > 0.75 && blackPoint < 0.06 ? "Contrasty"
+                : "Normal";
+
+            // D3. Pure projection of the previously-orphaned SaturationMean.
+            saturationClass =
+                  saturationMean < 0.18 ? "Muted"
+                : saturationMean > 0.42 ? "Vivid"
+                : "Natural";
+        }
 
         List<VideoAnalysisColor> dominantColors = TopDominantColors(histogram, totalPixels);
 
@@ -182,6 +243,23 @@ public static class FrameGridAnalyzer
             ? $"Static, low-motion shot ({shotDurationSec:F1}s) with a clean {bestOverlayRegion ?? "region"} suitable for a slow pan/zoom reveal."
             : null;
 
+        // D6 — letterbox/pillarbox matte detection. Reuses the already-materialized lumaFrames, no
+        // second luma pass.
+        VideoAnalysisRect? activeCrop = options.DetectLetterbox
+            ? DetectActiveCrop(frames, lumaFrames, gridWidth, gridHeight)
+            : null;
+
+        // D7 — heuristic only, and named accordingly (see KenBurnsCandidate's precedent). Surfaced
+        // at Full detail only, and fed to the vision prompt so a model that can actually see the
+        // frame is the one that turns it into a claim.
+        VideoAnalysisRegion? centerCell = regions.FirstOrDefault(r => r.Name == "R4");
+        double borderLuma = regions
+            .Where(r => r.Name.Length == 2 && r.Name[0] == 'R' && r.Name != "R4")
+            .Select(r => r.LumaMean).DefaultIfEmpty(0).Average();
+        bool backlitCandidate = centerCell is not null
+            && borderLuma - centerCell.LumaMean > 0.18
+            && centerCell.LumaMean < 0.35;
+
         return new VideoAnalysisShotVisual(
             MotionMean: motionMean,
             MotionPeak: motionPeak,
@@ -201,13 +279,23 @@ public static class FrameGridAnalyzer
             DominantColors: dominantColors,
             Regions: regions,
             BestOverlayRegion: bestOverlayRegion,
-            ActiveCrop: null,
+            ActiveCrop: activeCrop,
             Sharpness: null,
             KenBurnsCandidate: kenBurnsCandidate,
             KenBurnsReason: kenBurnsReason,
             DuplicateGroupId: null,
             GroupRank: null,
-            IsBestTake: false);
+            IsBestTake: false,
+            ColorTemperatureClass: colorTemperatureClass,
+            Warmth: warmth,
+            Tint: tint,
+            ToneClass: toneClass,
+            BlackPoint: blackPoint,
+            WhitePoint: whitePoint,
+            SaturationClass: saturationClass,
+            BacklitCandidate: backlitCandidate,
+            LookGroupId: null,
+            LookRank: null);
     }
 
     private static VideoAnalysisShotVisual EmptyVisual() => new(
@@ -345,13 +433,14 @@ public static class FrameGridAnalyzer
     /// 10% neutral placeholder for sharpness (not computed in Phase 1).
     /// </summary>
     public static double ComputeTakeQuality(
-        double motionStdDev, double? audioRmsDbfs, double brightnessMean, double durationSec)
+        double motionStdDev, double? audioRmsDbfs, double brightnessMean, double durationSec,
+        double? sharpness = null)
     {
         double motionTerm = 1 - Normalize(motionStdDev, 0, 0.15);
         double audioTerm = audioRmsDbfs.HasValue ? Normalize(audioRmsDbfs.Value, -40, -6) : 0.5;
         double exposureTerm = 1 - Math.Abs(brightnessMean - 0.5) * 2;
         double durationTerm = Normalize(durationSec, 0, 8.0);
-        const double sharpnessTerm = 0.5; // neutral — no sharpness signal in Phase 1
+        double sharpnessTerm = sharpness ?? 0.5; // 0.5 == the documented neutral placeholder
 
         return Math.Clamp(
             0.35 * motionTerm + 0.25 * audioTerm + 0.20 * Math.Clamp(exposureTerm, 0, 1)
@@ -472,7 +561,16 @@ public static class FrameGridAnalyzer
     /// precision for huge groups (acceptable: this value is informational metadata on the group,
     /// not used for the grouping decision itself, which already happened above).
     /// </summary>
-    private static double MeanPairwiseSimilarity(List<int> members, IReadOnlyList<ShotSignature> signatures)
+    private static double MeanPairwiseSimilarity(List<int> members, IReadOnlyList<ShotSignature> signatures) =>
+        MeanPairwiseSimilarity(members, (a, b) => Similarity(signatures[a], signatures[b]));
+
+    /// <summary>
+    /// Shared bounded-cost implementation behind <see cref="GroupDuplicates"/>'s and
+    /// <see cref="GroupLooks"/>' "mean pairwise similarity within one group" metric — parameterized
+    /// by a similarity delegate so both groupers reuse one subsampling guard instead of duplicating
+    /// it.
+    /// </summary>
+    private static double MeanPairwiseSimilarity(List<int> members, Func<int, int, double> similarity)
     {
         if (members.Count < 2)
         {
@@ -498,12 +596,144 @@ public static class FrameGridAnalyzer
         {
             for (int b = a + 1; b < sample.Count; b++)
             {
-                sum += Similarity(signatures[sample[a]], signatures[sample[b]]);
+                sum += similarity(sample[a], sample[b]);
                 count++;
             }
         }
 
         return count > 0 ? sum / count : 1.0;
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Phase 4 (D4): look/grade grouping — cross-source, deliberately NOT windowed.
+    // ---------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// A shot's GRADE/LOOK signature — six scalars describing how the shot was lit and graded, as
+    /// opposed to <see cref="ShotSignature"/>'s 576-float description of what is IN it. Two shots
+    /// with a close look signature cut together without a visible mismatch even if their content is
+    /// unrelated.
+    /// </summary>
+    public sealed record LookSignature(
+        double Warmth, double Tint, double BrightnessMean,
+        double BlackPoint, double WhitePoint, double SaturationMean);
+
+    /// <summary>
+    /// Weighted L1 distance with every component normalized to its own 0..1 range (Warmth/Tint span
+    /// -1..1, hence the /2). Warmth carries the largest weight because a white-balance mismatch is by
+    /// far the most visible defect when cutting between clips shot on different cameras or days.
+    /// Weights sum to exactly 1.0, so Similarity = 1 - Distance lands in 0..1.
+    /// </summary>
+    public static double LookDistance(LookSignature a, LookSignature b) => Math.Clamp(
+          0.30 * Math.Abs(a.Warmth - b.Warmth) / 2.0
+        + 0.10 * Math.Abs(a.Tint - b.Tint) / 2.0
+        + 0.25 * Math.Abs(a.BrightnessMean - b.BrightnessMean)
+        + 0.15 * Math.Abs(a.BlackPoint - b.BlackPoint)
+        + 0.10 * Math.Abs(a.WhitePoint - b.WhitePoint)
+        + 0.10 * Math.Abs(a.SaturationMean - b.SaturationMean), 0, 1);
+
+    public static double LookSimilarity(LookSignature a, LookSignature b) => 1 - LookDistance(a, b);
+
+    /// <summary>
+    /// Single-linkage clustering over ALL pairs — deliberately NOT windowed like
+    /// <see cref="GroupDuplicates"/>. That method's sliding shot-index window is premised on
+    /// multi-take shots being temporally adjacent; a shared LOOK is the opposite — the whole point
+    /// is to link the interior coverage at the start of clip 0 with the interior coverage at the end
+    /// of clip 2. O(n²) over six floats is trivially cheap even at thousands of shots.
+    /// Singletons get NO group (mirrors <c>DuplicateGroupId == null</c>). <c>LookRank</c> orders
+    /// members by ascending distance to the group's centroid — rank 0 is the most representative
+    /// shot of that look.
+    /// </summary>
+    public static IReadOnlyList<VideoAnalysisLookGroup> GroupLooks(
+        IReadOnlyList<string> shotIds,
+        IReadOnlyList<LookSignature> signatures,
+        double similarityThreshold,
+        out IReadOnlyDictionary<string, (string GroupId, int LookRank)> assignments)
+    {
+        int n = shotIds.Count;
+        var parent = new int[n];
+        for (int i = 0; i < n; i++)
+        {
+            parent[i] = i;
+        }
+
+        int Find(int x)
+        {
+            while (parent[x] != x)
+            {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+
+            return x;
+        }
+
+        void Union(int a, int b)
+        {
+            int ra = Find(a), rb = Find(b);
+            if (ra != rb)
+            {
+                parent[rb] = ra;
+            }
+        }
+
+        for (int i = 1; i < n; i++)
+        {
+            for (int j = 0; j < i; j++)
+            {
+                if (LookSimilarity(signatures[i], signatures[j]) >= similarityThreshold)
+                {
+                    Union(i, j);
+                }
+            }
+        }
+
+        var byRoot = new Dictionary<int, List<int>>();
+        for (int i = 0; i < n; i++)
+        {
+            int root = Find(i);
+            if (!byRoot.TryGetValue(root, out List<int>? members))
+            {
+                byRoot[root] = members = [];
+            }
+
+            members.Add(i);
+        }
+
+        var groups = new List<VideoAnalysisLookGroup>();
+        var assignmentsBuilder = new Dictionary<string, (string, int)>();
+        int groupIndex = 0;
+
+        foreach (List<int> members in byRoot.Values.Where(m => m.Count > 1).OrderBy(m => m.Min()))
+        {
+            string groupId = $"k{groupIndex++}";
+
+            LookSignature centroid = new(
+                members.Average(idx => signatures[idx].Warmth),
+                members.Average(idx => signatures[idx].Tint),
+                members.Average(idx => signatures[idx].BrightnessMean),
+                members.Average(idx => signatures[idx].BlackPoint),
+                members.Average(idx => signatures[idx].WhitePoint),
+                members.Average(idx => signatures[idx].SaturationMean));
+
+            List<int> rankedAscending = members
+                .OrderBy(idx => LookDistance(signatures[idx], centroid))
+                .ThenBy(idx => idx)
+                .ToList();
+
+            for (int rank = 0; rank < rankedAscending.Count; rank++)
+            {
+                int idx = rankedAscending[rank];
+                assignmentsBuilder[shotIds[idx]] = (groupId, rank);
+            }
+
+            double cohesion = MeanPairwiseSimilarity(members, (a, b) => LookSimilarity(signatures[a], signatures[b]));
+            List<string> chronologicalIds = members.OrderBy(idx => idx).Select(idx => shotIds[idx]).ToList();
+            groups.Add(new VideoAnalysisLookGroup(groupId, chronologicalIds, shotIds[rankedAscending[0]], cohesion));
+        }
+
+        assignments = assignmentsBuilder;
+        return groups;
     }
 
     // ---------------------------------------------------------------------------------------
@@ -1011,6 +1241,128 @@ public static class FrameGridAnalyzer
         }
 
         return regions;
+    }
+
+    /// <summary>Nearest-rank percentile over a cumulative luma histogram; returns 0..1.</summary>
+    private static double Percentile(int[] hist, long total, double q)
+    {
+        if (total <= 0)
+        {
+            return 0.0;
+        }
+
+        long target = Math.Max(1, (long)Math.Ceiling(q * total));
+        long cum = 0;
+        for (int i = 0; i < hist.Length; i++)
+        {
+            cum += hist[i];
+            if (cum >= target)
+            {
+                return i / (double)(hist.Length - 1);
+            }
+        }
+
+        return 1.0;
+    }
+
+    /// <summary>
+    /// A grid row/column is a matte bar only if EVERY pixel in it is near-black in EVERY sampled
+    /// frame of the shot. Returns null when there is no bar, when the whole frame is black, or when
+    /// the candidate bars fail the symmetry/size sanity checks below.
+    /// </summary>
+    /// <remarks>
+    /// The grid is a box-average downscale (scale=...:flags=area), so a bar edge that does not align
+    /// with a grid-cell boundary is averaged with real content and will not read as black — this
+    /// UNDER-reports the crop by at most one grid cell per side, never over-reports it. That is the
+    /// safe direction: a missing ActiveCrop is a non-signal, a fabricated one is a lie.
+    /// </remarks>
+    private static VideoAnalysisRect? DetectActiveCrop(
+        IReadOnlyList<byte[]> frames, double[][] lumaFrames, int width, int height)
+    {
+        const double BlackThreshold = 16.0 / 255.0; // tolerant of compression noise inside a true matte
+        const double MaxBarFraction = 0.40;         // beyond this it is a dark scene, not a bar
+
+        var rowBlack = new bool[height];
+        Array.Fill(rowBlack, true);
+        var colBlack = new bool[width];
+        Array.Fill(colBlack, true);
+
+        foreach (double[] luma in lumaFrames)
+        {
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    if (luma[y * width + x] > BlackThreshold)
+                    {
+                        rowBlack[y] = false;
+                        colBlack[x] = false;
+                    }
+                }
+            }
+        }
+
+        int top = LeadingRun(rowBlack), bottom = TrailingRun(rowBlack);
+        int left = LeadingRun(colBlack), right = TrailingRun(colBlack);
+
+        if (top + bottom >= height || left + right >= width)
+        {
+            return null; // entirely black shot
+        }
+
+        if (top > height * MaxBarFraction || bottom > height * MaxBarFraction)
+        {
+            top = bottom = 0;
+        }
+
+        if (left > width * MaxBarFraction || right > width * MaxBarFraction)
+        {
+            left = right = 0;
+        }
+
+        // A genuine matte is symmetric. A one-sided black band is a dark scene edge (a curtain, a
+        // shadowed wall) and must not be reported as a crop.
+        if (Math.Abs(top - bottom) > 1)
+        {
+            top = bottom = 0;
+        }
+
+        if (Math.Abs(left - right) > 1)
+        {
+            left = right = 0;
+        }
+
+        if (top + bottom == 0 && left + right == 0)
+        {
+            return null;
+        }
+
+        return new VideoAnalysisRect(
+            left / (double)width, top / (double)height,
+            (width - left - right) / (double)width,
+            (height - top - bottom) / (double)height);
+    }
+
+    private static int LeadingRun(bool[] values)
+    {
+        int i = 0;
+        while (i < values.Length && values[i])
+        {
+            i++;
+        }
+
+        return i;
+    }
+
+    private static int TrailingRun(bool[] values)
+    {
+        int i = 0;
+        while (i < values.Length && values[values.Length - 1 - i])
+        {
+            i++;
+        }
+
+        return i;
     }
 
     private static double Normalize(double value, double min, double max) =>

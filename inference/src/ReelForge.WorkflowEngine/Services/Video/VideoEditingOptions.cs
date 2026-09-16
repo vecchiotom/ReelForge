@@ -28,6 +28,19 @@ public sealed class VideoEditingOptions
     /// </summary>
     public int MaxConcurrentJobs { get; set; } = 1;
 
+    /// <summary>
+    /// <c>-threads</c> passed to the ffmpeg passes that do a real full video decode (shot
+    /// detection, Phase 1 visual-analysis grid sampling) — NOT applied to the audio-only passes
+    /// (silence detection, audio extraction), which don't decode video at all. Left unbounded
+    /// (ffmpeg's own "auto" thread count), a single invocation can saturate every core on the
+    /// host decoding a large/high-framerate source, starving this same process's own RabbitMQ
+    /// and Postgres connections of CPU time long enough for their heartbeats/keepalives to lapse
+    /// — surfacing as a misleadingly-labeled "Cancelled by user request" mid-step, discovered
+    /// analyzing real 4K120 source footage. Default 4 is conservative for a shared/small host;
+    /// raise it (VideoEditing__FfmpegThreads) on a host with cores to spare.
+    /// </summary>
+    public int FfmpegThreads { get; set; } = 4;
+
     /// <summary>Hard wall-clock timeout, in seconds, for a single VideoAnalyze step's tool invocations.</summary>
     public int AnalyzeTimeoutSeconds { get; set; } = 900;
 

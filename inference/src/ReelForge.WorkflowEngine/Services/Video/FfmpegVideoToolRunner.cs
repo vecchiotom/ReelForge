@@ -31,16 +31,21 @@ public sealed class FfmpegVideoToolRunner : IVideoToolRunner
     }
 
     public Task<VideoToolResult> RunFfmpegAsync(IReadOnlyList<string> args, TimeSpan timeout, CancellationToken ct) =>
-        RunAsync(_options.FfmpegPath, args, timeout, ct);
+        RunAsync(_options.FfmpegPath, args, timeout, ct, onStdOutLine: null);
+
+    public Task<VideoToolResult> RunFfmpegAsync(
+        IReadOnlyList<string> args, TimeSpan timeout, CancellationToken ct, Action<string> onStdOutLine) =>
+        RunAsync(_options.FfmpegPath, args, timeout, ct, onStdOutLine);
 
     public Task<VideoToolResult> RunFfprobeAsync(IReadOnlyList<string> args, TimeSpan timeout, CancellationToken ct) =>
-        RunAsync(_options.FfprobePath, args, timeout, ct);
+        RunAsync(_options.FfprobePath, args, timeout, ct, onStdOutLine: null);
 
     private async Task<VideoToolResult> RunAsync(
         string executablePath,
         IReadOnlyList<string> args,
         TimeSpan timeout,
-        CancellationToken ct)
+        CancellationToken ct,
+        Action<string>? onStdOutLine)
     {
         // The semaphore wait is cancellable via the caller's own token but is NOT counted
         // against the ffmpeg timeout below — a job queued behind MaxConcurrentJobs other jobs
@@ -48,7 +53,7 @@ public sealed class FfmpegVideoToolRunner : IVideoToolRunner
         await _concurrencyGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            return await RunProcessAsync(executablePath, args, timeout, ct).ConfigureAwait(false);
+            return await RunProcessAsync(executablePath, args, timeout, ct, onStdOutLine).ConfigureAwait(false);
         }
         finally
         {
@@ -60,7 +65,8 @@ public sealed class FfmpegVideoToolRunner : IVideoToolRunner
         string executablePath,
         IReadOnlyList<string> args,
         TimeSpan timeout,
-        CancellationToken ct)
+        CancellationToken ct,
+        Action<string>? onStdOutLine)
     {
         ProcessStartInfo startInfo = new()
         {
@@ -78,7 +84,24 @@ public sealed class FfmpegVideoToolRunner : IVideoToolRunner
 
         BoundedTail stdout = new(MaxCapturedChars);
         BoundedTail stderr = new(MaxCapturedChars);
-        process.OutputDataReceived += (_, e) => { if (e.Data is not null) stdout.AppendLine(e.Data); };
+        process.OutputDataReceived += (_, e) =>
+        {
+            if (e.Data is null)
+                return;
+
+            stdout.AppendLine(e.Data);
+
+            // Best-effort only (see IVideoToolRunner's doc comment) — a throwing/slow callback
+            // must never be able to break the ffmpeg invocation itself.
+            try
+            {
+                onStdOutLine?.Invoke(e.Data);
+            }
+            catch
+            {
+                // Swallowed deliberately.
+            }
+        };
         process.ErrorDataReceived += (_, e) => { if (e.Data is not null) stderr.AppendLine(e.Data); };
 
         using CancellationTokenSource timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);

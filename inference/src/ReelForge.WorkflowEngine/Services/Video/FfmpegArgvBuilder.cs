@@ -39,7 +39,12 @@ public static class FfmpegArgvBuilder
     /// <c>-af silencedetect=noise={db}dB:d={sec}</c>, discarding decoded output to <c>-f null -</c>.
     /// silencedetect logs its start/end markers at ffmpeg's "info" level, so loglevel is raised
     /// from the feature's default "error" specifically so <see cref="ISilenceDetector"/> has
-    /// something to parse on stderr.
+    /// something to parse on stderr. <c>-vn</c> is load-bearing, not cosmetic: without it, ffmpeg's
+    /// default stream selection still decodes the best video stream into the null muxer even
+    /// though nothing here reads it — harmless on a small clip, but on real 4K/60+ source footage
+    /// it turns an audio-only pass into a full software video decode of the entire file (minutes
+    /// becoming the better part of an hour), which is exactly the kind of source this feature
+    /// exists to handle. Mirrors <c>BuildExtractAudioArgs</c>'s <c>-vn</c> below.
     /// </summary>
     public static string[] BuildSilenceDetectArgs(string inputPath, double thresholdDb, double minSilenceSeconds)
     {
@@ -47,6 +52,7 @@ public static class FfmpegArgvBuilder
         args.AddRange(ProtocolWhitelist);
         args.Add("-i");
         args.Add(inputPath);
+        args.Add("-vn");
         args.Add("-af");
         args.Add($"silencedetect=noise={FfmpegArgvFormat.Number(thresholdDb)}dB:d={FfmpegArgvFormat.Number(minSilenceSeconds)}");
         args.Add("-f");
@@ -59,14 +65,20 @@ public static class FfmpegArgvBuilder
     /// <c>-vf select='gt(scene,{threshold})',showinfo</c>, discarding decoded output to
     /// <c>-f null -</c>. showinfo logs one line per frame it receives at ffmpeg's "info" level
     /// (only frames the <c>select</c> filter passed through, i.e. detected scene changes), so
-    /// loglevel is raised the same way as silencedetect.
+    /// loglevel is raised the same way as silencedetect. <c>-an</c> skips decoding the audio
+    /// stream this pass never touches — same rationale as <c>-vn</c> on
+    /// <see cref="BuildSilenceDetectArgs"/> above, cheaper here since audio decode is the
+    /// lightweight side, but still wasted work on a long source file.
     /// </summary>
-    public static string[] BuildShotDetectArgs(string inputPath, double sceneThreshold)
+    public static string[] BuildShotDetectArgs(string inputPath, double sceneThreshold, int threads)
     {
         List<string> args = new(BaseFlags) { "-loglevel", "info" };
         args.AddRange(ProtocolWhitelist);
+        args.Add("-threads");
+        args.Add(FfmpegArgvFormat.Number(threads));
         args.Add("-i");
         args.Add(inputPath);
+        args.Add("-an");
         args.Add("-vf");
         args.Add($"select='gt(scene,{FfmpegArgvFormat.Number(sceneThreshold)})',showinfo");
         args.Add("-f");
@@ -83,10 +95,12 @@ public static class FfmpegArgvBuilder
     /// or subtitle streams are decoded (<c>-an -sn</c>).
     /// </summary>
     public static string[] BuildGridSampleArgs(
-        string inputPath, string outputRawPath, double sampleFps, int gridWidth, int gridHeight)
+        string inputPath, string outputRawPath, double sampleFps, int gridWidth, int gridHeight, int threads)
     {
         List<string> args = new(BaseFlags) { "-loglevel", "error" };
         args.AddRange(ProtocolWhitelist);
+        args.Add("-threads");
+        args.Add(FfmpegArgvFormat.Number(threads));
         args.Add("-i");
         args.Add(inputPath);
         args.Add("-an");
@@ -172,6 +186,89 @@ public static class FfmpegArgvBuilder
         args.Add("-q:v");
         args.Add("4");
         args.Add(outputJpgPath);
+        return args.ToArray();
+    }
+
+    /// <summary>
+    /// N cheap input seeks hstacked into ONE contact-sheet JPEG — deliberately NOT a single-input
+    /// select+tile pass, which would decode the shot's entire range instead of seeking N times.
+    /// Each pane is scaled to <c>maxWidth/N</c> so the combined image stays at <paramref name="maxWidth"/>
+    /// and the vision call's per-image token cost stays roughly flat. Emits <c>-ss {t_i} -i {input}</c>
+    /// for each sample time, then an hstack filter_complex producing one JPEG.
+    /// </summary>
+    public static string[] BuildContactSheetArgs(
+        string inputPath, string outputJpgPath, IReadOnlyList<double> atSecs, int maxWidth)
+    {
+        List<string> args = new(BaseFlags) { "-loglevel", "error" };
+        args.AddRange(ProtocolWhitelist);
+
+        int n = Math.Max(1, atSecs.Count);
+        foreach (double atSec in atSecs)
+        {
+            args.Add("-ss");
+            args.Add(FfmpegArgvFormat.Number(Math.Max(0, atSec)));
+            args.Add("-i");
+            args.Add(inputPath);
+        }
+
+        int paneW = Math.Max(64, maxWidth / n);
+        var filterParts = new List<string>();
+        for (int i = 0; i < n; i++)
+            filterParts.Add($"[{i}:v]scale={FfmpegArgvFormat.Number(paneW)}:-2[p{i}]");
+
+        string stackInputs = string.Concat(Enumerable.Range(0, n).Select(i => $"[p{i}]"));
+        filterParts.Add($"{stackInputs}hstack=inputs={FfmpegArgvFormat.Number(n)}[out]");
+
+        args.Add("-filter_complex");
+        args.Add(string.Join(";", filterParts));
+        args.Add("-map");
+        args.Add("[out]");
+        args.Add("-frames:v");
+        args.Add("1");
+        args.Add("-f");
+        args.Add("image2");
+        args.Add("-c:v");
+        args.Add("mjpeg");
+        args.Add("-q:v");
+        args.Add("4");
+        args.Add(outputJpgPath);
+        return args.ToArray();
+    }
+
+    /// <summary>
+    /// Dumps ONE native-resolution, square, centred grayscale patch as headerless rawvideo, for a
+    /// pure-C# Laplacian-variance focus metric (Phase 4, D5-adjacent "sharpness"). Native resolution
+    /// is load-bearing: the Phase 1 grid's box-average downscale destroys exactly the high-frequency
+    /// content a sharpness metric measures, which is why this cannot be derived from grid.rgb (see
+    /// docs/video-editing.md).
+    /// </summary>
+    /// <param name="patch">
+    /// MUST be &lt;= min(probedWidth, probedHeight) — the caller computes it from the ffprobe
+    /// result, because a crop larger than the frame fails the whole invocation.
+    /// </param>
+    /// <remarks>
+    /// Deliberately its own invocation rather than a second output on <see cref="BuildKeyframeArgs"/>:
+    /// a fault here must never be able to take Phase 2 captioning down with it.
+    /// </remarks>
+    public static string[] BuildSharpnessPatchArgs(string inputPath, string outputRawPath, double atSec, int patch)
+    {
+        List<string> args = new(BaseFlags) { "-loglevel", "error" };
+        args.AddRange(ProtocolWhitelist);
+        args.Add("-ss");
+        args.Add(FfmpegArgvFormat.Number(Math.Max(0, atSec)));
+        args.Add("-i");
+        args.Add(inputPath);
+        args.Add("-frames:v");
+        args.Add("1");
+        args.Add("-vf");
+        args.Add(
+            $"crop={FfmpegArgvFormat.Number(patch)}:{FfmpegArgvFormat.Number(patch)}:" +
+            $"(iw-{FfmpegArgvFormat.Number(patch)})/2:(ih-{FfmpegArgvFormat.Number(patch)})/2,format=gray");
+        args.Add("-f");
+        args.Add("rawvideo");
+        args.Add("-pix_fmt");
+        args.Add("gray");
+        args.Add(outputRawPath);
         return args.ToArray();
     }
 }

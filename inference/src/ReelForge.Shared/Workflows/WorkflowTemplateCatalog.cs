@@ -157,7 +157,22 @@ public static class WorkflowTemplateCatalog
                     StepType.VideoCompile,
                     VideoCompileConfigJson: """
                         {"version":1,"decision":{"from":"Previous"},"analysisStepOrder":1}
-                        """)
+                        """),
+                new(
+                    AgentType.VideoReviewAgent,
+                    "Review edit quality",
+                    StepType.ReviewLoop,
+                    // Loop back to step 2 (the story editor) — step 1 (VideoAnalyze) is
+                    // deterministic and produces the same bounded view every time, so there is
+                    // nothing for a retry to gain from re-running it. Mirrors the main pipeline's
+                    // ReviewLoop wiring (quick-win-promo, StarterTemplateKey above) exactly:
+                    // LoopTargetStepOrder/MaxIterations/MinScore, FullWorkflow context so the
+                    // review agent sees the analysis view, the story editor's decision, and the
+                    // compile step's own deterministic sentenceCheck.
+                    LoopTargetStepOrder: 2,
+                    MaxIterations: 2,
+                    MinScore: 7,
+                    AgentInputContextMode: AgentInputContextMode.FullWorkflow)
             ]),
         new(
             Key: "video-derush-edit-graphics",
@@ -200,7 +215,73 @@ public static class WorkflowTemplateCatalog
                     // decision (step 2).
                     VideoCompileConfigJson: """
                         {"version":1,"decision":{"from":"Step","stepOrder":2},"analysisStepOrder":1,"enableGraphics":true,"graphicsPlan":{"from":"Step","stepOrder":3}}
-                        """)
+                        """),
+                new(
+                    AgentType.VideoReviewAgent,
+                    "Review edit quality",
+                    StepType.ReviewLoop,
+                    // Loop back to step 2 (the story editor) so a low score re-runs the story
+                    // editor, the motion-graphics planner, and the compile step in sequence —
+                    // step 1 (VideoAnalyze) is deterministic and need not rerun. Same
+                    // MinScore/MaxIterations/FullWorkflow pattern as video-derush-edit above.
+                    LoopTargetStepOrder: 2,
+                    MaxIterations: 2,
+                    MinScore: 7,
+                    AgentInputContextMode: AgentInputContextMode.FullWorkflow)
+            ]),
+        new(
+            Key: "video-derush-edit-music",
+            Name: "Video Derush, Edit & Music",
+            Description: "Opt-in template extending Video Derush & Edit with background music: the analyze step also offers candidate audio/* project files as music-track ids, a music-supervisor agent picks at most one track plus intensity/ducking/fit settings, and the compile step mixes it under the dialogue during the same ffmpeg encode. Demonstrates OfferMusicTracks/EnableMusic end to end.",
+            Version: 1,
+            AutoCreateOnProject: false,
+            RequiresUserInput: false,
+            Steps:
+            [
+                new(
+                    AgentType.VideoTransform,
+                    "Analyze source video",
+                    StepType.VideoAnalyze,
+                    // Same ProjectFile-source rationale as video-derush-edit's first step above
+                    // (this is the first step, so PreviousStepOutput would fail SOURCE_UNRESOLVED
+                    // on every run) — plus offerMusicTracks:true to derive the "m{n}" music-track
+                    // candidates the music supervisor picks from.
+                    VideoAnalyzeConfigJson: """
+                        {"version":1,"source":{"kind":"ProjectFile"},"offerMusicTracks":true}
+                        """),
+                new(
+                    AgentType.VideoStoryEditor,
+                    "Decide which spans to keep",
+                    AgentInputContextMode: AgentInputContextMode.PreviousStepOnly),
+                new(
+                    AgentType.MusicSupervisor,
+                    "Pick background music",
+                    // FullWorkflow (not PreviousStepOnly): this agent needs BOTH the analyze
+                    // step's view.musicTracks (step 1) and the story editor's decision (step 2),
+                    // not merely the immediately-preceding step's output.
+                    AgentInputContextMode: AgentInputContextMode.FullWorkflow),
+                new(
+                    AgentType.VideoTransform,
+                    "Compile edited video with music",
+                    StepType.VideoCompile,
+                    // Decision/MusicPlan reference their source steps explicitly by StepOrder —
+                    // "Previous" relative to THIS step would resolve to the MusicSupervisor step's
+                    // output (step 3), not the story editor's decision (step 2).
+                    VideoCompileConfigJson: """
+                        {"version":1,"decision":{"from":"Step","stepOrder":2},"analysisStepOrder":1,"enableMusic":true,"musicPlan":{"from":"Step","stepOrder":3}}
+                        """),
+                new(
+                    AgentType.VideoReviewAgent,
+                    "Review edit quality",
+                    StepType.ReviewLoop,
+                    // Loop back to step 2 so a low score re-runs the story editor, the music
+                    // supervisor, and the compile step in sequence — step 1 (VideoAnalyze) is
+                    // deterministic and need not rerun. Same MinScore/MaxIterations/FullWorkflow
+                    // pattern as video-derush-edit/video-derush-edit-graphics above.
+                    LoopTargetStepOrder: 2,
+                    MaxIterations: 2,
+                    MinScore: 7,
+                    AgentInputContextMode: AgentInputContextMode.FullWorkflow)
             ])
     ];
 

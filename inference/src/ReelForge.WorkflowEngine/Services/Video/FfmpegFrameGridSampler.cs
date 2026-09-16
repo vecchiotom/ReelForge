@@ -43,7 +43,7 @@ public sealed class FfmpegFrameGridSampler : IFrameGridSampler
         // this keeps the path-containment assertion consistent everywhere.
         string outputPath = scratch.GetPath("grid.rgb");
 
-        string[] args = FfmpegArgvBuilder.BuildGridSampleArgs(localFilePath, outputPath, effectiveFps, gridWidth, gridHeight);
+        string[] args = FfmpegArgvBuilder.BuildGridSampleArgs(localFilePath, outputPath, effectiveFps, gridWidth, gridHeight, _options.FfmpegThreads);
         TimeSpan timeout = TimeSpan.FromSeconds(_options.AnalyzeTimeoutSeconds);
 
         VideoToolResult result = await _runner.RunFfmpegAsync(args, timeout, ct).ConfigureAwait(false);

@@ -18,6 +18,7 @@ executors, agents in general) see `CLAUDE.md`.
 - [Vision captioning (Phase 2)](#vision-captioning-phase-2)
 - [Transcription (ASR)](#transcription-asr)
 - [Motion graphics (Phase 3)](#motion-graphics-phase-3)
+- [Semantic visual dimensions (Phase 4)](#semantic-visual-dimensions-phase-4)
 - [Security: why ffmpeg is not in the sandbox](#security-why-ffmpeg-is-not-in-the-sandbox)
 - [Explicitly not built](#explicitly-not-built)
 
@@ -258,26 +259,32 @@ before chunking it — wasted compute at best, a very large in-memory string at 
 | `StillMotionThreshold` | `0.02` | Per-frame motion (0..1) below which a moment counts as "still" |
 | `MinStillWindowMs` | `400` | Minimum duration for a still run to be reported as a `StillWindow` |
 | `MaxStillWindowsPerShot` | `3` | Longest still windows kept per shot |
-| `DetectLetterbox` | `false` | Opt-in, not implemented in Phase 1 — reserved for a future `cropdetect` pass |
-| `DetectSharpness` | `false` | Opt-in, not implemented in Phase 1 — reserved for a future sharpness/blur metric |
+| `DetectLetterbox` | `true` | D6: implemented (Phase 4), free from the grid data Phase 1 already samples — see [Semantic visual dimensions (Phase 4)](#semantic-visual-dimensions-phase-4). Default changed from `false`; may under-report soft/gradient letterbox edges |
+| `DetectSharpness` | `false` | D-adjacent "sharpness": implemented (Phase 4) but costs one extra native-resolution ffmpeg invocation per measured shot (capped by `MaxSharpnessShots`), so it stays opt-in unlike the other free dimensions — see [Semantic visual dimensions (Phase 4)](#semantic-visual-dimensions-phase-4) |
 | `AnalyzeAudioLevels` | `true` | Phase 1: `WavRmsSampler` over the WAV already extracted for transcription, or extracted fresh if transcription is off |
 | `DetectNearDuplicates` | `true` | Phase 1: near-duplicate/best-take grouping via `FrameGridAnalyzer.GroupDuplicates` |
 | `DuplicateSimilarityThreshold` | `0.90` | Minimum signature similarity (0..1) for two shots to be grouped |
 | `DuplicateWindowShots` | `20` | Single-linkage grouping only compares a shot against the previous N shots (multi-take shots are temporally adjacent) |
 | `VisualDetail` | `Compact` | `None` / `Compact` / `Full` — how much per-shot visual/audio detail the bounded view includes; degrades toward `None` before any item is ever dropped — see below |
 | `MaxViewDuplicateGroups` | `20` | Caps `view.duplicateGroups` |
+| `AnalyzeColorGrading` | `true` | Phase 4, D1-D3 (colour temperature, tone curve, saturation character) — free, three adds and one array increment inside a pixel loop that already runs — see [Semantic visual dimensions (Phase 4)](#semantic-visual-dimensions-phase-4) |
+| `DetectLookGroups` | `true` | Phase 4, D4 look grouping (`view.lookGroups`, ids `k{n}`) — free, O(shots²) over six floats, cheaper than the 576-float duplicate grouping already running |
+| `LookSimilarityThreshold` | `0.88` | Minimum look similarity (0..1) for two shots to share a look group; lower than `DuplicateSimilarityThreshold` since look distance is a weighted six-vector, not a 576-float grid comparison |
+| `MaxViewLookGroups` | `12` | Caps `view.lookGroups` |
 | `Vision` | `Off` | Phase 2: `Off` / `Optional` / `Required` — vision-LLM shot captioning, **off by default** (unlike `Transcription`) — see [Vision captioning (Phase 2)](#vision-captioning-phase-2) |
 | `VisionProviderId` | `null` | Explicit override; otherwise resolved via the default `Vision`-capability provider |
-| `CaptionSelection` | `PerDuplicateGroup` | `PerDuplicateGroup` / `LongestShots` / `EvenlySpaced` — which shots get captioned |
-| `MaxCaptionedShots` | `24` | Hard cap on vision chat-completion calls per step |
+| `CaptionSelection` | `PerDuplicateGroup` | `PerDuplicateGroup` / `LongestShots` / `EvenlySpaced` — which shots get captioned; round-robins across source clips when more than one is analyzed (Phase 4) |
+| `MaxCaptionedShots` | `50` | Hard cap on vision chat-completion calls **across the whole step** (genuinely step-wide since the Phase 4 vision hoist — see [Vision captioning (Phase 2)](#vision-captioning-phase-2)), not a target: every shot under `MinCaptionShotSeconds` is excluded before this cap even applies. Default raised from `24` |
 | `MinCaptionShotSeconds` | `1.0` | Shots shorter than this are never selected for captioning |
-| `KeyframeMaxWidth` | `512` | Max width (px) of the extracted keyframe JPEG sent to the vision model; never upscaled |
+| `KeyframeMaxWidth` | `512` | Max width (px) of the extracted keyframe JPEG (or contact sheet — see `KeyframesPerShot`) sent to the vision model; never upscaled |
 | `VisionTimeoutSeconds` | `120` | Aggregate wall-clock budget for the whole captioning pass (not per-shot) |
 | `MaxCaptionChars` | `320` | Caption `summary` field is truncated to this length |
-| `PersistKeyframes` | `false` | When `false` (default), extracted keyframe JPEGs are scratch-only and deleted with the rest of scratch space; no storage upload in Phase 2 either way |
+| `KeyframesPerShot` | `1` | Phase 4: frames combined into ONE contact-sheet keyframe per captioned shot, clamped `1..3`. `1` (default) is a single mid-shot still, byte-identical to the pre-Phase-4 vision path — see [Semantic visual dimensions (Phase 4)](#semantic-visual-dimensions-phase-4) |
+| `PersistKeyframes` | `false` | Phase 4: now wired — when `true`, each captioned shot's keyframe JPEG is uploaded to storage under the `video-analysis/{executionId}/step-{n}-keyframes/` prefix (a persist failure never costs the caption itself). When `false` (default), keyframes stay scratch-only and are deleted with the rest of scratch space |
 | `EmitOverlayPlacements` | `false` | Phase 3: derives deterministic overlay-placement candidates (`view.placements`) from each shot's Phase 1 region data — see [Motion graphics (Phase 3)](#motion-graphics-phase-3) |
 | `MaxPlacementsPerShot` | `2` | Top-N regions (by `Suitability`) offered per shot |
 | `MaxPlacements` | `40` | Hard cap on placements across the whole artifact; lowest-suitability candidates dropped first |
+| `MaxSharpnessShots` | `24` | Phase 4: step-wide ceiling on sharpness measurements when `DetectSharpness` is on — genuinely step-wide like `MaxCaptionedShots`, not per source. Costs one extra ffmpeg invocation per measured shot |
 | `Expect` | `null` | Optional structural checks (`MinShots`, `MinTranscriptSegments`, `MaxSilenceRatio`, `MinShotsWithVisuals`) |
 
 ### `VideoCompileStepConfig`
@@ -616,6 +623,14 @@ Captioning runs **last** among `VideoAnalyze`'s analysis stages, strictly after 
 stage (silence/shot detection, transcription, Phase 1 visual/audio analysis, near-duplicate
 grouping) — so a vision failure can never put anything deterministic at risk:
 
+**Multi-source hoist (Phase 4 fix).** Captioning is a **step-level** pass over every source's shots
+combined, run once after all per-source deterministic analysis completes — not a per-source pass
+run once per source. This matters for `MaxCaptionedShots`/`VisionTimeoutSeconds`: both are genuinely
+step-wide budgets across every source clip, never silently reset per source. An earlier draft of
+this feature ran captioning inside the per-source loop, which would have let a 2-source analysis
+spend up to `2 × MaxCaptionedShots` vision calls instead of the configured cap — caught and fixed
+before merge; `VideoMultiSourceTests` pins the corrected step-wide behavior.
+
 1. `Vision == Off` → skipped entirely, `meta.vision = {mode: "Off", applied: false, ...}`. Every
    other field in the view/artifact is byte-identical to a pre-Phase-2 run — the single most
    important regression test in this phase, mirroring Phase 1's degrade-before-drop test's
@@ -644,36 +659,75 @@ Phase 1's `"v"`/`"a"` keys — same degrade-before-drop discipline, never bypass
         "summary": "A presenter gestures at a whiteboard while explaining a diagram.",
         "scale": "Medium", "mood": "Focused", "tags": ["presenter", "whiteboard", "explaining"],
         "subjects": ["presenter"], "action": "gesturing at a diagram",
-        "setting": "office whiteboard", "cameraAngle": "Eye level", "onScreenText": []
+        "setting": "office whiteboard", "cameraAngle": "Eye level", "onScreenText": [],
+        "style": "flat ungraded log", "issues": ["soft focus"]
       }
     }]
   },
   "meta": {
-    "vision": { "mode": "Optional", "applied": true, "provider": "gpt-4o-mini-vision", "degraded": false, "partial": false, "captionedShots": 6, "failedShots": 0 }
+    "vision": { "mode": "Optional", "applied": true, "provider": "gpt-4o-mini-vision", "degraded": false, "partial": false, "captionedShots": 6, "failedShots": 0, "persistedKeyframes": 0 }
   }
 }
 ```
 
-`Compact` detail shows `summary`/`scale`/`mood`/`tags`; `Full` adds `subjects`/`action`/`setting`/
-`cameraAngle`/`onScreenText`. A shot with no `"c"` key is normal — not selected for captioning, or
-captioning off/failed/degraded — never a signal the shot is empty or unimportant; the
-`VideoStoryEditor` prompt says so explicitly.
+`Compact` detail shows `summary`/`scale`/`mood`/`tags`/`style`/`issues` (Phase 4 added `style` and
+`issues` at `Compact`, matching Phase 1's own "cheap signals first" discipline); `Full` adds
+`subjects`/`action`/`setting`/`cameraAngle`/`onScreenText`/`timeOfDay`/`lighting`/`framing` (Phase
+4). A shot with no `"c"` key is normal — not selected for captioning, or captioning off/failed/
+degraded — never a signal the shot is empty or unimportant; the `VideoStoryEditor` prompt says so
+explicitly.
 
 `VideoAnalysisArtifact.Version` **stays at 2**, not 3: Phase 2 appends exactly one more
 optional/nullable field (`VideoAnalysisShot.Caption`) plus optional/default-valued fields on
 `VideoAnalysisProvenance`, and a Version-2-without-captions artifact and a
 Version-2-with-captions artifact are both valid under the identical shape — no consumer needs to
 structurally distinguish them (a consumer that cares simply checks whether `Caption` is null).
+Phase 4's five new `VideoShotCaption` fields (`TimeOfDay`, `Lighting`, `VisualStyle`, `Framing`,
+`TechnicalIssues`) are additive the same way and do not bump the version either.
 
-### Explicitly out of scope for Phase 2
+### Prompt priming, contact sheets, and persisted keyframes (Phase 4)
 
-`PersistKeyframes` exists as a config field but is unused — the default (`false`, scratch-only,
-deleted with the rest of scratch space) is the only wired behavior; uploading keyframes for later
-inspection was deliberately deferred rather than adding an unvalidated storage path this late in
-the phase. No UI was added to the workflow step-config builder for the new `Vision*` fields
+Three changes to the captioning path itself, none of which touch the id-anchored/no-timestamp
+contract:
+
+- **Prompt priming.** The vision prompt is primed with a short sentence of Phase 1's own
+  deterministic measurements for the shot being captioned (color temperature, tone curve,
+  saturation, camera move, letterbox/backlit flags) — words derived from measurements, never a
+  number the model could restate. The model is told to use this only to inform its reading, not to
+  treat it as ground truth it must repeat; `null` (visual analysis off/degraded for that shot) omits
+  the block entirely. `ShotCaptionRequest.MeasuredContext` carries this; `VisionShotCaptioner`
+  formats and injects it.
+- **Contact-sheet keyframes (`KeyframesPerShot`, default `1`).** `1` extracts the same single
+  mid-shot still as before Phase 4 — byte-identical. `2` or `3` instead extracts that many frames
+  evenly spaced across the shot (`KeyframeSelector.ChooseKeyframeSecs`) and hstacks them into one
+  contact-sheet JPEG (`FfmpegArgvBuilder.BuildContactSheetArgs`, `IKeyframeExtractor.ExtractContactSheetAsync`)
+  — N cheap input seeks, never a single pass decoding the whole shot. Each pane is scaled to
+  `KeyframeMaxWidth / N` so the combined image and its vision-call token cost stay roughly flat. The
+  prompt gains one extra sentence telling the model the image is a multi-frame contact sheet of one
+  shot, not several shots.
+- **`PersistKeyframes`** is now wired: `true` uploads each captioned shot's keyframe JPEG (or
+  contact sheet) to storage under `video-analysis/{executionId}/step-{stepOrder}-keyframes/{shotId}.jpg`,
+  counted in `meta.vision.persistedKeyframes`. A persist failure is logged and swallowed — it can
+  never cost the caption itself, since observability is never allowed to be more load-bearing than
+  the thing it observes. Default stays `false` (scratch-only, deleted with the rest of scratch
+  space).
+
+Also (judgment call 9): `KeyframeSelector`'s longest-shots fill pass now round-robins its selection
+across source clips (grouping candidates by `SourceIndex`, longest-first within each group, then
+alternating groups) instead of picking the global longest shots regardless of source — so a
+`MaxCaptionedShots` budget spent across several source clips isn't silently exhausted entirely on
+one long clip. A single-source analysis produces exactly one round-robin "group", which is provably
+identical to the pre-Phase-4 plain longest-first order — no behavior change for the (still
+overwhelmingly common) single-source case.
+
+### Explicitly out of scope for Phase 2 and Phase 4
+
+No UI was added to the workflow step-config builder for the `Vision*` fields
 (`InferenceProviderForm`'s capability picker and the admin provider table were updated; the
-per-step `VideoAnalyze` config panel was not) — a workflow author can still set them via the raw
-step JSON today.
+per-step `VideoAnalyze` config panel exposes only the three free Phase 4 switches — see
+[Semantic visual dimensions (Phase 4)](#semantic-visual-dimensions-phase-4)) — a workflow author
+can still set the `Vision*`/`KeyframesPerShot`/`PersistKeyframes` fields via the raw step JSON
+today.
 
 ---
 
@@ -945,6 +999,117 @@ Only static text/box overlays with fade in/out — Phase 3 does NOT apply Ken-Bu
 1's `KenBurnsCandidate` remains identification-only), does NOT burn in subtitles, and does NOT do
 transitions between cuts. See [Explicitly not built](#explicitly-not-built) below, which is
 unchanged by this phase except for graphics moving out of "not built" and into this section.
+
+---
+
+## Semantic visual dimensions (Phase 4)
+
+Seven deterministic dimensions (D1-D7) added on top of Phase 1's scene/visual analysis, plus
+prompt/contact-sheet/persistence changes to Phase 2's vision captioning. D1-D4 and D6 are **free**
+— derived from the same low-res grid data Phase 1 already samples, so they default **on**. D5
+(audio character) rides `AnalyzeAudioLevels` the same way. D7 (backlit) is a byproduct of D6's
+region data, also free. Only sharpness (a D-adjacent dimension, not part of D1-D7's own numbering)
+costs a genuinely new ffmpeg invocation per measured shot, so it alone stays opt-in.
+
+Every new stage below follows Phase 1's original discipline: **degrade, never fail the step.** A
+classification that cannot be computed (near-monochrome frame, too few audio windows, no clean
+letterbox bars) simply omits that field or id — it never throws out of the analysis pass, and it
+never blocks silence/shot detection, transcription, or any other deterministic stage from
+completing.
+
+| # | Dimension | Formula (informal) | Gate | Documented limitation |
+|---|---|---|---|---|
+| D1 | Color temperature (`Warmth`/`Tint`/`ColorTemperatureClass`) | `Warmth = clamp((meanR − meanB) / 0.25, −1, 1)`; `Tint` is the same shape against G vs. (R+B)/2. `ColorTemperatureClass` is `Warm`/`Cool` at `\|Warmth\| ≥ 0.20`, else `Neutral`; a near-monochrome frame (`SaturationMean < 0.05`) is always `Neutral` regardless of `Warmth` | `AnalyzeColorGrading` | A single dominant colored object (not the lighting) can skew the whole-frame mean; this is a frame-average heuristic, not a white-balance measurement |
+| D2 | Tone curve (`BlackPoint`/`WhitePoint`/`ToneClass`) | 5th/95th percentile of the luma histogram (nearest-rank). `ToneClass` order is load-bearing — an actual exposure defect always outranks a stylistic read: `Blown` (clipped highlight ratio > 5%) → `Crushed` (crushed black ratio > 5%) → `Flat` (dynamic range < 0.45 **and** black point > 0.10 — lifted blacks + compressed range, i.e. log/ungraded) → `Contrasty` (dynamic range > 0.75 **and** black point < 0.06) → `Normal` | `AnalyzeColorGrading` | `Flat` on a whole look group is a property of the SOURCE footage (ungraded log), not a per-shot defect — both agent prompts say so explicitly |
+| D3 | Saturation character (`SaturationClass`) | Pure threshold projection of the pre-existing `SaturationMean`: `Muted` (< 0.18) / `Natural` / `Vivid` (> 0.42) | `AnalyzeColorGrading` | Same mean-based coarseness as D1 |
+| D4 | Look grouping (`view.lookGroups`, ids `k{n}`) | Six-float `LookSignature` (`Warmth`, `Tint`, `BrightnessMean`, `BlackPoint`, `WhitePoint`, `SaturationMean`) per shot; `LookDistance` is a weighted L1 distance normalized per-component to 0..1 (weights `0.30/0.10/0.25/0.15/0.10/0.10`, summing to 1.0 so `Similarity = 1 − Distance` lands in 0..1); single-linkage clustering over **all pairs** (not windowed like near-duplicate grouping, since a shared look deliberately links non-adjacent shots/clips) at `LookSimilarityThreshold` (default `0.88`). `LookRank` orders group members by ascending distance to the group centroid — rank 0 is the most representative shot | `DetectLookGroups` | O(shots²) — trivially cheap at the shot counts this feature targets, but would need revisiting at extreme shot counts |
+| D5 | Audio character (`char` under `"a"`) | `ShotAudioAnalyzer.Analyze`: crest factor (peak − RMS dB), 10th-percentile window RMS as a noise floor, level stability (`1 − clamp(stdDev/12dB, 0, 1)`), and zero-crossing rate. Classification order is load-bearing (`Dialogue` is the fallthrough, never a positive claim): `Silent` (RMS ≤ −50 dBFS) → `Music` (stable + compressed + low ZCR) → `Noisy` (high noise floor, low speech ratio) → `Ambient` (quiet, low speech ratio) → `Dialogue` | `AnalyzeAudioLevels` | Deliberately a ZCR/crest/noise-floor heuristic, not a spectral (FFT) classifier — this repo's only audio test fixtures are synthetic sine tones, and thresholds tuned against a 440 Hz sine would pass CI while misclassifying real footage (judgment call 7) |
+| D6 | Letterbox/pillarbox (`ActiveCrop`) | Scans the already-materialized luma frames for rows/columns whose luma stays below a tolerant black threshold (16/255, tolerant of compression noise inside a true matte) across every sampled frame, capped at 40% of the frame dimension (beyond that it reads as a dark scene, not bars) | `DetectLetterbox` (default **true** — free, no second luma pass) | Under-reports soft/gradient letterbox edges — the threshold expects a clean black bar, not a feathered one |
+| D7 | Backlit candidate (`BacklitCandidate`) | Byproduct of D6's region data: the center region (`R4`) is markedly darker than the average of the surrounding border regions (`borderLuma − centerLuma > 0.18`) while itself being dark (`centerLuma < 0.35`) | Free whenever regions are computed | Named and surfaced as a *candidate*, not a claim (mirrors `KenBurnsCandidate`'s precedent) — fed to the vision prompt so a model that can actually see the frame turns it into (or rejects) an actual assessment; `Full` detail only |
+| — | Sharpness (`Sharpness`, D-adjacent) | Native-resolution, square, centered grayscale patch (`FfmpegArgvBuilder.BuildSharpnessPatchArgs`, deliberately its own ffmpeg invocation so a fault there can never take Phase 2 keyframe extraction down with it) → discrete 4-neighbour Laplacian → variance over the interior, normalized against a documented heuristic constant. Only ever compared BETWEEN shots of the same source, never as an absolute unit | `DetectSharpness` (default **false** — one extra ffmpeg call per measured shot) | Costs real wall-clock/CPU unlike D1-D4/D6/D7, which is why it alone stays opt-in; capped by `MaxSharpnessShots`, a genuinely step-wide budget (like `MaxCaptionedShots`) computed AFTER the per-shot analyze loop and BEFORE that source's own duplicate grouping, so a real measured value (when available) — not the neutral placeholder — reaches `ComputeTakeQuality`'s best-take scoring |
+
+### `k{n}` isolation
+
+Look-group ids (`k{n}`) are a purely **descriptive** namespace, structurally different from every
+other id this feature offers a model. Shot/silence/segment ids (`s{n}`/`g{n}`/`t{n}`) are offered to
+`VideoStoryEditorAgent` and resolved by `VideoCompileStepExecutor.BuildIdTimeIndex`; placement ids
+(`p{n}`) and music-track ids (`m{n}`) are separate offered namespaces resolved by their own
+executor paths. `k{n}` is **never offered** to any agent at all — there is no `OfferedLookIds` list,
+deliberately — and no structured output in this feature (`VideoEditDecisionOutput`,
+`MotionGraphicsPlanOutput`, `MusicPlanOutput`) has a field that can name a look group. A `Keep` span
+naming `k{n}` can therefore only be a hallucination, and `BuildIdTimeIndex` deliberately excludes
+`k{n}` from its index so such a span fails `UNKNOWN_ID` exactly like any other id it does not
+contain — the same fate as a `p{n}`/`m{n}` id named in a `Keep` span.
+
+### View/artifact shape
+
+```jsonc
+{
+  "view": {
+    "shots": [
+      {
+        "id": "s0", "startSec": 0.0, "endSec": 4.2, "durationSec": 4.2, "src": 0,
+        "v": {
+          "motion": 12, "move": "Static", "cutIn": "still", "cutOut": "still",
+          "bright": 58, "colors": ["#3a2c1e", "#c9a876"],
+          "temp": "Warm", "tone": "Normal", "sat": "Natural", "look": "k0", "crop": [0.0, 0.11, 1.0, 0.78]
+        },
+        "a": { "rms": 42, "speech": 71, "char": "Dialogue" },
+        "c": {
+          "summary": "A presenter gestures at a whiteboard while explaining a diagram.",
+          "scale": "Medium", "mood": "Focused", "tags": ["presenter", "whiteboard"],
+          "style": "flat ungraded log", "issues": []
+        }
+      }
+    ],
+    "lookGroups": [
+      { "id": "k0", "shotIds": ["s0", "s1", "s4"], "repShotId": "s0", "cohesion": 91, "temp": "Warm", "tone": "Normal", "sat": "Natural" }
+    ]
+  },
+  "meta": {
+    "look": { "applied": true, "uniform": false, "groupCount": 1 },
+    "vision": { "mode": "Optional", "applied": true, "captionedShots": 6, "failedShots": 0, "persistedKeyframes": 0 }
+  }
+}
+```
+
+`"temp"`/`"tone"`/`"sat"` and `"look"` live under a shot's existing `"v"` node — gated on
+`AnalyzeColorGrading`/`DetectLookGroups` and `VisualDetail` exactly like every other Phase 1 field,
+same degrade-before-drop discipline. `"crop"` (D6) appears only when a crop was actually detected —
+omitted, not `null`, when the frame is full-bleed. `"char"` (D5) is always present on the `"a"` node
+whenever audio levels were analyzed, including for the common `Dialogue` value — unlike the visual
+fields, there is no "absent means nothing to report" reading for D5, since every shot has SOME
+audio character. `view.lookGroups` is capped by `MaxViewLookGroups`; when the whole analysis is one
+uniform look, every per-shot `"look"` id is suppressed and `meta.look.uniform` is `true` instead —
+repeating the same group id on every shot would add bytes without adding information.
+
+### Progress weighting
+
+`VideoAnalyzeProgressPlan`'s per-source stage list gained `SampleSharpness` (weight `4`, only
+counted when `DetectSharpness` is on) between `AnalyzeShots` and `GroupDuplicates`, and the
+step-level list gained `MatchLooks` (weight `2`, only counted when `DetectLookGroups` is on) between
+`GroupDuplicates`/multi-source join and `ListMusicCandidates`:
+
+| Stage | Weight | Level |
+|---|---|---|
+| `SampleFrameGrid` | 12 | Per-source |
+| `AnalyzeShots` | 10 | Per-source |
+| `SampleSharpness` | 4 | Per-source (only when `DetectSharpness`) |
+| `GroupDuplicates` | 2 | Per-source |
+| `MatchLooks` | 2 | Step-level (only when `DetectLookGroups`) |
+| `CaptionShots` | 14 | Step-level |
+
+A disabled stage contributes zero weight and is skipped entirely rather than reported as an
+instant 0%-to-100% jump — the same "only enabled stages count toward the total" rule the original
+plan established for every other optional stage, so turning a Phase 4 dimension off never distorts
+the percentages reported for the stages that stayed on.
+
+### Vision-phase changes
+
+See [Prompt priming, contact sheets, and persisted keyframes (Phase 4)](#prompt-priming-contact-sheets-and-persisted-keyframes-phase-4)
+under Vision captioning, and the multi-source hoist fix noted at the top of
+[Executor wiring](#executor-wiring) — both are Phase 4 changes to the Phase 2 captioning path,
+documented alongside Phase 2 rather than duplicated here.
 
 ---
 

@@ -32,6 +32,29 @@ public static class KeyframeSelector
     }
 
     /// <summary>
+    /// Phase 4 (§7.4) — <c>n==1</c> returns exactly <c>[ChooseKeyframeSec(shot)]</c>, byte-identical
+    /// to the pre-Phase-4 single-frame path. <c>n&gt;1</c> returns <paramref name="n"/> times at
+    /// even fractions of the shot (n=3 ⇒ 25%/50%/75%), clamped inside the shot's own bounds. n is
+    /// clamped to 1..3 here so a bad config can never fan out the argv.
+    /// </summary>
+    public static IReadOnlyList<double> ChooseKeyframeSecs(VideoAnalysisShot shot, int n)
+    {
+        int clampedN = Math.Clamp(n, 1, 3);
+        if (clampedN == 1)
+            return [ChooseKeyframeSec(shot)];
+
+        double duration = Math.Max(0, shot.EndSec - shot.StartSec);
+        var secs = new List<double>(clampedN);
+        for (int i = 1; i <= clampedN; i++)
+        {
+            double fraction = i / (double)(clampedN + 1);
+            secs.Add(Math.Clamp(shot.StartSec + duration * fraction, shot.StartSec, shot.EndSec));
+        }
+
+        return secs;
+    }
+
+    /// <summary>
     /// Selects up to <paramref name="maxCaptionedShots"/> shot ids to caption, per
     /// <paramref name="strategy"/>, excluding any shot shorter than
     /// <paramref name="minCaptionShotSeconds"/>. The returned list is always in
@@ -96,12 +119,15 @@ public static class KeyframeSelector
             }
         }
 
-        // Pass 2: fill any remaining budget with the longest not-yet-selected eligible shots.
+        // Pass 2: fill any remaining budget with the longest not-yet-selected eligible shots —
+        // round-robin by source clip (judgment call 9) so a 50-shot budget across many clips isn't
+        // spent entirely on one long source. A single source produces one round-robin "group",
+        // which is provably identical to plain longest-first, so this changes nothing for the
+        // (still overwhelmingly common) single-source case.
         if (selected.Count >= maxCaptionedShots)
             return;
 
-        foreach (VideoAnalysisShot s in shots.Where(eligible).Where(s => !selected.Contains(s.Id))
-                     .OrderByDescending(s => s.EndSec - s.StartSec))
+        foreach (VideoAnalysisShot s in RoundRobinBySource(shots.Where(eligible).Where(s => !selected.Contains(s.Id))))
         {
             if (selected.Count >= maxCaptionedShots)
                 return;
@@ -116,12 +142,37 @@ public static class KeyframeSelector
         int maxCaptionedShots,
         HashSet<string> selected)
     {
-        foreach (VideoAnalysisShot s in shots.Where(eligible).OrderByDescending(s => s.EndSec - s.StartSec))
+        foreach (VideoAnalysisShot s in RoundRobinBySource(shots.Where(eligible)))
         {
             if (selected.Count >= maxCaptionedShots)
                 return;
 
             selected.Add(s.Id);
+        }
+    }
+
+    /// <summary>
+    /// Phase 4 (judgment call 9) — groups candidates by <see cref="VideoAnalysisShot.SourceIndex"/>
+    /// (each group ordered longest-first), then round-robins across groups in first-appearance
+    /// (i.e. source-index ascending, since callers always pass shots in merged chronological order)
+    /// order. A single source produces exactly one group, so the round-robin loop degenerates to
+    /// plain longest-first — provably identical output, hence no existing single-source
+    /// <c>KeyframeSelectorTests</c> fact changes.
+    /// </summary>
+    private static IEnumerable<VideoAnalysisShot> RoundRobinBySource(IEnumerable<VideoAnalysisShot> candidates)
+    {
+        List<Queue<VideoAnalysisShot>> bySource = candidates
+            .GroupBy(s => s.SourceIndex)
+            .Select(g => new Queue<VideoAnalysisShot>(g.OrderByDescending(s => s.EndSec - s.StartSec)))
+            .ToList();
+
+        while (bySource.Any(q => q.Count > 0))
+        {
+            foreach (Queue<VideoAnalysisShot> q in bySource)
+            {
+                if (q.Count > 0)
+                    yield return q.Dequeue();
+            }
         }
     }
 

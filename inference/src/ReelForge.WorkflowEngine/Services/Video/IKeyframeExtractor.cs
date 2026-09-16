@@ -18,4 +18,13 @@ public interface IKeyframeExtractor
     /// </summary>
     Task ExtractKeyframeAsync(
         string inputVideoPath, string outputJpgPath, double atSec, int maxWidth, CancellationToken ct);
+
+    /// <summary>
+    /// Phase 4 (<c>KeyframesPerShot</c> &gt; 1) — writes ONE contact-sheet JPEG hstacking a frame
+    /// from each of <paramref name="atSecs"/> (left to right). A separate method, not an overload
+    /// of <see cref="ExtractKeyframeAsync"/>, so <c>KeyframesPerShot == 1</c> keeps calling the
+    /// exact original single-frame path byte-for-byte.
+    /// </summary>
+    Task ExtractContactSheetAsync(
+        string inputVideoPath, string outputJpgPath, IReadOnlyList<double> atSecs, int maxWidth, CancellationToken ct);
 }

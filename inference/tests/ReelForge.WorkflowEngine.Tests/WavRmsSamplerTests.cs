@@ -142,4 +142,47 @@ public class WavRmsSamplerTests
         IReadOnlyList<WavRmsSampler.RmsWindow> windows = WavRmsSampler.Sample(garbage, windowMs: 250);
         windows.Should().BeEmpty();
     }
+
+    [Fact]
+    public void A_sine_tone_reports_a_zero_crossing_rate_matching_its_frequency()
+    {
+        byte[] wav = BuildWav(FullScaleSineWave(SampleRate, frequencyHz: 440));
+        IReadOnlyList<WavRmsSampler.RmsWindow> windows = WavRmsSampler.Sample(wav, windowMs: 250);
+
+        // A 440 Hz tone crosses zero 880 times/sec => ZCR ~= 880/16000 = 0.055.
+        const double expected = 880.0 / SampleRate;
+        windows.Should().NotBeEmpty();
+        foreach (WavRmsSampler.RmsWindow w in windows)
+        {
+            w.ZeroCrossingRate.Should().BeApproximately(expected, expected * 0.20);
+        }
+    }
+
+    [Fact]
+    public void Silence_reports_a_zero_crossing_rate_of_zero()
+    {
+        byte[] wav = BuildWav(Silence(SampleRate));
+        IReadOnlyList<WavRmsSampler.RmsWindow> windows = WavRmsSampler.Sample(wav, windowMs: 250);
+
+        windows.Should().NotBeEmpty();
+        foreach (WavRmsSampler.RmsWindow w in windows)
+        {
+            w.ZeroCrossingRate.Should().Be(0);
+        }
+    }
+
+    [Fact]
+    public void Existing_windows_are_unchanged_by_the_new_field()
+    {
+        byte[] wav = BuildWav(FullScaleSquareWave(SampleRate, periodSamples: 32));
+        IReadOnlyList<WavRmsSampler.RmsWindow> windows = WavRmsSampler.Sample(wav, windowMs: 250);
+
+        windows.Should().NotBeEmpty();
+        foreach (WavRmsSampler.RmsWindow w in windows)
+        {
+            w.RmsDbfs.Should().BeInRange(-0.5, 0.1);
+            w.PeakDbfs.Should().BeInRange(-0.5, 0.1);
+            w.ZeroCrossingRate.Should().BeGreaterThan(0); // a 32-sample-period square wave flips every 16 samples
+        }
+    }
 }

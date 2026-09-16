@@ -8,7 +8,16 @@ namespace ReelForge.WorkflowEngine.Services.Video;
 /// its extracted keyframe JPEG, and the sample time (for logging/diagnostics only — never sent to
 /// the model, and never part of the response contract).
 /// </summary>
-public sealed record ShotCaptionRequest(string ShotId, string KeyframePath, double AtSec);
+public sealed record ShotCaptionRequest(
+    string ShotId, string KeyframePath, double AtSec,
+    /// <summary>
+    /// Phase 4 — a short, already-formatted sentence of DETERMINISTIC measurements for this shot,
+    /// or null when visual analysis was off/degraded. Never numbers the model may restate — only
+    /// the words Phase 1 derived — so the no-timestamp/no-number discipline is unaffected.
+    /// </summary>
+    string? MeasuredContext = null,
+    /// <summary>Phase 4 (<c>KeyframesPerShot</c> &gt; 1) — true when <see cref="KeyframePath"/> is a multi-frame contact sheet, not a single still.</summary>
+    bool IsContactSheet = false);
 
 /// <summary>
 /// Produces a short structured scene description of one shot's representative keyframe via a

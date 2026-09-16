@@ -7,6 +7,7 @@ using ReelForge.Shared.IntegrationEvents;
 using ReelForge.WorkflowEngine.Data;
 using ReelForge.WorkflowEngine.Observability;
 using ReelForge.WorkflowEngine.Agents.Tools;
+using ReelForge.WorkflowEngine.Execution.StepExecutors;
 using ReelForge.WorkflowEngine.Services.Messaging;
 
 namespace ReelForge.WorkflowEngine.Execution;
@@ -112,6 +113,19 @@ public class WorkflowExecutorService
             int stepTransitionCount = 0;
             const int MaxStepTransitions = 1000;
 
+            // Feedback from a ReviewLoop step that just looped execution backward — seeded onto
+            // every step's StepExecutionContext from the loop target through (but not including)
+            // the ReviewLoop step itself, via the same RetryFeedback/RetryGuidance mechanism
+            // AgentStepExecutor already uses for schema-validation retries (see
+            // StepExecutionContext.RecordRetryFeedback), so a retried VideoStoryEditor/
+            // MotionGraphicsPlanner/AuthorAgent gets the actual review critique instead of
+            // retrying blind. Cleared once the window is exited (either the ReviewLoop step is
+            // reached again, or it passed/exhausted MaxIterations and moved forward) so a later,
+            // unrelated ReviewLoop step in the same workflow never inherits stale feedback.
+            string? pendingReviewFeedback = null;
+            int pendingReviewFeedbackMinStepOrder = int.MaxValue;
+            int pendingReviewFeedbackMaxStepOrderExclusive = int.MinValue;
+
             while (currentStepIndex < steps.Count && !ct.IsCancellationRequested)
             {
                 stepTransitionCount++;
@@ -160,6 +174,12 @@ public class WorkflowExecutorService
                     CancellationToken = ct
                 };
 
+                if (pendingReviewFeedback is not null &&
+                    IsWithinReviewFeedbackWindow(step.StepOrder, pendingReviewFeedbackMinStepOrder, pendingReviewFeedbackMaxStepOrderExclusive))
+                {
+                    context.RecordRetryFeedback(iterationCount, pendingReviewFeedback);
+                }
+
                 string? initialInputJson = ResolveInputJsonForPersistence(context.LastResolvedAgentInput, accumulatedOutput);
                 if (step.StepType == StepType.Agent)
                 {
@@ -186,6 +206,14 @@ public class WorkflowExecutorService
                 };
                 db.WorkflowStepResults.Add(stepResult);
                 await db.SaveChangesAsync(ct);
+
+                // Wire the ephemeral progress-reporting hook now that stepResult.Id exists — see
+                // StepExecutionContext.ReportProgressAsync's doc comment. Capturing `stepResult`
+                // by reference here is safe even though its fields mutate below: WorkflowStepProgress
+                // only ever reads stepResult.Id, which is fixed at creation.
+                context.StepResultId = stepResult.Id;
+                context.ProgressReporter = (stage, percent, progressCt) =>
+                    _eventPublisher.PublishStepProgressAsync(execution, step, stepResult, stage, percent, progressCt);
 
                 await _eventPublisher.PublishStepStartedAsync(
                     execution,
@@ -260,7 +288,7 @@ public class WorkflowExecutorService
                 // Handle review scores for ReviewLoop steps
                 if (step.StepType == StepType.ReviewLoop && result.IterationNumber.HasValue)
                 {
-                    int score = ParseReviewScore(result.Output);
+                    int score = ReviewLoopStepExecutor.ParseReviewScore(result.Output);
                     db.ReviewScores.Add(new ReviewScore
                     {
                         Id = Guid.NewGuid(),
@@ -270,6 +298,25 @@ public class WorkflowExecutorService
                         Comments = result.Output,
                         CreatedAt = DateTime.UtcNow
                     });
+                }
+
+                // Capture/clear pending loop-back review feedback (see the declaration above the
+                // while loop). Must run for every ReviewLoop step regardless of outcome so a pass
+                // (or exhausted MaxIterations) clears any window left over from an earlier loop.
+                if (step.StepType == StepType.ReviewLoop)
+                {
+                    if (result.NextStepIndex <= currentStepIndex)
+                    {
+                        pendingReviewFeedback = ReviewLoopStepExecutor.ExtractFeedbackSummary(result.Output);
+                        pendingReviewFeedbackMinStepOrder = steps[result.NextStepIndex].StepOrder;
+                        pendingReviewFeedbackMaxStepOrderExclusive = step.StepOrder;
+                    }
+                    else
+                    {
+                        pendingReviewFeedback = null;
+                        pendingReviewFeedbackMinStepOrder = int.MaxValue;
+                        pendingReviewFeedbackMaxStepOrderExclusive = int.MinValue;
+                    }
                 }
 
                 try
@@ -674,6 +721,16 @@ public class WorkflowExecutorService
         return string.IsNullOrWhiteSpace(accumulatedOutput) ? null : accumulatedOutput;
     }
 
+    /// <summary>
+    /// True when <paramref name="stepOrder"/> falls in the half-open window
+    /// <c>[minStepOrderInclusive, maxStepOrderExclusive)</c> a ReviewLoop step's loop-back opened —
+    /// i.e. the loop target through (but not including) the ReviewLoop step itself. Extracted as a
+    /// pure, directly-testable helper from the main execution loop's inline condition (see
+    /// <see cref="ExecuteAsync"/>'s <c>pendingReviewFeedback</c> bookkeeping).
+    /// </summary>
+    internal static bool IsWithinReviewFeedbackWindow(int stepOrder, int minStepOrderInclusive, int maxStepOrderExclusive) =>
+        stepOrder >= minStepOrderInclusive && stepOrder < maxStepOrderExclusive;
+
     private static async Task EnsureAuthorArtifactProducedAsync(
         Guid executionId,
         IReadOnlyCollection<WorkflowStep> workflowSteps,
@@ -701,18 +758,6 @@ public class WorkflowExecutorService
 
         throw new InvalidOperationException(
             "Workflow contains an Author step but no rendered media artifact was produced. Ensure the Author step completes rendering and sets outputStorageKey.");
-    }
-
-    private static int ParseReviewScore(string reviewOutput)
-    {
-        try
-        {
-            using JsonDocument doc = JsonDocument.Parse(reviewOutput);
-            if (doc.RootElement.TryGetProperty("score", out JsonElement scoreProp))
-                return scoreProp.GetInt32();
-        }
-        catch (JsonException) { }
-        return 0;
     }
 
     /// <summary>

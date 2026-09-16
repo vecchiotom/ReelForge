@@ -30,10 +30,11 @@ public static class OverlayPlacementBuilder
         string TimeAnchor, double StartSec, double EndSec, double Suitability, string TextColor);
 
     public static IReadOnlyList<VideoAnalysisPlacement> BuildPlacements(
-        IReadOnlyList<VideoAnalysisShot> shots, int maxPerShot, int maxTotal)
+        IReadOnlyList<VideoAnalysisShot> shots, int maxPerShot, int maxTotal, int maxTimeSlicesPerRegion = 3)
     {
         int effectiveMaxPerShot = Math.Max(0, maxPerShot);
         int effectiveMaxTotal = Math.Max(0, maxTotal);
+        int effectiveMaxSlices = Math.Max(1, maxTimeSlicesPerRegion);
 
         if (effectiveMaxPerShot == 0 || effectiveMaxTotal == 0)
             return [];
@@ -51,6 +52,9 @@ public static class OverlayPlacementBuilder
             if (endSec <= startSec)
                 continue;
 
+            IReadOnlyList<(double Start, double End)> timeSlices =
+                SplitIntoTimeSlices(startSec, endSec, effectiveMaxSlices);
+
             IEnumerable<VideoAnalysisRegion> ranked = visual.Regions
                 .Where(r => NamedOverlayBands.Contains(r.Name, StringComparer.Ordinal))
                 .OrderByDescending(r => r.Suitability)
@@ -58,9 +62,12 @@ public static class OverlayPlacementBuilder
 
             foreach (VideoAnalysisRegion region in ranked)
             {
-                candidates.Add(new Candidate(
-                    shotIndex, shot.Id, region.Name, region.Rect, anchor, startSec, endSec,
-                    region.Suitability, region.TextColor));
+                foreach ((double sliceStart, double sliceEnd) in timeSlices)
+                {
+                    candidates.Add(new Candidate(
+                        shotIndex, shot.Id, region.Name, region.Rect, anchor, sliceStart, sliceEnd,
+                        region.Suitability, region.TextColor));
+                }
             }
         }
 
@@ -85,6 +92,38 @@ public static class OverlayPlacementBuilder
         }
 
         return placements;
+    }
+
+    /// <summary>Target minimum width (seconds) of one time slice — generous enough to comfortably hold even a "Hold"-duration overlay.</summary>
+    private const double MinTimeSliceSec = 4.0;
+
+    /// <summary>
+    /// Splits [<paramref name="startSec"/>, <paramref name="endSec"/>) into up to
+    /// <paramref name="maxSlices"/> equal-width, contiguous, non-overlapping sub-windows — the fix
+    /// for every region offered on a long shot otherwise sharing one identical window (see the
+    /// remarks on <see cref="BuildPlacements"/>'s caller). Returns the original window unsplit
+    /// (one slice) when it's already narrower than <see cref="MinTimeSliceSec"/> or
+    /// <paramref name="maxSlices"/> is 1 — existing short-shot behavior is unchanged.
+    /// </summary>
+    private static IReadOnlyList<(double Start, double End)> SplitIntoTimeSlices(
+        double startSec, double endSec, int maxSlices)
+    {
+        double duration = endSec - startSec;
+        int sliceCount = Math.Clamp((int)(duration / MinTimeSliceSec), 1, maxSlices);
+
+        if (sliceCount <= 1)
+            return [(startSec, endSec)];
+
+        double sliceWidth = duration / sliceCount;
+        List<(double, double)> slices = new(sliceCount);
+        for (int i = 0; i < sliceCount; i++)
+        {
+            double sliceStart = startSec + i * sliceWidth;
+            double sliceEnd = i == sliceCount - 1 ? endSec : startSec + (i + 1) * sliceWidth;
+            slices.Add((sliceStart, sliceEnd));
+        }
+
+        return slices;
     }
 
     /// <summary>

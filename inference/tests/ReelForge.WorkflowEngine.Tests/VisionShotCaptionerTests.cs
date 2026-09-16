@@ -26,10 +26,17 @@ public class VisionShotCaptionerTests
         string cameraAngle = "",
         IReadOnlyList<string>? subjects = null,
         IReadOnlyList<string>? onScreenText = null,
-        IReadOnlyList<string>? tags = null) => new(
+        IReadOnlyList<string>? tags = null,
+        string timeOfDay = "",
+        string lighting = "",
+        string visualStyle = "",
+        string framing = "",
+        IReadOnlyList<string>? technicalIssues = null) => new(
             ShotId: "s0", Summary: summary, Subjects: subjects ?? [], Action: action, Setting: setting,
             Mood: mood, ShotScale: shotScale, CameraAngle: cameraAngle,
-            OnScreenText: onScreenText ?? [], Tags: tags ?? []);
+            OnScreenText: onScreenText ?? [], Tags: tags ?? [],
+            TimeOfDay: timeOfDay, Lighting: lighting, VisualStyle: visualStyle, Framing: framing,
+            TechnicalIssues: technicalIssues ?? []);
 
     [Fact]
     public void Negative_maxCaptionChars_does_not_throw_and_clamps_to_empty()
@@ -110,5 +117,33 @@ public class VisionShotCaptionerTests
         result.Subjects.Should().BeEmpty();
         result.Tags.Should().BeEmpty();
         result.OnScreenText.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ApplyCaps_normalizes_a_null_technicalIssues_list_to_empty()
+    {
+        VideoShotCaption caption = Caption() with { TechnicalIssues = null! };
+
+        VideoShotCaption result = VisionShotCaptioner.ApplyCaps(caption, maxCaptionChars: 80);
+
+        result.TechnicalIssues.Should().NotBeNull();
+        result.TechnicalIssues.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ApplyCaps_truncates_the_new_string_fields_to_maxCaptionChars()
+    {
+        string longText = new string('z', 500);
+        VideoShotCaption caption = Caption() with
+        {
+            TimeOfDay = longText, Lighting = longText, VisualStyle = longText, Framing = longText
+        };
+
+        VideoShotCaption result = VisionShotCaptioner.ApplyCaps(caption, maxCaptionChars: 50);
+
+        result.TimeOfDay.Length.Should().BeLessThanOrEqualTo(50);
+        result.Lighting.Length.Should().BeLessThanOrEqualTo(50);
+        result.VisualStyle.Length.Should().BeLessThanOrEqualTo(50);
+        result.Framing.Length.Should().BeLessThanOrEqualTo(50);
     }
 }

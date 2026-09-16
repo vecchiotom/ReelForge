@@ -57,7 +57,79 @@ public sealed record VideoAnalysisArtifact(
     /// list/budget: a placement id must never be validated against <see cref="OfferedIds"/>, and
     /// a cut-anchor id must never be validated against this list.
     /// </summary>
-    IReadOnlyList<string>? OfferedPlacementIds = null);
+    IReadOnlyList<string>? OfferedPlacementIds = null,
+    /// <summary>
+    /// Multi-source addition. One entry per analyzed source clip, in source-index order,
+    /// recording exactly what <see cref="VideoAnalyzeStepExecutor"/> downloaded/probed for that
+    /// clip — the same storage key <c>VideoCompileStepExecutor</c> must download to physically cut
+    /// from it, and the same per-clip <see cref="VideoAnalysisMedia"/> (duration/fps/dimensions)
+    /// every clip-aware computation (frame quantization, padding clamps, graphics geometry) must
+    /// use instead of the single top-level <see cref="Media"/>. Null for an artifact produced
+    /// before this field existed (a true legacy artifact, not merely a single-source one) — those
+    /// deserialize with every item's <see cref="VideoAnalysisShot.SourceIndex"/> etc. defaulting to
+    /// 0 and are the ONE case <c>VideoCompileStepExecutor</c> still re-derives the source storage
+    /// key the old way (walking the VideoAnalyze step's own config) rather than reading it directly
+    /// from here. Every artifact produced by the current executor populates this with at least one
+    /// entry, even for a single source, so the top-level <see cref="Media"/> and
+    /// <c>Sources[0].Media</c> agree exactly for that case.
+    /// </summary>
+    IReadOnlyList<VideoAnalysisSourceInfo>? Sources = null,
+    /// <summary>
+    /// Background-music addition (see docs/video-editing.md "Background music") — populated only
+    /// when <c>VideoAnalyzeStepConfig.OfferMusicTracks</c> is set. One entry per <c>audio/*</c>
+    /// project file, project-level (not per-source, unlike everything above). A SEPARATE id
+    /// namespace (<c>m{n}</c>) from shots/silences/segments/placements — deliberately NOT
+    /// resolvable by <c>VideoCompileStepExecutor.BuildIdTimeIndex</c>.
+    /// </summary>
+    IReadOnlyList<VideoAnalysisMusicCandidate>? MusicCandidates = null,
+    /// <summary>
+    /// Exactly which music-track ids were actually included in the bounded view shown to the
+    /// music-supervisor agent — the background-music analogue of <see cref="OfferedIds"/>/
+    /// <see cref="OfferedPlacementIds"/>, but its OWN separate list: a music-track id must never
+    /// be validated against either of those, and vice versa.
+    /// </summary>
+    IReadOnlyList<string>? OfferedMusicIds = null,
+    /// <summary>
+    /// Phase 4 addition — cross-source shot "look" (light/grade) groups computed by
+    /// <c>FrameGridAnalyzer.GroupLooks</c>, populated only when
+    /// <c>VideoAnalyzeStepConfig.DetectLookGroups</c> is set. A SEPARATE id namespace (<c>k{n}</c>)
+    /// from every other id family — purely DESCRIPTIVE, deliberately never resolvable by
+    /// <c>VideoCompileStepExecutor.BuildIdTimeIndex</c> (see docs/video-editing.md "Semantic visual
+    /// dimensions (Phase 4)").
+    /// </summary>
+    IReadOnlyList<VideoAnalysisLookGroup>? LookGroups = null);
+
+/// <summary>
+/// A group of shots that share a similar light/grade "look" (see <c>FrameGridAnalyzer.GroupLooks</c>),
+/// single-linkage clustered over the whole artifact — deliberately NOT windowed like
+/// <see cref="VideoAnalysisDuplicateGroup"/>, since a shared look is routinely NOT temporally
+/// adjacent (e.g. interior coverage at the start of one clip and the end of another). Id: <c>k{n}</c>.
+/// <see cref="ShotIds"/> is in first-member (ascending shot-index) order; <see cref="RepresentativeShotId"/>
+/// is the member with <c>LookRank == 0</c> (closest to the group centroid).
+/// </summary>
+public sealed record VideoAnalysisLookGroup(
+    string Id,
+    IReadOnlyList<string> ShotIds,
+    string RepresentativeShotId,
+    double Cohesion,
+    string? ColorTemperatureClass = null,
+    string? ToneClass = null,
+    string? SaturationClass = null);
+
+/// <summary>
+/// One candidate background-music track — an <c>audio/*</c> project file offered to
+/// <c>AgentType.MusicSupervisor</c>. Id: <c>m{n}</c> — a SEPARATE namespace from
+/// <c>s{n}</c>/<c>g{n}</c>/<c>t{n}</c>/<c>p{n}</c>, never resolvable by
+/// <c>VideoCompileStepExecutor.BuildIdTimeIndex</c>. Deliberately small: no storage key, no size —
+/// <c>VideoCompileStepExecutor</c> resolves <see cref="ProjectFileId"/> back to a storage key
+/// itself once a track is actually chosen, so the model never sees or needs one.
+/// </summary>
+public sealed record VideoAnalysisMusicCandidate(
+    string Id,
+    Guid ProjectFileId,
+    string FileName,
+    string MimeType,
+    long SizeBytes);
 
 /// <summary>
 /// Probed media characteristics. Fps is carried as an exact rational (ffprobe's
@@ -70,6 +142,15 @@ public sealed record VideoAnalysisMedia(
     int FpsDen,
     int Width,
     int Height);
+
+/// <summary>
+/// Multi-source addition — records one analyzed source clip: which physical object it came from
+/// and what was probed about it. See <see cref="VideoAnalysisArtifact.Sources"/>.
+/// </summary>
+public sealed record VideoAnalysisSourceInfo(
+    int SourceIndex,
+    string StorageKey,
+    VideoAnalysisMedia Media);
 
 /// <summary>
 /// A detected shot/scene. Id: <c>s{n}</c>, assigned by index in scene-detection order.
@@ -90,7 +171,16 @@ public sealed record VideoAnalysisShot(
     /// did not fail/degrade for it. Absence is normal (captioning is budget-limited and opt-in via
     /// <c>VideoAnalyzeStepConfig.Vision</c>), never a signal the shot is empty or unimportant.
     /// </summary>
-    VideoShotCaption? Caption = null);
+    VideoShotCaption? Caption = null,
+    /// <summary>
+    /// Multi-source addition — which entry of <see cref="VideoAnalysisArtifact.Sources"/> this
+    /// shot was detected in. <see cref="StartSec"/>/<see cref="EndSec"/> are always relative to
+    /// THIS source's own timeline, never a global one — there is no such thing as a shared
+    /// timeline across distinct source clips. Defaults to 0, so a legacy (pre-multi-source)
+    /// artifact — which only ever had one implicit source — deserializes as if every item
+    /// explicitly said "source 0", the only source that could exist.
+    /// </summary>
+    int SourceIndex = 0);
 
 /// <summary>
 /// A detected silence gap. Id: <c>g{n}</c>. <see cref="AfterShot"/> links each gap to the shot
@@ -100,7 +190,9 @@ public sealed record VideoAnalysisSilenceSpan(
     string Id,
     double StartSec,
     double EndSec,
-    string? AfterShot = null);
+    string? AfterShot = null,
+    /// <summary>Multi-source addition — see <see cref="VideoAnalysisShot.SourceIndex"/>.</summary>
+    int SourceIndex = 0);
 
 /// <summary>
 /// A transcript segment. Id: <c>t{n}</c>. <see cref="Shot"/> links each segment back to the shot
@@ -111,7 +203,9 @@ public sealed record VideoAnalysisSegment(
     string? Shot,
     double StartSec,
     double EndSec,
-    string Text);
+    string Text,
+    /// <summary>Multi-source addition — see <see cref="VideoAnalysisShot.SourceIndex"/>.</summary>
+    int SourceIndex = 0);
 
 /// <summary>
 /// A single transcribed word. Id: <c>w{n}</c>. Persisted in the full artifact for audit and as
@@ -122,7 +216,9 @@ public sealed record VideoAnalysisWord(
     string Id,
     double StartSec,
     double EndSec,
-    string Text);
+    string Text,
+    /// <summary>Multi-source addition — see <see cref="VideoAnalysisShot.SourceIndex"/>.</summary>
+    int SourceIndex = 0);
 
 /// <summary>
 /// Records how this artifact was produced, for audit and as the basis for the
@@ -153,7 +249,21 @@ public sealed record VideoAnalysisProvenance(
     /// (as opposed to <see cref="VisionDegraded"/>, which covers "no vision provider resolved" or
     /// "zero captions obtained at all").
     /// </summary>
-    bool VisionPartial = false);
+    bool VisionPartial = false,
+    // -- Phase 4: semantic visual dimensions (see docs/video-editing.md "Semantic visual
+    //    dimensions (Phase 4)") --
+    /// <summary>D1-D3 (and the look pass below reading them) actually ran and produced data.</summary>
+    bool ColorGradingApplied = false,
+    /// <summary>D4 look grouping (<c>artifact.LookGroups</c>) actually ran.</summary>
+    bool LookGroupingApplied = false,
+    /// <summary>Count of <c>artifact.LookGroups</c> — carried on provenance too so <c>meta.look</c> never has to dereference the (possibly-trimmed) view list.</summary>
+    int LookGroupCount = 0,
+    /// <summary>True when exactly one look group covers every analyzed shot — the single-camera-talking-head case, where per-shot <c>look</c> keys carry no discriminating information and are suppressed (see docs/video-editing.md).</summary>
+    bool LookUniform = false,
+    /// <summary>D6 letterbox/pillarbox detection actually ran (<c>VideoAnalyzeStepConfig.DetectLetterbox</c> was on AND visual analysis applied).</summary>
+    bool LetterboxDetectionApplied = false,
+    /// <summary>Count of shots that received a real (non-null) <c>Sharpness</c> measurement this step.</summary>
+    int SharpnessShotCount = 0);
 
 // =============================================================================================
 // Phase 1: visual/audio scene descriptors (grid-sampling based, deterministic, no LLM call).
@@ -221,7 +331,35 @@ public sealed record VideoAnalysisShotVisual(
     string? KenBurnsReason,
     string? DuplicateGroupId,
     int? GroupRank,
-    bool IsBestTake);
+    bool IsBestTake,
+    // -- Phase 4: semantic visual dimensions D1-D4/D6/D7 (see docs/video-editing.md "Semantic
+    //    visual dimensions (Phase 4)"). All null/false/0 when AnalyzeColorGrading is off, or when
+    //    visual analysis did not run at all — same "absent/null == not computed" convention as
+    //    ActiveCrop/Sharpness above. --
+    /// <summary>D1. "Warm" / "Cool" / "Neutral" — null when <c>AnalyzeColorGrading</c> is off.</summary>
+    string? ColorTemperatureClass = null,
+    /// <summary>D1. Normalized -1..1; a ±0.25 raw mean-channel difference saturates the scale.</summary>
+    double Warmth = 0,
+    /// <summary>D1. Normalized -1..1, green-magenta axis.</summary>
+    double Tint = 0,
+    /// <summary>D2. "Blown" / "Crushed" / "Flat" / "Contrasty" / "Normal" — null when <c>AnalyzeColorGrading</c> is off.</summary>
+    string? ToneClass = null,
+    /// <summary>D2. 5th-percentile luma, 0..1.</summary>
+    double BlackPoint = 0,
+    /// <summary>D2. 95th-percentile luma, 0..1.</summary>
+    double WhitePoint = 0,
+    /// <summary>D3. "Muted" / "Natural" / "Vivid", a pure projection of <see cref="SaturationMean"/> — null when <c>AnalyzeColorGrading</c> is off.</summary>
+    string? SaturationClass = null,
+    /// <summary>
+    /// D7. Heuristic only — named with the codebase's existing "-Candidate" suffix for exactly this
+    /// confidence level (see <see cref="KenBurnsCandidate"/>). Surfaced at Full detail only, and fed
+    /// to the vision prompt so a model that can actually see the frame adjudicates it.
+    /// </summary>
+    bool BacklitCandidate = false,
+    /// <summary>D4. This shot's look-group id (<c>k{n}</c>), or null when it belongs to no group (a look unlike any other shot analyzed).</summary>
+    string? LookGroupId = null,
+    /// <summary>D4. Rank within <see cref="LookGroupId"/> by ascending distance to the group centroid; 0 is the most representative member. Null when <see cref="LookGroupId"/> is null.</summary>
+    int? LookRank = null);
 
 /// <summary>
 /// Deterministic audio-level descriptors for one shot, derived from <c>WavRmsSampler</c> windows
@@ -232,7 +370,22 @@ public sealed record VideoAnalysisShotAudio(
     double RmsDbfs,
     double PeakDbfs,
     double SpeechRatio,
-    string LoudnessClass);
+    string LoudnessClass,
+    // -- Phase 4 (D5): audio character — see docs/video-editing.md "Semantic visual dimensions
+    //    (Phase 4)". A heuristic, hence paired with a confidence, exactly as CameraMove is paired
+    //    with CameraMoveConfidence. All 0/default when AnalyzeAudioLevels is off. --
+    /// <summary>Peak-to-RMS ratio in dB.</summary>
+    double CrestFactorDb = 0,
+    /// <summary>10th-percentile window RMS in dBFS — "how loud is this shot when nothing is happening".</summary>
+    double NoiseFloorDbfs = 0,
+    /// <summary>1 - clamp(stddev(window RMS)/12dB, 0, 1); 1 == perfectly level.</summary>
+    double LevelStability = 0,
+    /// <summary>Overlap-weighted zero-crossing rate of the shot's audio windows.</summary>
+    double ZeroCrossingRate = 0,
+    /// <summary>"Dialogue" / "Music" / "Ambient" / "Noisy" / "Silent" — null when <c>AnalyzeAudioLevels</c> is off.</summary>
+    string? AudioCharacterClass = null,
+    /// <summary>0..1 confidence in <see cref="AudioCharacterClass"/> — makes shipping a ZCR/crest/floor heuristic instead of an FFT classifier honest.</summary>
+    double AudioCharacterConfidence = 0);
 
 /// <summary>
 /// A group of near-duplicate/multi-take shots (single-linkage clustered over a sliding time
@@ -284,7 +437,20 @@ public sealed record VideoShotCaption(
     string ShotScale,
     string CameraAngle,
     IReadOnlyList<string> OnScreenText,
-    IReadOnlyList<string> Tags);
+    IReadOnlyList<string> Tags,
+    /// <summary>"Day" | "Night" | "GoldenHour" | "Indoor" | "Unknown".</summary>
+    string TimeOfDay,
+    /// <summary>Interpretive prose, e.g. "soft window light from camera left", "harsh overhead".</summary>
+    string Lighting,
+    /// <summary>The grading/look read, e.g. "flat ungraded log", "warm documentary grade".</summary>
+    string VisualStyle,
+    /// <summary>Composition judgment, e.g. "centered, generous headroom", "subject cropped at frame edge".</summary>
+    string Framing,
+    /// <summary>
+    /// The highest-value field in this record: the defects a human editor spots instantly that no
+    /// pixel statistic reaches — "soft focus", "blown window", "visible banding", "rolling shutter".
+    /// </summary>
+    IReadOnlyList<string> TechnicalIssues);
 
 // =============================================================================================
 // Phase 3: optional motion-graphics overlay placement candidates (see docs/video-editing.md
@@ -312,4 +478,11 @@ public sealed record VideoAnalysisPlacement(
     double StartSec,
     double EndSec,
     double Suitability,
-    string TextColor);
+    string TextColor,
+    /// <summary>
+    /// Multi-source addition — the source clip that owns this placement's <see cref="ShotId"/> (see
+    /// <see cref="VideoAnalysisShot.SourceIndex"/>). Redundant with looking the owning shot up by
+    /// id, but carried directly here so <c>VideoCompileStepExecutor</c> never has to do that lookup
+    /// just to map a placement's source-timeline window onto the right source's output timeline.
+    /// </summary>
+    int SourceIndex = 0);

@@ -75,7 +75,14 @@ public class ProjectFilesController : ControllerBase
         return Ok(files);
     }
 
+    // Kestrel's default MaxRequestBodySize (~30MB) and MVC's default
+    // MultipartBodyLengthLimit (128MB) both reject raw source-video uploads long
+    // before nginx's route-scoped 20G cap (locations.conf) ever comes into play —
+    // raised here, scoped to this one endpoint, rather than globally for every
+    // controller action.
     [HttpPost]
+    [RequestSizeLimit(20_000_000_000)]
+    [RequestFormLimits(MultipartBodyLengthLimit = 20_000_000_000)]
     public async Task<ActionResult<ProjectFileResponse>> Upload(Guid projectId, IFormFile file, CancellationToken ct)
     {
         Project? project = await _db.Projects.FirstOrDefaultAsync(p => p.Id == projectId, ct);

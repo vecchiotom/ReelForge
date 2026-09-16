@@ -45,7 +45,7 @@ export function createDefaultVideoAnalyzeStepConfig(): VideoAnalyzeStepConfigVal
     stillMotionThreshold: 0.02,
     minStillWindowMs: 400,
     maxStillWindowsPerShot: 3,
-    detectLetterbox: false,
+    detectLetterbox: true,
     detectSharpness: false,
     analyzeAudioLevels: true,
     detectNearDuplicates: true,
@@ -53,6 +53,12 @@ export function createDefaultVideoAnalyzeStepConfig(): VideoAnalyzeStepConfigVal
     duplicateWindowShots: 20,
     visualDetail: 'Compact',
     maxViewDuplicateGroups: 20,
+    analyzeColorGrading: true,
+    detectLookGroups: true,
+    lookSimilarityThreshold: 0.88,
+    maxViewLookGroups: 12,
+    keyframesPerShot: 1,
+    maxSharpnessShots: 24,
     expect: null,
   };
 }
@@ -224,6 +230,29 @@ export function VideoAnalyzeStepConfig({
           label="Detect near-duplicate takes"
           checked={config.detectNearDuplicates}
           onChange={(e) => patch({ detectNearDuplicates: e.currentTarget.checked })}
+          disabled={!config.analyzeVisuals}
+        />
+      </Group>
+      <Group grow align="flex-end">
+        <Switch
+          label="Analyze color grading"
+          description="D1-D3: colour temperature, tone curve, saturation — free from the grid"
+          checked={config.analyzeColorGrading}
+          onChange={(e) => patch({ analyzeColorGrading: e.currentTarget.checked })}
+          disabled={!config.analyzeVisuals}
+        />
+        <Switch
+          label="Detect look groups"
+          description="D4: groups shots sharing a similar grade (k{n}) — free"
+          checked={config.detectLookGroups}
+          onChange={(e) => patch({ detectLookGroups: e.currentTarget.checked })}
+          disabled={!config.analyzeVisuals}
+        />
+        <Switch
+          label="Detect letterbox/pillarbox"
+          description="D6: free from the grid — may under-report soft/gradient bars"
+          checked={config.detectLetterbox}
+          onChange={(e) => patch({ detectLetterbox: e.currentTarget.checked })}
           disabled={!config.analyzeVisuals}
         />
       </Group>

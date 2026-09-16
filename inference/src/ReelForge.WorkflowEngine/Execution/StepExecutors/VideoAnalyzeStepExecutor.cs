@@ -13,11 +13,27 @@ using ReelForge.WorkflowEngine.Services.Video;
 namespace ReelForge.WorkflowEngine.Execution.StepExecutors;
 
 /// <summary>
-/// Executes <see cref="StepType.VideoAnalyze"/> steps: deterministic, non-LLM derushing of a
-/// source video into shots/silence gaps/(optional) transcript, plus (Phase 1) deterministic
+/// Executes <see cref="StepType.VideoAnalyze"/> steps: deterministic, non-LLM derushing of one or
+/// more source videos into shots/silence gaps/(optional) transcript, plus (Phase 1) deterministic
 /// visual/audio scene descriptors, persisted as a full analysis artifact plus a bounded,
 /// id-anchored "{view, meta}" prompt envelope for the downstream VideoStoryEditor agent step.
-/// See plan §4.1/§3 and docs/video-editing.md "Scene/visual analysis (Phase 1)".
+/// See plan §4.1/§3, docs/video-editing.md "Scene/visual analysis (Phase 1)", and
+/// docs/video-editing.md "Multiple source clips" for the multi-source addition.
+///
+/// <para>
+/// <b>Multi-source addition:</b> <see cref="VideoAnalyzeStepConfig.Sources"/> (plural) lets one
+/// step analyze several source clips (e.g. multiple takes/angles/B-roll) into ONE merged artifact.
+/// Each clip is analyzed independently via <see cref="AnalyzeSourceAsync"/> (the exact same
+/// deterministic per-source pipeline this executor always ran — silence/shot detection,
+/// transcription, Phase 1/2/3 analysis — is entirely unchanged, just scoped to one clip's local
+/// file at a time, processed sequentially never in parallel), then every clip's LOCAL ids
+/// (each restarting at "s0"/"g0"/"t0"/"w0"/"p0"/"d0") are remapped into ONE globally-unique id
+/// space via a running per-id-kind offset, and every item is tagged with the
+/// <c>SourceIndex</c> of the clip it came from. A single-source config (the default —
+/// <see cref="VideoAnalyzeStepConfig.Sources"/> null/empty, so only <see cref="VideoAnalyzeStepConfig.Source"/>
+/// is set) is treated as a one-element source list, so ids/artifact shape/behavior are byte-identical
+/// to before this addition.
+/// </para>
 ///
 /// Purity/safety discipline mirrors <see cref="ExtractStepExecutor"/> exactly: this executor
 /// never throws — every path, including an unexpected exception, returns a
@@ -59,6 +75,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
     private readonly IAudioExtractor _audioExtractor;
     private readonly IFrameGridSampler _frameGridSampler;
     private readonly IKeyframeExtractor _keyframeExtractor;
+    private readonly ISharpnessSampler _sharpnessSampler;
     private readonly IShotCaptioner _shotCaptioner;
     private readonly IProjectFileWorkspace _workspace;
     private readonly ITranscriptionClientFactory _transcriptionClientFactory;
@@ -73,6 +90,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         IAudioExtractor audioExtractor,
         IFrameGridSampler frameGridSampler,
         IKeyframeExtractor keyframeExtractor,
+        ISharpnessSampler sharpnessSampler,
         IShotCaptioner shotCaptioner,
         IProjectFileWorkspace workspace,
         ITranscriptionClientFactory transcriptionClientFactory,
@@ -86,6 +104,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         _audioExtractor = audioExtractor;
         _frameGridSampler = frameGridSampler;
         _keyframeExtractor = keyframeExtractor;
+        _sharpnessSampler = sharpnessSampler;
         _shotCaptioner = shotCaptioner;
         _workspace = workspace;
         _transcriptionClientFactory = transcriptionClientFactory;
@@ -120,237 +139,284 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             if (config is null)
                 return Failure(context, sw, "CONFIG_INVALID", "VideoAnalyzeConfigJson deserialized to null.");
 
-            (string? storageKey, string? resolveError) = await ResolveSourceStorageKeyAsync(context, config.Source);
-            if (storageKey is null)
-                return Failure(context, sw, "SOURCE_UNRESOLVED", resolveError ?? "Could not resolve the video source.");
-
-            context.RecordResolvedInput(BuildResolvedInputDescriptor(config, storageKey));
+            // ---- Multi-source addition: Sources (plural) is the authoritative list when set;
+            // otherwise fall back to the single legacy Source field as a one-element list, which
+            // is exactly today's behavior (see VideoAnalyzeStepConfig.Sources's doc comment). ----
+            IReadOnlyList<VideoSourceRef> sources = config.Sources is { Count: > 0 } ? config.Sources : [config.Source];
 
             scratch = VideoScratchSpace.Create(_options, context.Execution.Id, step.Id, _logger);
-            string localVideoPath = scratch.GetPath("source" + GuessExtension(storageKey));
-
-            await _workspace.DownloadStorageKeyToFileAsync(
-                context.Execution.ProjectId, storageKey, localVideoPath, context.CancellationToken);
-
-            // Cheapest guardrail we can actually apply given IProjectFileWorkspace's surface (no
-            // HEAD/size-without-download primitive): check the downloaded size against
-            // MaxInputBytes before any decode (probe/silence/shot/ASR) runs.
-            // TODO: Ideal fix would check size BEFORE download via a lightweight HEAD-style API
-            // (e.g., GetObjectMetadataAsync), but IProjectFileWorkspace does not expose such a method.
-            // A pre-download guard would require adding that API to the storage abstraction layer.
-            long fileSizeBytes = new FileInfo(localVideoPath).Length;
-            if (fileSizeBytes > config.MaxInputBytes)
-            {
-                return Failure(
-                    context, sw, "INPUT_TOO_LARGE",
-                    $"Source video is {fileSizeBytes} bytes, exceeding MaxInputBytes={config.MaxInputBytes}.");
-            }
-
-            MediaProbeResult probe = await _mediaProbe.ProbeAsync(localVideoPath, context.CancellationToken);
-
-            if (config.MaxDurationSeconds > 0 && probe.DurationSec > config.MaxDurationSeconds)
-            {
-                return Failure(
-                    context, sw, "DURATION_EXCEEDED",
-                    $"Source video duration {probe.DurationSec:F2}s exceeds MaxDurationSeconds={config.MaxDurationSeconds}. " +
-                    "Bailing out before audio extraction/ASR.");
-            }
-
-            IReadOnlyList<(double StartSec, double EndSec)> silenceSpans = Array.Empty<(double, double)>();
-            if (config.DetectSilence)
-            {
-                silenceSpans = await _silenceDetector.DetectAsync(
-                    localVideoPath, config.SilenceThresholdDb, config.MinSilenceMs / 1000.0, probe.DurationSec, context.CancellationToken);
-            }
-
-            IReadOnlyList<(double StartSec, double EndSec)> shotSpans = Array.Empty<(double, double)>();
-            if (config.DetectShots)
-            {
-                shotSpans = await _shotDetector.DetectShotsAsync(
-                    localVideoPath, config.SceneThreshold, probe.DurationSec, context.CancellationToken);
-            }
-
-            TranscriptResult? transcript = null;
-            bool transcriptionApplied = false;
-            bool transcriptionDegraded = false;
-            string? transcriptionProviderName = null;
-
-            if (config.Transcription != VideoTranscriptionMode.Off)
-            {
-                try
-                {
-                    ResolvedTranscriptionProvider? provider =
-                        await _providerResolver.ResolveTranscriptionAsync(config.TranscriptionProviderId, context.CancellationToken);
-
-                    if (provider is null)
-                    {
-                        if (config.Transcription == VideoTranscriptionMode.Required)
-                        {
-                            return Failure(
-                                context, sw, "TRANSCRIPTION_UNAVAILABLE",
-                                "Transcription is Required but no transcription-capable inference provider is configured.");
-                        }
-
-                        _logger.LogInformation(
-                            "VideoAnalyze step {StepOrder}: no transcription provider resolved; degrading (Transcription=Optional).",
-                            step.StepOrder);
-                        transcriptionDegraded = true;
-                    }
-                    else
-                    {
-                        transcript = await TranscribeWithChunkingAsync(
-                            scratch, localVideoPath, probe, silenceSpans, config, provider, context.CancellationToken);
-                        transcriptionApplied = true;
-                        transcriptionProviderName = provider.Name;
-                    }
-                }
-                catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "VideoAnalyze step {StepOrder}: transcription failed", step.StepOrder);
-                    if (config.Transcription == VideoTranscriptionMode.Required)
-                        return Failure(context, sw, "TRANSCRIPTION_FAILED", $"Transcription failed: {ex.Message}");
-
-                    transcriptionDegraded = true;
-                }
-            }
-
-            // ---- Assign deterministic ids by index and build the shot list ----
-
-            List<VideoAnalysisShot> shots = shotSpans
-                .Select((s, i) => new VideoAnalysisShot($"s{i}", s.StartSec, s.EndSec))
-                .ToList();
-
-            // ---- Phase 1: audio-level sampling (reuses the WAV already extracted for
-            // transcription, or extracts it fresh) — never lets an exception escape the step. ----
-            bool audioLevelsApplied = false;
-            if (config.AnalyzeAudioLevels)
-            {
-                try
-                {
-                    string fullWavPath = scratch.GetPath("audio-full.wav");
-                    if (!File.Exists(fullWavPath))
-                    {
-                        await _audioExtractor.ExtractWavAsync(localVideoPath, fullWavPath, context.CancellationToken);
-                    }
-
-                    byte[] wavBytes = await File.ReadAllBytesAsync(fullWavPath, context.CancellationToken);
-                    IReadOnlyList<WavRmsSampler.RmsWindow> windows = WavRmsSampler.Sample(wavBytes, AudioWindowMs);
-
-                    for (int i = 0; i < shots.Count; i++)
-                    {
-                        VideoAnalysisShotAudio? audio = ComputeShotAudio(shots[i], windows, silenceSpans);
-                        if (audio is not null)
-                            shots[i] = shots[i] with { Audio = audio };
-                    }
-
-                    audioLevelsApplied = true;
-                }
-                catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "VideoAnalyze step {StepOrder}: audio-level sampling failed; degrading.", step.StepOrder);
-                    audioLevelsApplied = false;
-                }
-            }
-
-            // ---- Phase 1: visual scene analysis — one grid ffmpeg pass + pure C# analyzer.
-            // The ENTIRE block (grid sampling + FrameGridAnalyzer calls) is wrapped so an
-            // exception anywhere in here can never fail the step; shots/silences/transcript are
-            // used exactly as if this stage were off. ----
-            bool visualApplied = false;
-            bool visualDegraded = false;
-            List<VideoAnalysisDuplicateGroup> duplicateGroups = [];
 
             // Clamped here, at the point config is consumed — same convention as
             // VideoCompileStepExecutor's Crf/MaxSegments clamps — so a workflow-author-supplied
-            // config (e.g. 2048x2048) can't allocate an enormous grid.rgb scratch file or force a
-            // huge single in-memory byte[] read of it (Item D cleanup). Computed unconditionally
-            // (not just when AnalyzeVisuals) so the "visual" meta block below always reports the
-            // grid dimensions that would actually be used.
+            // config (e.g. 2048x2048) can't allocate an enormous grid.rgb scratch file. Computed
+            // once (identical for every source, since it's a single config), reused per source.
             int gridWidth = Math.Clamp(config.VisualGridWidth, 8, 256);
             int gridHeight = Math.Clamp(config.VisualGridHeight, 8, 256);
 
+            // ---- Phase 4 (§3): weighted step-progress plan. Declaration order in `enabled` doesn't
+            // matter (VideoAnalyzeProgressPlan.Stage's declaration order is what drives sequencing);
+            // this list only decides WHICH stages get non-zero weight. ----
+            var enabledStages = new List<VideoAnalyzeProgressPlan.Stage>
+            {
+                VideoAnalyzeProgressPlan.Stage.DownloadSource, VideoAnalyzeProgressPlan.Stage.ProbeSource,
+                VideoAnalyzeProgressPlan.Stage.BuildView, VideoAnalyzeProgressPlan.Stage.UploadArtifact
+            };
+            if (config.DetectSilence)
+                enabledStages.Add(VideoAnalyzeProgressPlan.Stage.DetectSilence);
+            if (config.DetectShots)
+                enabledStages.Add(VideoAnalyzeProgressPlan.Stage.DetectShots);
+            if (config.Transcription != VideoTranscriptionMode.Off)
+            {
+                enabledStages.Add(VideoAnalyzeProgressPlan.Stage.ResolveTranscription);
+                enabledStages.Add(VideoAnalyzeProgressPlan.Stage.Transcribe);
+            }
+            if (config.AnalyzeAudioLevels)
+                enabledStages.Add(VideoAnalyzeProgressPlan.Stage.SampleAudioLevels);
             if (config.AnalyzeVisuals)
             {
+                enabledStages.Add(VideoAnalyzeProgressPlan.Stage.SampleFrameGrid);
+                enabledStages.Add(VideoAnalyzeProgressPlan.Stage.AnalyzeShots);
+            }
+            if (config.AnalyzeVisuals && config.DetectNearDuplicates)
+                enabledStages.Add(VideoAnalyzeProgressPlan.Stage.GroupDuplicates);
+            if (config.DetectSharpness)
+                enabledStages.Add(VideoAnalyzeProgressPlan.Stage.SampleSharpness);
+            if (config.AnalyzeVisuals && config.AnalyzeColorGrading && config.DetectLookGroups)
+                enabledStages.Add(VideoAnalyzeProgressPlan.Stage.MatchLooks);
+            if (config.OfferMusicTracks)
+                enabledStages.Add(VideoAnalyzeProgressPlan.Stage.ListMusicCandidates);
+            if (config.Vision != VideoVisionMode.Off)
+            {
+                enabledStages.Add(VideoAnalyzeProgressPlan.Stage.ExtractKeyframes);
+                enabledStages.Add(VideoAnalyzeProgressPlan.Stage.CaptionShots);
+            }
+
+            var progress = new VideoAnalyzeProgressPlan(enabledStages, sources.Count);
+
+            // Recorded early (before any per-source download/analysis) so a step that fails partway
+            // through still leaves a useful trace of what it was resolving to — mirrors the
+            // pre-multi-source behavior of recording resolved input right after source resolution,
+            // before any heavier work that could fail.
+            context.RecordResolvedInput(BuildResolvedInputDescriptor(config, sources, null));
+
+            // Phase 4 (§5.5): a cap that is genuinely STEP-wide rather than silently per-source —
+            // the exact bug §0.3 found in MaxCaptionedShots pre-hoist. Sharpness cannot simply be
+            // hoisted to step level like captioning was, because it must run before EACH source's
+            // own duplicate grouping in order to feed ComputeTakeQuality — so instead every source
+            // shares one mutable budget object.
+            var sharpnessBudget = new StepBudget { Remaining = Math.Max(0, config.MaxSharpnessShots) };
+
+            var sourceResults = new List<SourceAnalysisResult>(sources.Count);
+            for (int sourceIndex = 0; sourceIndex < sources.Count; sourceIndex++)
+            {
+                SourceAnalysisOutcome outcome = await AnalyzeSourceAsync(
+                    context, scratch, config, sources[sourceIndex], sourceIndex, sources.Count, gridWidth, gridHeight,
+                    progress, sharpnessBudget, context.CancellationToken);
+
+                if (outcome.Result is null)
+                {
+                    string message = sources.Count > 1
+                        ? $"Source {sourceIndex} ({sources[sourceIndex].Kind}): {outcome.ErrorMessage}"
+                        : outcome.ErrorMessage ?? "Unknown error.";
+                    return Failure(context, sw, outcome.ErrorCode ?? "UNEXPECTED_ERROR", message);
+                }
+
+                sourceResults.Add(outcome.Result);
+            }
+
+            context.RecordResolvedInput(BuildResolvedInputDescriptor(config, sources, sourceResults));
+
+            // ---- Merge every source's LOCAL ids into ONE globally-unique id space (plan: "ids
+            // must stay globally unique across ALL sources in one artifact, assigned contiguously
+            // across every source file in analysis order, not restarting per-file"). Each id KIND
+            // (s/g/t/w/p/d) gets its own running offset counter — the same scheme each kind
+            // already used within a single source, just carried across sources now. A single
+            // source produces exactly one merge pass at offset 0, so this is byte-identical to the
+            // pre-multi-source output for that case. ----
+
+            var shots = new List<VideoAnalysisShot>();
+            var silences = new List<VideoAnalysisSilenceSpan>();
+            var segments = new List<VideoAnalysisSegment>();
+            var words = new List<VideoAnalysisWord>();
+            var placements = new List<VideoAnalysisPlacement>();
+            var duplicateGroups = new List<VideoAnalysisDuplicateGroup>();
+            var sourceInfos = new List<VideoAnalysisSourceInfo>();
+
+            int shotOffset = 0, silenceOffset = 0, segmentOffset = 0, wordOffset = 0, placementOffset = 0, duplicateGroupOffset = 0;
+
+            for (int sourceIndex = 0; sourceIndex < sourceResults.Count; sourceIndex++)
+            {
+                SourceAnalysisResult r = sourceResults[sourceIndex];
+                sourceInfos.Add(new VideoAnalysisSourceInfo(sourceIndex, r.StorageKey, r.Media));
+
+                // Local shot id -> global shot id, needed to remap every back-reference below
+                // (SilenceSpan.AfterShot, Segment.Shot, Placement.ShotId, DuplicateGroup member ids)
+                // from this source's own local id space into the merged global one.
+                var shotIdMap = new Dictionary<string, string>(StringComparer.Ordinal);
+                foreach (VideoAnalysisShot s in r.Shots)
+                {
+                    string globalId = OffsetId(s.Id, shotOffset);
+                    shotIdMap[s.Id] = globalId;
+                    shots.Add(s with { Id = globalId, SourceIndex = sourceIndex });
+                }
+
+                foreach (VideoAnalysisSilenceSpan s in r.Silences)
+                {
+                    silences.Add(s with
+                    {
+                        Id = OffsetId(s.Id, silenceOffset),
+                        SourceIndex = sourceIndex,
+                        AfterShot = MapLocalId(s.AfterShot, shotIdMap)
+                    });
+                }
+
+                foreach (VideoAnalysisSegment s in r.Segments)
+                {
+                    segments.Add(s with
+                    {
+                        Id = OffsetId(s.Id, segmentOffset),
+                        SourceIndex = sourceIndex,
+                        Shot = MapLocalId(s.Shot, shotIdMap)
+                    });
+                }
+
+                foreach (VideoAnalysisWord w in r.Words)
+                    words.Add(w with { Id = OffsetId(w.Id, wordOffset), SourceIndex = sourceIndex });
+
+                foreach (VideoAnalysisPlacement p in r.Placements)
+                {
+                    placements.Add(p with
+                    {
+                        Id = OffsetId(p.Id, placementOffset),
+                        SourceIndex = sourceIndex,
+                        ShotId = MapLocalId(p.ShotId, shotIdMap) ?? p.ShotId
+                    });
+                }
+
+                foreach (VideoAnalysisDuplicateGroup g in r.DuplicateGroups)
+                {
+                    duplicateGroups.Add(g with
+                    {
+                        Id = OffsetId(g.Id, duplicateGroupOffset),
+                        ShotIds = g.ShotIds.Select(id => MapLocalId(id, shotIdMap) ?? id).ToList(),
+                        BestShotId = MapLocalId(g.BestShotId, shotIdMap) ?? g.BestShotId
+                    });
+                }
+
+                shotOffset += r.Shots.Count;
+                silenceOffset += r.Silences.Count;
+                segmentOffset += r.Segments.Count;
+                wordOffset += r.Words.Count;
+                placementOffset += r.Placements.Count;
+                duplicateGroupOffset += r.DuplicateGroups.Count;
+            }
+
+            // ---- Aggregate per-source provenance/counters into ONE artifact-level record and a
+            // couple of summed counters. For a single source this is a pass-through (Count == 1
+            // short-circuits to that source's own Provenance/counts unchanged) — full per-source
+            // provenance breakdown is intentionally out of scope for this addition (see
+            // docs/video-editing.md "Multiple source clips"). ----
+            VideoAnalysisProvenance provenance = AggregateProvenance(sourceResults.Select(r => r.Provenance).ToList());
+            double totalDurationSec = sourceInfos.Sum(s => s.Media.DurationSec);
+
+            VideoAnalysisPacing pacing = FrameGridAnalyzer.ComputePacing(shots, totalDurationSec);
+
+            // ---- Background music (see docs/video-editing.md "Background music"): PROJECT-level,
+            // not per-source, unlike everything above — one candidate list regardless of how many
+            // source clips this step analyzed. Deliberately no ffprobe of the candidates (the fit
+            // policy is resolved server-side at compile time regardless of exact duration, so
+            // probing every candidate here would only cost N downloads for a list the agent picks
+            // one item from). Never fails the step — a ListFilesAsync failure just degrades to zero
+            // candidates. ----
+            List<VideoAnalysisMusicCandidate> musicCandidates = [];
+            if (config.OfferMusicTracks)
+            {
+                await ReportAsync(context, progress, VideoAnalyzeProgressPlan.Stage.ListMusicCandidates, "Listing music candidates");
                 try
                 {
-                    FrameGridResult grid = await _frameGridSampler.SampleAsync(
-                        localVideoPath, scratch, config.VisualSampleFps, gridWidth, gridHeight,
-                        probe.DurationSec, config.MaxVisualSampleFrames, context.CancellationToken);
+                    IReadOnlyList<ProjectWorkspaceFile> files =
+                        await _workspace.ListFilesAsync(context.Execution.ProjectId, context.CancellationToken);
+                    musicCandidates = files
+                        .Where(f => f.MimeType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase))
+                        .OrderBy(f => f.OriginalFileName, StringComparer.Ordinal)
+                        .ThenBy(f => f.Id)
+                        .Take(Math.Clamp(config.MaxMusicTracks, 0, 100))
+                        .Select((f, i) => new VideoAnalysisMusicCandidate($"m{i}", f.Id, f.OriginalFileName, f.MimeType, f.SizeBytes))
+                        .ToList();
+                }
+                catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "VideoAnalyze step {StepOrder}: listing project files for music candidates failed; degrading to zero candidates.", step.StepOrder);
+                }
+            }
 
-                    if (grid.FrameCount <= 0)
-                        throw new InvalidOperationException("Grid sampler produced zero sampled frames.");
+            // ---- Phase 4 (D4): cross-source look/grade grouping — step-level by design: with
+            // multi-source, a step routinely merges clips shot on different cameras/days/white
+            // balances, and nothing in the view previously told the story editor those clips look
+            // different. Must run BEFORE the vision block below, since a future prompt-priming step
+            // feeds look-group membership into the vision prompt. ----
+            var lookGroups = new List<VideoAnalysisLookGroup>();
+            bool lookGroupingApplied = false, lookUniform = false;
 
-                    var analyzerOptions = new FrameGridAnalyzer.Options(
-                        config.StillMotionThreshold, config.MinStillWindowMs, config.MaxStillWindowsPerShot);
-
-                    var signatures = new List<FrameGridAnalyzer.ShotSignature>();
-                    var signatureShotIds = new List<string>();
-                    var takeQualities = new List<double>();
-
-                    for (int i = 0; i < shots.Count; i++)
+            if (config.AnalyzeVisuals && config.AnalyzeColorGrading && config.DetectLookGroups)
+            {
+                await ReportAsync(context, progress, VideoAnalyzeProgressPlan.Stage.MatchLooks, "Matching shot looks");
+                try
+                {
+                    var lookIds = new List<string>();
+                    var lookSigs = new List<FrameGridAnalyzer.LookSignature>();
+                    foreach (VideoAnalysisShot s in shots)
                     {
-                        VideoAnalysisShot shot = shots[i];
-                        List<byte[]> frames = FrameGridAnalyzer.SliceShotFrames(
-                            grid.PixelData, grid.FrameCount, grid.GridWidth, grid.GridHeight, grid.EffectiveFps,
-                            shot.StartSec, shot.EndSec, out int startFrameIndex);
+                        if (s.Visual is null || s.Visual.ColorTemperatureClass is null)
+                            continue;
 
-                        // Absolute source-timeline time of frames[0] — NOT necessarily shot.StartSec,
-                        // since grid sample times are quantized to i/fps (see SliceShotFrames). Needed
-                        // so AnalyzeShot reports StillWindows in absolute seconds, not shot-relative.
-                        double shotStartOffsetSec = grid.EffectiveFps > 0
-                            ? startFrameIndex / grid.EffectiveFps
-                            : shot.StartSec;
-
-                        VideoAnalysisShotVisual visual = FrameGridAnalyzer.AnalyzeShot(
-                            frames, grid.GridWidth, grid.GridHeight, grid.EffectiveFps, analyzerOptions,
-                            shotStartOffsetSec);
-
-                        shots[i] = shot with { Visual = visual };
-
-                        if (config.DetectNearDuplicates)
-                        {
-                            signatures.Add(FrameGridAnalyzer.ComputeSignature(frames, grid.GridWidth, grid.GridHeight));
-                            signatureShotIds.Add(shot.Id);
-                            takeQualities.Add(FrameGridAnalyzer.ComputeTakeQuality(
-                                visual.MotionStdDev, shots[i].Audio?.RmsDbfs, visual.BrightnessMean, shot.EndSec - shot.StartSec));
-                        }
+                        lookIds.Add(s.Id);
+                        lookSigs.Add(new FrameGridAnalyzer.LookSignature(
+                            s.Visual.Warmth, s.Visual.Tint, s.Visual.BrightnessMean,
+                            s.Visual.BlackPoint, s.Visual.WhitePoint, s.Visual.SaturationMean));
                     }
 
-                    if (config.DetectNearDuplicates && signatures.Count > 0)
+                    if (lookIds.Count >= 2)
                     {
-                        IReadOnlyList<VideoAnalysisDuplicateGroup> groups = FrameGridAnalyzer.GroupDuplicates(
-                            signatureShotIds, signatures, takeQualities, config.DuplicateSimilarityThreshold,
-                            config.DuplicateWindowShots,
-                            out IReadOnlyDictionary<string, (string GroupId, int GroupRank, bool IsBestTake)> assignments);
+                        IReadOnlyList<VideoAnalysisLookGroup> groups = FrameGridAnalyzer.GroupLooks(
+                            lookIds, lookSigs, config.LookSimilarityThreshold,
+                            out IReadOnlyDictionary<string, (string GroupId, int LookRank)> assign);
 
                         for (int i = 0; i < shots.Count; i++)
                         {
-                            if (shots[i].Visual is null || !assignments.TryGetValue(shots[i].Id, out (string GroupId, int GroupRank, bool IsBestTake) a))
+                            if (shots[i].Visual is null || !assign.TryGetValue(shots[i].Id, out (string GroupId, int LookRank) a))
                                 continue;
 
                             shots[i] = shots[i] with
                             {
-                                Visual = shots[i].Visual! with
-                                {
-                                    DuplicateGroupId = a.GroupId,
-                                    GroupRank = a.GroupRank,
-                                    IsBestTake = a.IsBestTake
-                                }
+                                Visual = shots[i].Visual! with { LookGroupId = a.GroupId, LookRank = a.LookRank }
                             };
                         }
 
-                        duplicateGroups = groups.ToList();
-                    }
+                        // Group descriptors come from the representative shot's own already-computed
+                        // classes, never a re-derivation from the centroid — so the words always
+                        // describe a real frame.
+                        lookGroups = groups.Select(g =>
+                        {
+                            VideoAnalysisShotVisual? rep = shots.FirstOrDefault(s => s.Id == g.RepresentativeShotId)?.Visual;
+                            return g with
+                            {
+                                ColorTemperatureClass = rep?.ColorTemperatureClass,
+                                ToneClass = rep?.ToneClass,
+                                SaturationClass = rep?.SaturationClass
+                            };
+                        }).ToList();
 
-                    visualApplied = true;
+                        // The single-camera talking-head case: one group covering every analyzed
+                        // shot carries no discriminating information, so §6 suppresses every
+                        // per-shot "look" key for it.
+                        lookUniform = lookGroups.Count == 1 && lookGroups[0].ShotIds.Count == lookIds.Count;
+                        lookGroupingApplied = true;
+                    }
                 }
                 catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
                 {
@@ -358,22 +424,24 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "VideoAnalyze step {StepOrder}: visual analysis failed; degrading.", step.StepOrder);
-                    visualDegraded = true;
+                    _logger.LogWarning(ex, "VideoAnalyze step {StepOrder}: look grouping failed; degrading.", step.StepOrder);
+                    lookGroups.Clear();
+                    lookGroupingApplied = false;
+                    lookUniform = false;
                 }
             }
 
-            // ---- Phase 2: vision-LLM shot captioning — runs LAST among analysis stages, after
-            // every deterministic stage above, so a vision failure can never put anything
-            // deterministic at risk. Off by default (VideoVisionMode.Off); see
-            // VideoVisionMode's doc comment for why this deviates from Transcription's
-            // Optional-by-default. ----
-            bool visionApplied = false;
-            bool visionDegraded = false;
-            bool visionPartial = false;
+            bool colorGradingApplied = config.AnalyzeVisuals && config.AnalyzeColorGrading && provenance.VisualAnalysisApplied;
+
+            // ---- Phase 2: vision-LLM shot captioning — HOISTED to step level (§2.1). Runs ONCE,
+            // after every source clip has finished the deterministic per-source pipeline above, so
+            // MaxCaptionedShots/VisionTimeoutSeconds are genuine STEP-WIDE budgets across every
+            // clip instead of being silently multiplied by source count (the bug §0.3 of the plan
+            // documents). Still the strictly-last analysis stage. Off by default (VideoVisionMode.Off).
+            // ----
+            bool visionApplied = false, visionDegraded = false, visionPartial = false;
             string? visionProviderName = null;
-            int captionedShotCount = 0;
-            int failedShotCount = 0;
+            int captionedShotCountTotal = 0, failedShotCountTotal = 0, persistedKeyframeCount = 0;
 
             if (config.Vision != VideoVisionMode.Off)
             {
@@ -385,11 +453,8 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                     if (visionProvider is null)
                     {
                         if (config.Vision == VideoVisionMode.Required)
-                        {
-                            return Failure(
-                                context, sw, "VISION_UNAVAILABLE",
+                            return Failure(context, sw, "VISION_UNAVAILABLE",
                                 "Vision is Required but no vision-capable inference provider is configured.");
-                        }
 
                         _logger.LogInformation(
                             "VideoAnalyze step {StepOrder}: no vision provider resolved; degrading (Vision=Optional).",
@@ -399,6 +464,10 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                     else
                     {
                         visionProviderName = visionProvider.Name;
+
+                        // Each caption's keyframe must be extracted from the clip that shot
+                        // actually came from.
+                        string[] localPathBySource = sourceResults.Select(r => r.LocalVideoPath).ToArray();
 
                         IReadOnlyList<string> selectedShotIds = KeyframeSelector.SelectShotsToCaption(
                             shots, duplicateGroups.Count > 0 ? duplicateGroups : null,
@@ -414,6 +483,8 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                                 CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken);
                             visionCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, config.VisionTimeoutSeconds)));
                             CancellationToken visionCt = visionCts.Token;
+
+                            await ReportAsync(context, progress, VideoAnalyzeProgressPlan.Stage.CaptionShots, $"Captioning shots (0/{selectedShotIds.Count})");
 
                             foreach (string shotId in selectedShotIds)
                             {
@@ -432,20 +503,63 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                                     VideoAnalysisShot shot = shots[shotIdx];
                                     double atSec = KeyframeSelector.ChooseKeyframeSec(shot);
                                     string keyframePath = scratch.GetPath($"keyframe-{shot.Id}.jpg");
+                                    string sourceVideoPath = localPathBySource[shot.SourceIndex];
 
-                                    await _keyframeExtractor.ExtractKeyframeAsync(
-                                        localVideoPath, keyframePath, atSec, config.KeyframeMaxWidth, visionCt);
+                                    // Phase 4 (§7.4): KeyframesPerShot==1 keeps calling
+                                    // ExtractKeyframeAsync exactly as before — byte-identical.
+                                    int keyframesPerShot = Math.Clamp(config.KeyframesPerShot, 1, 3);
+                                    bool isContactSheet = keyframesPerShot > 1;
+                                    if (isContactSheet)
+                                    {
+                                        IReadOnlyList<double> atSecs = KeyframeSelector.ChooseKeyframeSecs(shot, keyframesPerShot);
+                                        await _keyframeExtractor.ExtractContactSheetAsync(
+                                            sourceVideoPath, keyframePath, atSecs, config.KeyframeMaxWidth, visionCt);
+                                    }
+                                    else
+                                    {
+                                        await _keyframeExtractor.ExtractKeyframeAsync(
+                                            sourceVideoPath, keyframePath, atSec, config.KeyframeMaxWidth, visionCt);
+                                    }
 
-                                    ShotCaptionRequest request = new(shot.Id, keyframePath, atSec);
+                                    // Phase 4 (decision #1): prime the prompt with Phase 1's own
+                                    // measured words for this shot — null when visual analysis
+                                    // was off/degraded for it.
+                                    string? measuredContext = BuildMeasuredContext(shot.Visual);
+
+                                    ShotCaptionRequest request = new(shot.Id, keyframePath, atSec, measuredContext, isContactSheet);
                                     VideoShotCaption caption = await CaptionWithRetryAsync(
                                         visionProvider, request, config.MaxCaptionChars, visionCt);
 
-                                    // SAFETY (plan §3): the shot-id <-> caption binding is never
+                                    // SAFETY: the shot-id <-> caption binding is never
                                     // model-controlled. Overwrite ShotId with the id we actually
-                                    // requested — never trust whatever the model echoed back — before
-                                    // attaching the caption to this shot.
+                                    // requested — never trust whatever the model echoed back —
+                                    // before attaching the caption.
                                     shots[shotIdx] = shot with { Caption = caption with { ShotId = shot.Id } };
-                                    captionedShotCount++;
+                                    captionedShotCountTotal++;
+
+                                    // Phase 4 (§7.5): only on caption success, so a failed shot
+                                    // never leaves an orphan keyframe in storage.
+                                    if (config.PersistKeyframes)
+                                    {
+                                        try
+                                        {
+                                            await _workspace.UploadArtifactAsync(
+                                                context.Execution.ProjectId, keyframePath,
+                                                $"video-analysis/{context.Execution.Id:D}/step-{step.StepOrder}-keyframes/{shot.Id}.jpg",
+                                                "image/jpeg", visionCt);
+                                            persistedKeyframeCount++;
+                                        }
+                                        catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+                                        {
+                                            throw;
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            // Observability is never allowed to cost a caption.
+                                            _logger.LogWarning(ex, "VideoAnalyze step {StepOrder}: persisting keyframe for {ShotId} failed; continuing.",
+                                                step.StepOrder, shot.Id);
+                                        }
+                                    }
                                 }
                                 catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
                                 {
@@ -464,20 +578,24 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                                     _logger.LogWarning(
                                         ex, "VideoAnalyze step {StepOrder}: captioning shot {ShotId} failed after retries; skipping.",
                                         step.StepOrder, shotId);
-                                    failedShotCount++;
+                                    failedShotCountTotal++;
                                 }
+
+                                int shotsAttempted = captionedShotCountTotal + failedShotCountTotal;
+                                if (VideoAnalyzeProgressPlan.ShouldReportItem(shotsAttempted - 1, selectedShotIds.Count))
+                                    await ReportAsync(
+                                        context, progress, VideoAnalyzeProgressPlan.Stage.CaptionShots,
+                                        $"Captioning shots ({shotsAttempted}/{selectedShotIds.Count})",
+                                        fraction: shotsAttempted / (double)selectedShotIds.Count);
                             }
                         }
 
-                        visionApplied = captionedShotCount > 0;
+                        visionApplied = captionedShotCountTotal > 0;
                         if (!visionApplied)
                         {
                             if (config.Vision == VideoVisionMode.Required)
-                            {
-                                return Failure(
-                                    context, sw, "VISION_FAILED",
+                                return Failure(context, sw, "VISION_FAILED",
                                     "Vision is Required but captioning did not produce any shot captions.");
-                            }
 
                             visionDegraded = true;
                         }
@@ -497,60 +615,50 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                 }
             }
 
-            // ---- Phase 3: deterministic overlay-placement candidates (see
-            // docs/video-editing.md "Motion graphics (Phase 3)") — derived entirely from Phase
-            // 1's per-shot Visual/Regions data, so only computed when visual analysis actually
-            // succeeded (never when it degraded/was off). Purely additive: off by default. ----
-            List<VideoAnalysisPlacement> placements = config.EmitOverlayPlacements && visualApplied
-                ? OverlayPlacementBuilder.BuildPlacements(shots, config.MaxPlacementsPerShot, config.MaxPlacements).ToList()
-                : [];
+            // AggregateProvenance ORed all-false vision flags from every source (harmless — vision
+            // no longer runs per-source); the step-level pass above is the sole source of truth now.
+            provenance = provenance with
+            {
+                VisionApplied = visionApplied,
+                VisionDegraded = visionDegraded,
+                VisionProvider = visionProviderName,
+                CaptionedShotCount = captionedShotCountTotal,
+                VisionPartial = visionPartial,
+                ColorGradingApplied = colorGradingApplied,
+                LookGroupingApplied = lookGroupingApplied,
+                LookGroupCount = lookGroups.Count,
+                LookUniform = lookUniform,
+                LetterboxDetectionApplied = config.DetectLetterbox && provenance.VisualAnalysisApplied,
+                SharpnessAvailable = sharpnessBudget.Measured > 0,
+                SharpnessShotCount = sharpnessBudget.Measured
+            };
 
-            VideoAnalysisPacing pacing = FrameGridAnalyzer.ComputePacing(shots, probe.DurationSec);
-
-            List<VideoAnalysisSilenceSpan> silences = silenceSpans
-                .Select((s, i) => new VideoAnalysisSilenceSpan($"g{i}", s.StartSec, s.EndSec, FindAfterShot(shots, s.StartSec)))
-                .ToList();
-
-            List<VideoAnalysisSegment> segments = (transcript?.Segments ?? (IReadOnlyList<TranscriptSegment>)Array.Empty<TranscriptSegment>())
-                .Select((seg, i) => new VideoAnalysisSegment($"t{i}", FindShotFor(shots, seg.StartSec), seg.StartSec, seg.EndSec, seg.Text))
-                .ToList();
-
-            List<VideoAnalysisWord> words = (transcript?.Words ?? (IReadOnlyList<TranscriptWord>)Array.Empty<TranscriptWord>())
-                .Select((w, i) => new VideoAnalysisWord($"w{i}", w.StartSec, w.EndSec, w.Text))
-                .ToList();
+            // Top-level Media mirrors source 0 — the only source in the single-source case, or the
+            // first/"primary" clip in the multi-source case. Every per-clip computation downstream
+            // (VideoCompileStepExecutor's frame quantization, padding clamps, graphics geometry)
+            // must read Sources[i].Media instead of this field once more than one source exists.
+            VideoAnalysisMedia primaryMedia = sourceInfos[0].Media;
 
             // A preliminary artifact to hand to BuildBoundedView below (it reads Shots/SilenceSpans/
             // Media/counts/Pacing/DuplicateGroups only, never OfferedIds, so a placeholder here is
             // safe — see the corrected artifact constructed after the view is built).
             VideoAnalysisArtifact draftArtifact = new(
                 Version: 2,
-                Media: new VideoAnalysisMedia(probe.DurationSec, probe.FpsNum, probe.FpsDen, probe.Width, probe.Height),
+                Media: primaryMedia,
                 Shots: shots,
                 SilenceSpans: silences,
                 Segments: segments,
                 Words: words,
                 OfferedIds: [],
-                Provenance: new VideoAnalysisProvenance(
-                    TranscriptionMode: config.Transcription,
-                    TranscriptionApplied: transcriptionApplied,
-                    TranscriptionDegraded: transcriptionDegraded,
-                    TranscriptionProvider: transcriptionProviderName,
-                    TranscriptionLanguage: config.Language,
-                    AnalyzedAt: DateTime.UtcNow,
-                    VisualAnalysisApplied: visualApplied,
-                    VisualAnalysisDegraded: visualDegraded,
-                    AudioLevelsApplied: audioLevelsApplied,
-                    SharpnessAvailable: false,
-                    VisionMode: config.Vision,
-                    VisionApplied: visionApplied,
-                    VisionDegraded: visionDegraded,
-                    VisionProvider: visionProviderName,
-                    CaptionedShotCount: captionedShotCount,
-                    VisionPartial: visionPartial),
+                Provenance: provenance,
                 DuplicateGroups: duplicateGroups.Count > 0 ? duplicateGroups : null,
                 Pacing: pacing,
                 Placements: placements.Count > 0 ? placements : null,
-                OfferedPlacementIds: []);
+                OfferedPlacementIds: [],
+                Sources: sourceInfos,
+                MusicCandidates: musicCandidates.Count > 0 ? musicCandidates : null,
+                OfferedMusicIds: [],
+                LookGroups: lookGroups.Count > 0 ? lookGroups : null);
 
             // ---- Build the bounded, id-anchored prompt view FIRST, so we know exactly which ids
             // were actually shown before persisting the artifact's OfferedIds. ----
@@ -562,37 +670,48 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                     : s)
                 .ToList();
 
+            bool isMultiSource = sourceInfos.Count > 1;
+
+            await ReportAsync(context, progress, VideoAnalyzeProgressPlan.Stage.BuildView, "Building bounded view");
+
             // artifactStorageKey isn't known yet (the artifact hasn't been uploaded) — meta's
             // copy is patched in below once it is.
-            (JsonObject view, JsonObject meta, List<string> viewOfferedIds, List<string> viewOfferedPlacementIds) = BuildBoundedView(
+            (JsonObject view, JsonObject meta, List<string> viewOfferedIds, List<string> viewOfferedPlacementIds, List<string> viewOfferedMusicIds) = BuildBoundedView(
                 draftArtifact, viewSegments, config, artifactStorageKey: string.Empty,
-                transcriptionApplied, transcriptionDegraded, transcriptionProviderName,
-                visualApplied, visualDegraded, gridWidth, gridHeight, audioLevelsApplied,
-                visionApplied, visionDegraded, visionPartial, visionProviderName, captionedShotCount, failedShotCount);
+                provenance.TranscriptionApplied, provenance.TranscriptionDegraded, provenance.TranscriptionProvider,
+                provenance.VisualAnalysisApplied, provenance.VisualAnalysisDegraded, gridWidth, gridHeight, provenance.AudioLevelsApplied,
+                provenance.VisionApplied, provenance.VisionDegraded, provenance.VisionPartial, provenance.VisionProvider,
+                captionedShotCountTotal, failedShotCountTotal, isMultiSource, persistedKeyframeCount);
 
             // The persisted artifact's OfferedIds must be exactly the ids that survived view
             // truncation — VideoCompileStepExecutor validates the model's Keep spans against this
             // list, so persisting the full pre-truncation id set here would let it accept ids the
             // model was never actually shown, defeating the id-anchored contract entirely (found
-            // by Copilot review). OfferedPlacementIds gets the exact same discipline, applied to
-            // the SEPARATE Phase 3 placement-id namespace (never merged with OfferedIds).
+            // by Copilot review). OfferedPlacementIds/OfferedMusicIds get the exact same
+            // discipline, each applied to its own SEPARATE id namespace (never merged with
+            // OfferedIds or with each other).
             VideoAnalysisArtifact artifact = draftArtifact with
             {
                 OfferedIds = viewOfferedIds,
-                OfferedPlacementIds = viewOfferedPlacementIds
+                OfferedPlacementIds = viewOfferedPlacementIds,
+                OfferedMusicIds = viewOfferedMusicIds
             };
 
             string artifactLocalPath = scratch.GetPath("analysis.json");
             await File.WriteAllTextAsync(
                 artifactLocalPath, JsonSerializer.Serialize(artifact, ArtifactJsonOptions), context.CancellationToken);
 
+            // fraction: 1 — UploadArtifact is always the LAST declared stage (see
+            // VideoAnalyzeProgressPlan.Stage), so this is also the step's final progress report; it
+            // must land at exactly 100%, not just "about to start the last stage".
+            await ReportAsync(context, progress, VideoAnalyzeProgressPlan.Stage.UploadArtifact, "Uploading analysis artifact", fraction: 1);
             string artifactFileName = $"video-analysis/{context.Execution.Id:D}/step-{step.StepOrder}-analysis.json";
             string artifactStorageKey = await _workspace.UploadArtifactAsync(
                 context.Execution.ProjectId, artifactLocalPath, artifactFileName, "application/json", context.CancellationToken);
 
             meta["artifactStorageKey"] = artifactStorageKey;
 
-            string? expectError = EvaluateExpect(config.Expect, artifact);
+            string? expectError = EvaluateExpect(config.Expect, artifact, totalDurationSec);
             if (expectError is not null)
             {
                 _logger.LogWarning(
@@ -600,7 +719,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                 return Failure(context, sw, "EXPECT_FAILED", expectError, artifactStorageKey);
             }
 
-            context.RecordResolvedInput(BuildResolvedInputDescriptor(config, storageKey, viewOfferedIds.Count));
+            context.RecordResolvedInput(BuildResolvedInputDescriptor(config, sources, sourceResults, viewOfferedIds.Count));
 
             var envelope = new JsonObject { ["view"] = view, ["meta"] = meta };
 
@@ -628,6 +747,521 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         {
             scratch?.Dispose();
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // Multi-source id merge helpers
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Every id in this feature is "{prefix-char}{n}" (e.g. "s4", "g12") — offsets it by adding
+    /// <paramref name="offset"/> to its numeric suffix. The single mechanism behind "ids stay
+    /// globally unique across all sources in one artifact, assigned contiguously across every
+    /// source file in analysis order" (see class doc comment).
+    /// </summary>
+    internal static string OffsetId(string localId, int offset)
+    {
+        if (offset == 0)
+            return localId;
+
+        char prefixChar = localId[0];
+        int n = int.Parse(localId.AsSpan(1));
+        return $"{prefixChar}{n + offset}";
+    }
+
+    /// <summary>Maps a local (per-source) id back-reference through <paramref name="shotIdMap"/> into the merged global id space; passes null through unchanged.</summary>
+    private static string? MapLocalId(string? localId, IReadOnlyDictionary<string, string> shotIdMap) =>
+        localId is not null && shotIdMap.TryGetValue(localId, out string? mapped) ? mapped : localId;
+
+    /// <summary>
+    /// Merges N sources' independently-computed <see cref="VideoAnalysisProvenance"/> into one
+    /// artifact-level record: "applied"/"degraded" become true if ANY source applied/degraded that
+    /// stage (an artifact-wide OR, not a per-source breakdown — see docs/video-editing.md
+    /// "Multiple source clips" for why full per-source provenance detail is out of scope for this
+    /// addition). A single source passes through completely unchanged.
+    /// </summary>
+    private static VideoAnalysisProvenance AggregateProvenance(IReadOnlyList<VideoAnalysisProvenance> perSource)
+    {
+        if (perSource.Count == 1)
+            return perSource[0];
+
+        return new VideoAnalysisProvenance(
+            TranscriptionMode: perSource[0].TranscriptionMode,
+            TranscriptionApplied: perSource.Any(p => p.TranscriptionApplied),
+            TranscriptionDegraded: perSource.Any(p => p.TranscriptionDegraded),
+            TranscriptionProvider: perSource.Select(p => p.TranscriptionProvider).FirstOrDefault(p => p is not null),
+            TranscriptionLanguage: perSource[0].TranscriptionLanguage,
+            AnalyzedAt: DateTime.UtcNow,
+            VisualAnalysisApplied: perSource.Any(p => p.VisualAnalysisApplied),
+            VisualAnalysisDegraded: perSource.Any(p => p.VisualAnalysisDegraded),
+            AudioLevelsApplied: perSource.Any(p => p.AudioLevelsApplied),
+            SharpnessAvailable: false,
+            VisionMode: perSource[0].VisionMode,
+            VisionApplied: perSource.Any(p => p.VisionApplied),
+            VisionDegraded: perSource.Any(p => p.VisionDegraded),
+            VisionProvider: perSource.Select(p => p.VisionProvider).FirstOrDefault(p => p is not null),
+            CaptionedShotCount: perSource.Sum(p => p.CaptionedShotCount),
+            VisionPartial: perSource.Any(p => p.VisionPartial));
+    }
+
+    // ---------------------------------------------------------------------
+    // Per-source analysis — the exact deterministic pipeline this executor always ran (silence/
+    // shot detection, transcription, Phase 1/2/3 analysis), now scoped to ONE source clip's local
+    // file so ExecuteAsync can run it once per entry in the resolved source list. Every id
+    // assigned in here is LOCAL to this one source (each kind restarting at 0) — ExecuteAsync's
+    // merge step re-offsets them into the artifact's global id space afterward. Guardrails
+    // (MaxDurationSeconds/MaxInputBytes) are enforced PER SOURCE here — each bounds the cost of
+    // that one source's own ffmpeg/ASR calls, which is what they actually protect regardless of
+    // how many sibling sources are also being analyzed in the same step.
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// A cap that is genuinely STEP-wide rather than silently per-source — the exact bug §0.3
+    /// found in MaxCaptionedShots. Sharpness cannot simply be hoisted to step level like
+    /// captioning was, because it must run before this source's own duplicate grouping in order to
+    /// feed ComputeTakeQuality. <see cref="Measured"/> is the step-level sharpness-shot-count for
+    /// <see cref="VideoAnalysisProvenance.SharpnessShotCount"/>.
+    /// </summary>
+    private sealed class StepBudget
+    {
+        public int Remaining;
+        public int Measured;
+    }
+
+    private sealed record SourceAnalysisResult(
+        string StorageKey,
+        /// <summary>
+        /// Alive until <see cref="ExecuteAsync"/>'s outer <c>finally</c> disposes <c>scratch</c> —
+        /// needed by the step-level vision pass (§2.1) so each shot's keyframe can still be
+        /// extracted from the clip it actually came from, after every source has finished analysis.
+        /// </summary>
+        string LocalVideoPath,
+        VideoAnalysisMedia Media,
+        List<VideoAnalysisShot> Shots,
+        List<VideoAnalysisSilenceSpan> Silences,
+        List<VideoAnalysisSegment> Segments,
+        List<VideoAnalysisWord> Words,
+        List<VideoAnalysisPlacement> Placements,
+        List<VideoAnalysisDuplicateGroup> DuplicateGroups,
+        VideoAnalysisProvenance Provenance);
+
+    private sealed record SourceAnalysisOutcome(SourceAnalysisResult? Result, string? ErrorCode, string? ErrorMessage)
+    {
+        public static SourceAnalysisOutcome Ok(SourceAnalysisResult result) => new(result, null, null);
+        public static SourceAnalysisOutcome Fail(string code, string message) => new(null, code, message);
+    }
+
+    /// <summary>Every progress call site goes through this — see plan §3.3's exact call-site mapping.</summary>
+    private static Task ReportAsync(
+        StepExecutionContext context, VideoAnalyzeProgressPlan plan, VideoAnalyzeProgressPlan.Stage stage,
+        string label, int sourceIndex = 0, double fraction = 0)
+        => context.ReportProgressAsync(label, plan.Percent(stage, sourceIndex, fraction));
+
+    /// <summary>
+    /// Phase 4 (decision #1) — formats the deterministic Phase 1 measurements for one shot into a
+    /// short sentence of WORDS for the vision prompt, never a number the model could restate. Null
+    /// when visual analysis was off/degraded for this shot (no ColorTemperatureClass derived).
+    /// </summary>
+    private static string? BuildMeasuredContext(VideoAnalysisShotVisual? v)
+    {
+        if (v?.ColorTemperatureClass is null)
+            return null;
+
+        var parts = new List<string>
+        {
+            $"color temperature {v.ColorTemperatureClass}",
+            $"tone curve {v.ToneClass}",
+            $"saturation {v.SaturationClass}",
+            $"camera {v.CameraMove}"
+        };
+
+        if (v.ActiveCrop is not null)
+            parts.Add("letterboxed/pillarboxed");
+        if (v.BacklitCandidate)
+            parts.Add("possibly backlit (measurement is a coarse 3x3 heuristic — confirm or reject from the image)");
+
+        return string.Join(", ", parts);
+    }
+
+    private async Task<SourceAnalysisOutcome> AnalyzeSourceAsync(
+        StepExecutionContext context,
+        VideoScratchSpace scratch,
+        VideoAnalyzeStepConfig config,
+        VideoSourceRef sourceRef,
+        int sourceIndex,
+        int totalSources,
+        int gridWidth,
+        int gridHeight,
+        VideoAnalyzeProgressPlan progress,
+        StepBudget sharpnessBudget,
+        CancellationToken ct)
+    {
+        string progressPrefix = totalSources > 1 ? $"[{sourceIndex + 1}/{totalSources}] " : "";
+        string filePrefix = totalSources > 1 ? $"src{sourceIndex}-" : "";
+
+        (string? storageKey, string? resolveError) = await ResolveSourceStorageKeyAsync(context, sourceRef);
+        if (storageKey is null)
+            return SourceAnalysisOutcome.Fail("SOURCE_UNRESOLVED", resolveError ?? "Could not resolve the video source.");
+
+        string localVideoPath = scratch.GetPath(filePrefix + "source" + GuessExtension(storageKey));
+
+        await ReportAsync(context, progress, VideoAnalyzeProgressPlan.Stage.DownloadSource, progressPrefix + "Downloading source", sourceIndex);
+        await _workspace.DownloadStorageKeyToFileAsync(context.Execution.ProjectId, storageKey, localVideoPath, ct);
+
+        // Cheapest guardrail we can actually apply given IProjectFileWorkspace's surface (no
+        // HEAD/size-without-download primitive): check the downloaded size against
+        // MaxInputBytes before any decode (probe/silence/shot/ASR) runs. Enforced PER SOURCE —
+        // each source's own ffmpeg/ASR cost is bounded by ITS OWN size, independent of how many
+        // sibling sources are being analyzed in the same step.
+        long fileSizeBytes = new FileInfo(localVideoPath).Length;
+        if (fileSizeBytes > config.MaxInputBytes)
+        {
+            return SourceAnalysisOutcome.Fail(
+                "INPUT_TOO_LARGE",
+                $"Source video is {fileSizeBytes} bytes, exceeding MaxInputBytes={config.MaxInputBytes}.");
+        }
+
+        await ReportAsync(context, progress, VideoAnalyzeProgressPlan.Stage.ProbeSource, progressPrefix + "Probing source media", sourceIndex);
+        MediaProbeResult probe = await _mediaProbe.ProbeAsync(localVideoPath, ct);
+
+        if (config.MaxDurationSeconds > 0 && probe.DurationSec > config.MaxDurationSeconds)
+        {
+            return SourceAnalysisOutcome.Fail(
+                "DURATION_EXCEEDED",
+                $"Source video duration {probe.DurationSec:F2}s exceeds MaxDurationSeconds={config.MaxDurationSeconds}. " +
+                "Bailing out before audio extraction/ASR.");
+        }
+
+        IReadOnlyList<(double StartSec, double EndSec)> silenceSpans = Array.Empty<(double, double)>();
+        if (config.DetectSilence)
+        {
+            await ReportAsync(context, progress, VideoAnalyzeProgressPlan.Stage.DetectSilence, progressPrefix + "Detecting silence", sourceIndex);
+            silenceSpans = await _silenceDetector.DetectAsync(
+                localVideoPath, config.SilenceThresholdDb, config.MinSilenceMs / 1000.0, probe.DurationSec, ct);
+        }
+
+        IReadOnlyList<(double StartSec, double EndSec)> shotSpans = Array.Empty<(double, double)>();
+        if (config.DetectShots)
+        {
+            await ReportAsync(context, progress, VideoAnalyzeProgressPlan.Stage.DetectShots, progressPrefix + "Detecting shots", sourceIndex);
+            shotSpans = await _shotDetector.DetectShotsAsync(localVideoPath, config.SceneThreshold, probe.DurationSec, ct);
+        }
+
+        TranscriptResult? transcript = null;
+        bool transcriptionApplied = false;
+        bool transcriptionDegraded = false;
+        string? transcriptionProviderName = null;
+
+        if (config.Transcription != VideoTranscriptionMode.Off)
+        {
+            try
+            {
+                await ReportAsync(context, progress, VideoAnalyzeProgressPlan.Stage.ResolveTranscription, progressPrefix + "Resolving transcription provider", sourceIndex);
+                ResolvedTranscriptionProvider? provider =
+                    await _providerResolver.ResolveTranscriptionAsync(config.TranscriptionProviderId, ct);
+
+                if (provider is null)
+                {
+                    if (config.Transcription == VideoTranscriptionMode.Required)
+                    {
+                        return SourceAnalysisOutcome.Fail(
+                            "TRANSCRIPTION_UNAVAILABLE",
+                            "Transcription is Required but no transcription-capable inference provider is configured.");
+                    }
+
+                    _logger.LogInformation(
+                        "VideoAnalyze step {StepOrder} source {SourceIndex}: no transcription provider resolved; degrading (Transcription=Optional).",
+                        context.Step.StepOrder, sourceIndex);
+                    transcriptionDegraded = true;
+                }
+                else
+                {
+                    await ReportAsync(context, progress, VideoAnalyzeProgressPlan.Stage.Transcribe, progressPrefix + "Transcribing audio", sourceIndex);
+                    transcript = await TranscribeWithChunkingAsync(
+                        context, scratch, filePrefix, localVideoPath, probe, silenceSpans, config, provider,
+                        progress, sourceIndex, ct);
+                    transcriptionApplied = true;
+                    transcriptionProviderName = provider.Name;
+                }
+            }
+            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "VideoAnalyze step {StepOrder} source {SourceIndex}: transcription failed", context.Step.StepOrder, sourceIndex);
+                if (config.Transcription == VideoTranscriptionMode.Required)
+                    return SourceAnalysisOutcome.Fail("TRANSCRIPTION_FAILED", $"Transcription failed: {ex.Message}");
+
+                transcriptionDegraded = true;
+            }
+        }
+
+        // ---- Assign deterministic LOCAL ids by index and build the shot list ----
+
+        List<VideoAnalysisShot> shots = shotSpans
+            .Select((s, i) => new VideoAnalysisShot($"s{i}", s.StartSec, s.EndSec))
+            .ToList();
+
+        // ---- Phase 1: audio-level sampling (reuses the WAV already extracted for
+        // transcription, or extracts it fresh) — never lets an exception escape this method. ----
+        bool audioLevelsApplied = false;
+        if (config.AnalyzeAudioLevels)
+        {
+            try
+            {
+                await ReportAsync(context, progress, VideoAnalyzeProgressPlan.Stage.SampleAudioLevels, progressPrefix + "Sampling audio levels", sourceIndex);
+                string fullWavPath = scratch.GetPath($"{filePrefix}audio-full.wav");
+                if (!File.Exists(fullWavPath))
+                {
+                    await _audioExtractor.ExtractWavAsync(localVideoPath, fullWavPath, ct);
+                }
+
+                byte[] wavBytes = await File.ReadAllBytesAsync(fullWavPath, ct);
+                IReadOnlyList<WavRmsSampler.RmsWindow> windows = WavRmsSampler.Sample(wavBytes, AudioWindowMs);
+
+                for (int i = 0; i < shots.Count; i++)
+                {
+                    VideoAnalysisShotAudio? audio = ComputeShotAudio(shots[i], windows, silenceSpans);
+                    if (audio is not null)
+                        shots[i] = shots[i] with { Audio = audio };
+                }
+
+                audioLevelsApplied = true;
+            }
+            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "VideoAnalyze step {StepOrder} source {SourceIndex}: audio-level sampling failed; degrading.", context.Step.StepOrder, sourceIndex);
+                audioLevelsApplied = false;
+            }
+        }
+
+        // ---- Phase 1: visual scene analysis — one grid ffmpeg pass + pure C# analyzer.
+        // The ENTIRE block (grid sampling + FrameGridAnalyzer calls) is wrapped so an
+        // exception anywhere in here can never fail this source's analysis; shots/silences/
+        // transcript are used exactly as if this stage were off. ----
+        bool visualApplied = false;
+        bool visualDegraded = false;
+        List<VideoAnalysisDuplicateGroup> duplicateGroups = [];
+
+        if (config.AnalyzeVisuals)
+        {
+            try
+            {
+                await ReportAsync(context, progress, VideoAnalyzeProgressPlan.Stage.SampleFrameGrid, progressPrefix + "Sampling visual analysis", sourceIndex);
+                FrameGridResult grid = await _frameGridSampler.SampleAsync(
+                    localVideoPath, scratch, config.VisualSampleFps, gridWidth, gridHeight,
+                    probe.DurationSec, config.MaxVisualSampleFrames, ct);
+
+                if (grid.FrameCount <= 0)
+                    throw new InvalidOperationException("Grid sampler produced zero sampled frames.");
+
+                var analyzerOptions = new FrameGridAnalyzer.Options(
+                    config.StillMotionThreshold, config.MinStillWindowMs, config.MaxStillWindowsPerShot,
+                    config.AnalyzeColorGrading, config.DetectLetterbox);
+
+                var signatures = new List<FrameGridAnalyzer.ShotSignature>();
+                var signatureShotIds = new List<string>();
+
+                for (int i = 0; i < shots.Count; i++)
+                {
+                    VideoAnalysisShot shot = shots[i];
+                    List<byte[]> frames = FrameGridAnalyzer.SliceShotFrames(
+                        grid.PixelData, grid.FrameCount, grid.GridWidth, grid.GridHeight, grid.EffectiveFps,
+                        shot.StartSec, shot.EndSec, out int startFrameIndex);
+
+                    // Absolute source-timeline time of frames[0] — NOT necessarily shot.StartSec,
+                    // since grid sample times are quantized to i/fps (see SliceShotFrames). Needed
+                    // so AnalyzeShot reports StillWindows in absolute seconds, not shot-relative.
+                    double shotStartOffsetSec = grid.EffectiveFps > 0
+                        ? startFrameIndex / grid.EffectiveFps
+                        : shot.StartSec;
+
+                    VideoAnalysisShotVisual visual = FrameGridAnalyzer.AnalyzeShot(
+                        frames, grid.GridWidth, grid.GridHeight, grid.EffectiveFps, analyzerOptions,
+                        shotStartOffsetSec);
+
+                    shots[i] = shot with { Visual = visual };
+
+                    if (config.DetectNearDuplicates)
+                    {
+                        signatures.Add(FrameGridAnalyzer.ComputeSignature(frames, grid.GridWidth, grid.GridHeight));
+                        signatureShotIds.Add(shot.Id);
+                    }
+
+                    if (VideoAnalyzeProgressPlan.ShouldReportItem(i, shots.Count))
+                        await ReportAsync(
+                            context, progress, VideoAnalyzeProgressPlan.Stage.AnalyzeShots,
+                            progressPrefix + $"Analyzing shots ({i + 1}/{shots.Count})", sourceIndex,
+                            (i + 1) / (double)shots.Count);
+                }
+
+                // Phase 4 (§5.5): sharpness — AFTER the per-shot analyze loop, BEFORE this source's
+                // own duplicate grouping, so real Sharpness (when measured) reaches
+                // ComputeTakeQuality below instead of only the neutral placeholder.
+                if (config.DetectSharpness && sharpnessBudget.Remaining > 0)
+                {
+                    int patch = Math.Max(0, Math.Min(256, Math.Min(probe.Width, probe.Height)) & ~1);
+                    if (patch >= 32)
+                    {
+                        List<VideoAnalysisShot> sharpnessTargets = shots
+                            .Where(s => s.Visual is not null)
+                            .OrderByDescending(s => s.EndSec - s.StartSec)
+                            .Take(sharpnessBudget.Remaining)
+                            .OrderBy(s => s.Id, StringComparer.Ordinal)
+                            .ToList();
+
+                        for (int k = 0; k < sharpnessTargets.Count; k++)
+                        {
+                            if (VideoAnalyzeProgressPlan.ShouldReportItem(k, sharpnessTargets.Count))
+                                await ReportAsync(
+                                    context, progress, VideoAnalyzeProgressPlan.Stage.SampleSharpness,
+                                    progressPrefix + $"Measuring focus ({k + 1}/{sharpnessTargets.Count})", sourceIndex,
+                                    (k + 1) / (double)sharpnessTargets.Count);
+
+                            try
+                            {
+                                double? sharp = await _sharpnessSampler.MeasureAsync(
+                                    localVideoPath, scratch, $"{filePrefix}sharp-{sharpnessTargets[k].Id}.gray",
+                                    KeyframeSelector.ChooseKeyframeSec(sharpnessTargets[k]), patch, ct);
+
+                                if (sharp is null)
+                                    continue;
+
+                                int idx = shots.FindIndex(s => s.Id == sharpnessTargets[k].Id);
+                                if (idx < 0 || shots[idx].Visual is null)
+                                    continue;
+
+                                shots[idx] = shots[idx] with { Visual = shots[idx].Visual! with { Sharpness = sharp } };
+                                sharpnessBudget.Remaining--;
+                                sharpnessBudget.Measured++;
+                            }
+                            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+                            {
+                                throw;
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogWarning(ex, "VideoAnalyze step {StepOrder} source {SourceIndex}: sharpness measurement failed for shot {ShotId}; leaving Sharpness null.",
+                                    context.Step.StepOrder, sourceIndex, sharpnessTargets[k].Id);
+                            }
+                        }
+                    }
+                }
+
+                // Built AFTER sharpness so a shot's real Sharpness (when measured) is what
+                // ComputeTakeQuality actually scores, not the neutral 0.5 placeholder.
+                List<double> takeQualities = signatureShotIds
+                    .Select(id =>
+                    {
+                        VideoAnalysisShot s = shots.First(sh => sh.Id == id);
+                        VideoAnalysisShotVisual v = s.Visual!;
+                        return FrameGridAnalyzer.ComputeTakeQuality(
+                            v.MotionStdDev, s.Audio?.RmsDbfs, v.BrightnessMean, s.EndSec - s.StartSec, v.Sharpness);
+                    })
+                    .ToList();
+
+                if (config.DetectNearDuplicates && signatures.Count > 0)
+                {
+                    IReadOnlyList<VideoAnalysisDuplicateGroup> groups = FrameGridAnalyzer.GroupDuplicates(
+                        signatureShotIds, signatures, takeQualities, config.DuplicateSimilarityThreshold,
+                        config.DuplicateWindowShots,
+                        out IReadOnlyDictionary<string, (string GroupId, int GroupRank, bool IsBestTake)> assignments);
+
+                    for (int i = 0; i < shots.Count; i++)
+                    {
+                        if (shots[i].Visual is null || !assignments.TryGetValue(shots[i].Id, out (string GroupId, int GroupRank, bool IsBestTake) a))
+                            continue;
+
+                        shots[i] = shots[i] with
+                        {
+                            Visual = shots[i].Visual! with
+                            {
+                                DuplicateGroupId = a.GroupId,
+                                GroupRank = a.GroupRank,
+                                IsBestTake = a.IsBestTake
+                            }
+                        };
+                    }
+
+                    duplicateGroups = groups.ToList();
+                }
+
+                if (config.DetectNearDuplicates)
+                    await ReportAsync(
+                        context, progress, VideoAnalyzeProgressPlan.Stage.GroupDuplicates,
+                        progressPrefix + "Grouping similar takes", sourceIndex);
+
+                visualApplied = true;
+            }
+            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "VideoAnalyze step {StepOrder} source {SourceIndex}: visual analysis failed; degrading.", context.Step.StepOrder, sourceIndex);
+                visualDegraded = true;
+            }
+        }
+
+        // ---- Phase 2: vision-LLM shot captioning was HOISTED to step level (§2.1) — it now runs
+        // once in ExecuteAsync, after every source has finished this per-source pipeline, so
+        // MaxCaptionedShots/VisionTimeoutSeconds are genuine STEP-wide budgets instead of being
+        // silently multiplied by source count. Recorded here as neutral/false — AggregateProvenance
+        // then ORs all-false vision flags across sources (harmless), and the step-level pass
+        // overwrites them via `with` once captioning actually runs. ----
+        const bool visionApplied = false, visionDegraded = false, visionPartial = false;
+        const string? visionProviderName = null;
+        const int captionedShotCount = 0;
+
+        // ---- Phase 3: deterministic overlay-placement candidates — derived entirely from Phase
+        // 1's per-shot Visual/Regions data, so only computed when visual analysis actually
+        // succeeded (never when it degraded/was off). Ids here are LOCAL ("p0"...) — remapped by
+        // ExecuteAsync's merge step. ----
+        List<VideoAnalysisPlacement> placements = config.EmitOverlayPlacements && visualApplied
+            ? OverlayPlacementBuilder.BuildPlacements(shots, config.MaxPlacementsPerShot, config.MaxPlacements, config.MaxTimeSlicesPerRegion).ToList()
+            : [];
+
+        List<VideoAnalysisSilenceSpan> silences = silenceSpans
+            .Select((s, i) => new VideoAnalysisSilenceSpan($"g{i}", s.StartSec, s.EndSec, FindAfterShot(shots, s.StartSec)))
+            .ToList();
+
+        List<VideoAnalysisSegment> segments = (transcript?.Segments ?? (IReadOnlyList<TranscriptSegment>)Array.Empty<TranscriptSegment>())
+            .Select((seg, i) => new VideoAnalysisSegment($"t{i}", FindShotFor(shots, seg.StartSec), seg.StartSec, seg.EndSec, seg.Text))
+            .ToList();
+
+        List<VideoAnalysisWord> words = (transcript?.Words ?? (IReadOnlyList<TranscriptWord>)Array.Empty<TranscriptWord>())
+            .Select((w, i) => new VideoAnalysisWord($"w{i}", w.StartSec, w.EndSec, w.Text))
+            .ToList();
+
+        VideoAnalysisMedia media = new(probe.DurationSec, probe.FpsNum, probe.FpsDen, probe.Width, probe.Height);
+
+        VideoAnalysisProvenance provenance = new(
+            TranscriptionMode: config.Transcription,
+            TranscriptionApplied: transcriptionApplied,
+            TranscriptionDegraded: transcriptionDegraded,
+            TranscriptionProvider: transcriptionProviderName,
+            TranscriptionLanguage: config.Language,
+            AnalyzedAt: DateTime.UtcNow,
+            VisualAnalysisApplied: visualApplied,
+            VisualAnalysisDegraded: visualDegraded,
+            AudioLevelsApplied: audioLevelsApplied,
+            SharpnessAvailable: false,
+            VisionMode: config.Vision,
+            VisionApplied: visionApplied,
+            VisionDegraded: visionDegraded,
+            VisionProvider: visionProviderName,
+            CaptionedShotCount: captionedShotCount,
+            VisionPartial: visionPartial);
+
+        return SourceAnalysisOutcome.Ok(new SourceAnalysisResult(
+            storageKey, localVideoPath, media, shots, silences, segments, words, placements, duplicateGroups, provenance));
     }
 
     // ---------------------------------------------------------------------
@@ -695,17 +1329,24 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
     /// start time before concatenating — this offset step is the single most likely correctness
     /// bug in this feature (plan §3/§7 R10) and is covered by
     /// <c>VideoAnalyzeStepExecutorTests.Transcription_offsets_chunk_relative_timestamps_to_absolute</c>.
+    /// <paramref name="scratchFilePrefix"/> namespaces the extracted wav/chunk scratch files by
+    /// source (e.g. "src1-") so concurrent... rather, SEQUENTIAL per-source runs never collide on
+    /// the same scratch filename.
     /// </summary>
     private async Task<TranscriptResult> TranscribeWithChunkingAsync(
+        StepExecutionContext context,
         VideoScratchSpace scratch,
+        string scratchFilePrefix,
         string localVideoPath,
         MediaProbeResult probe,
         IReadOnlyList<(double StartSec, double EndSec)> silenceSpans,
         VideoAnalyzeStepConfig config,
         ResolvedTranscriptionProvider provider,
+        VideoAnalyzeProgressPlan progress,
+        int sourceIndex,
         CancellationToken ct)
     {
-        string fullWavPath = scratch.GetPath("audio-full.wav");
+        string fullWavPath = scratch.GetPath($"{scratchFilePrefix}audio-full.wav");
         await _audioExtractor.ExtractWavAsync(localVideoPath, fullWavPath, ct);
         long wavBytes = new FileInfo(fullWavPath).Length;
 
@@ -737,7 +1378,12 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             {
                 ct.ThrowIfCancellationRequested();
 
-                string chunkPath = scratch.GetPath($"audio-chunk-{chunkIndex}.wav");
+                await ReportAsync(
+                    context, progress, VideoAnalyzeProgressPlan.Stage.Transcribe,
+                    $"Transcribing audio (chunk {chunkIndex + 1}/{chunks.Count})",
+                    sourceIndex, chunkIndex / (double)chunks.Count);
+
+                string chunkPath = scratch.GetPath($"{scratchFilePrefix}audio-chunk-{chunkIndex}.wav");
                 await _audioExtractor.ExtractWavRangeAsync(localVideoPath, chunkPath, chunkStartSec, chunkEndSec, ct);
 
                 await using FileStream chunkStream = new(chunkPath, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -850,6 +1496,8 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             return null;
 
         double energySum = 0, weightSum = 0, peakDbfs = -96.0;
+        double zcrSum = 0;
+        var overlappingRms = new List<double>();
         foreach (WavRmsSampler.RmsWindow w in windows)
         {
             double overlap = Overlap(w.StartSec, w.EndSec, shot.StartSec, shot.EndSec);
@@ -859,6 +1507,8 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             double linearEnergy = Math.Pow(10, w.RmsDbfs / 10.0);
             energySum += linearEnergy * overlap;
             weightSum += overlap;
+            zcrSum += w.ZeroCrossingRate * overlap;
+            overlappingRms.Add(w.RmsDbfs);
             if (w.PeakDbfs > peakDbfs)
                 peakDbfs = w.PeakDbfs;
         }
@@ -879,7 +1529,12 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             _ => "Quiet"
         };
 
-        return new VideoAnalysisShotAudio(rmsDbfs, peakDbfs, speechRatio, loudnessClass);
+        ShotAudioAnalyzer.Result ch = ShotAudioAnalyzer.Analyze(
+            rmsDbfs, peakDbfs, speechRatio, overlappingRms, weightSum > 0 ? zcrSum / weightSum : 0);
+
+        return new VideoAnalysisShotAudio(rmsDbfs, peakDbfs, speechRatio, loudnessClass,
+            ch.CrestFactorDb, ch.NoiseFloorDbfs, ch.LevelStability, ch.ZeroCrossingRate,
+            ch.CharacterClass, ch.CharacterConfidence);
     }
 
     private static double Overlap(double aStart, double aEnd, double bStart, double bEnd) =>
@@ -905,7 +1560,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         return list;
     }
 
-    private static (JsonObject View, JsonObject Meta, List<string> OfferedIds, List<string> OfferedPlacementIds) BuildBoundedView(
+    private static (JsonObject View, JsonObject Meta, List<string> OfferedIds, List<string> OfferedPlacementIds, List<string> OfferedMusicIds) BuildBoundedView(
         VideoAnalysisArtifact artifact,
         List<VideoAnalysisSegment> viewSegments,
         VideoAnalyzeStepConfig config,
@@ -923,7 +1578,9 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         bool visionPartial,
         string? visionProviderName,
         int captionedShotCount,
-        int failedShotCount)
+        int failedShotCount,
+        bool isMultiSource,
+        int persistedKeyframeCount = 0)
     {
         List<OfferedItem> offered = BuildOfferedItems(artifact, viewSegments);
         int totalItemCount = offered.Count;
@@ -953,22 +1610,44 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         string serialized = string.Empty;
         VideoVisualDetail detailApplied = levelsToTry[^1];
 
+        bool lookUniform = artifact.Provenance.LookUniform;
+
         foreach (VideoVisualDetail detail in levelsToTry)
         {
-            view = BuildView(artifact, offered, detail, config);
+            view = BuildView(artifact, offered, detail, config, isMultiSource, lookUniform);
             serialized = view.ToJsonString(EnvelopeJsonOptions);
             detailApplied = detail;
             if (serialized.Length <= maxOutputChars)
                 break;
         }
 
+        // Background music (see docs/video-editing.md "Background music"): view.musicTracks is
+        // shown as ONE ATOMIC ARRAY, deliberately NOT gated on VisualDetail (music tracks have
+        // nothing to do with visual detail). It is dropped as a whole array — after detail has
+        // already degraded all the way to None, before the per-item drop loop below ever runs —
+        // if the view still does not fit. This is a strictly separate budget concern from
+        // OfferedIds/detail, mirroring the discipline placements already established.
+        bool musicTracksSuppressed = false;
+        if (serialized.Length > maxOutputChars && artifact.MusicCandidates is { Count: > 0 })
+        {
+            JsonObject suppressedView = BuildView(artifact, offered, detailApplied, config, isMultiSource, lookUniform, suppressMusicTracks: true);
+            string suppressedSerialized = suppressedView.ToJsonString(EnvelopeJsonOptions);
+            if (suppressedSerialized.Length < serialized.Length)
+            {
+                view = suppressedView;
+                serialized = suppressedSerialized;
+                musicTracksSuppressed = true;
+            }
+        }
+
         // Never truncate mid-JSON: drop whole trailing items (from the end of the combined,
         // priority-ordered list) and re-serialize until the view fits the char budget. Only
-        // reached once the lowest-tried detail level still doesn't fit.
+        // reached once the lowest-tried detail level (and, if applicable, music-track suppression)
+        // still doesn't fit.
         while (serialized.Length > maxOutputChars && offered.Count > 0)
         {
             offered.RemoveAt(offered.Count - 1);
-            view = BuildView(artifact, offered, detailApplied, config);
+            view = BuildView(artifact, offered, detailApplied, config, isMultiSource, lookUniform, suppressMusicTracks: musicTracksSuppressed);
             serialized = view.ToJsonString(EnvelopeJsonOptions);
         }
 
@@ -987,6 +1666,12 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         // reached None).
         List<string> offeredPlacementIds = detailApplied != VideoVisualDetail.None
             ? (artifact.Placements?.Select(p => p.Id).ToList() ?? [])
+            : [];
+
+        // Background music: "offered" means exactly "the whole musicTracks array survived to the
+        // final view" — empty whenever it was suppressed for budget, regardless of VisualDetail.
+        List<string> offeredMusicIds = !musicTracksSuppressed
+            ? (artifact.MusicCandidates?.Select(m => m.Id).ToList() ?? [])
             : [];
 
         var meta = new JsonObject
@@ -1010,10 +1695,18 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                 ["sampleFps"] = config.VisualSampleFps,
                 ["gridWidth"] = visualGridWidth,
                 ["gridHeight"] = visualGridHeight,
-                ["detail"] = detailApplied.ToString()
+                ["detail"] = detailApplied.ToString(),
+                ["colorGrading"] = artifact.Provenance.ColorGradingApplied,
+                ["letterbox"] = artifact.Provenance.LetterboxDetectionApplied
             },
             ["visualDetailApplied"] = detailApplied.ToString(),
-            ["audioLevels"] = new JsonObject { ["applied"] = audioLevelsApplied },
+            ["audioLevels"] = new JsonObject { ["applied"] = audioLevelsApplied, ["character"] = audioLevelsApplied },
+            ["look"] = new JsonObject
+            {
+                ["applied"] = artifact.Provenance.LookGroupingApplied,
+                ["groups"] = artifact.Provenance.LookGroupCount,
+                ["uniform"] = artifact.Provenance.LookUniform
+            },
             ["vision"] = new JsonObject
             {
                 ["mode"] = config.Vision.ToString(),
@@ -1022,26 +1715,47 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                 ["degraded"] = visionDegraded,
                 ["partial"] = visionPartial,
                 ["captionedShots"] = captionedShotCount,
-                ["failedShots"] = failedShotCount
+                ["failedShots"] = failedShotCount,
+                ["persistedKeyframes"] = persistedKeyframeCount
             },
             ["sourceChars"] = artifact.Shots.Count + artifact.SilenceSpans.Count + artifact.Segments.Count + artifact.Words.Count,
             ["outputChars"] = serialized.Length,
-            ["offeredPlacementIdCount"] = offeredPlacementIds.Count
+            ["offeredPlacementIdCount"] = offeredPlacementIds.Count,
+            ["offeredMusicTrackCount"] = offeredMusicIds.Count
         };
 
-        return (view, meta, offeredIds, offeredPlacementIds);
+        // Multi-source addition — only ever present when more than one source was analyzed, so a
+        // single-source view's meta shape is byte-identical to before this addition.
+        if (isMultiSource)
+            meta["sourceCount"] = artifact.Sources?.Count ?? 1;
+
+        return (view, meta, offeredIds, offeredPlacementIds, offeredMusicIds);
     }
 
     private static JsonObject BuildView(
-        VideoAnalysisArtifact artifact, List<OfferedItem> items, VideoVisualDetail detail, VideoAnalyzeStepConfig config)
+        VideoAnalysisArtifact artifact, List<OfferedItem> items, VideoVisualDetail detail, VideoAnalyzeStepConfig config, bool isMultiSource,
+        bool lookUniform, bool suppressMusicTracks = false)
     {
         var view = new JsonObject
         {
             ["media"] = MediaNode(artifact.Media),
-            ["shots"] = ToArray(items.Where(i => i.Kind == "shot").Select(i => ShotNode(i.Shot!, detail, config.StillMotionThreshold))),
-            ["silences"] = ToArray(items.Where(i => i.Kind == "silence").Select(i => SilenceNode(i.Silence!))),
-            ["segments"] = ToArray(items.Where(i => i.Kind == "segment").Select(i => SegmentNode(i.Segment!)))
+            ["shots"] = ToArray(items.Where(i => i.Kind == "shot").Select(i => ShotNode(i.Shot!, detail, config.StillMotionThreshold, isMultiSource, lookUniform))),
+            ["silences"] = ToArray(items.Where(i => i.Kind == "silence").Select(i => SilenceNode(i.Silence!, isMultiSource))),
+            ["segments"] = ToArray(items.Where(i => i.Kind == "segment").Select(i => SegmentNode(i.Segment!, isMultiSource)))
         };
+
+        // Multi-source addition — one entry per analyzed clip, so the story-editor agent knows how
+        // many "src" values it may see and (when it matters) each clip's own duration/dimensions.
+        // Gated on isMultiSource for the exact same byte-identical-for-one-source reason every
+        // other new key here is gated.
+        if (isMultiSource && artifact.Sources is { Count: > 0 } sources)
+        {
+            view["sources"] = new JsonArray(sources.Select(s => (JsonNode)new JsonObject
+            {
+                ["src"] = s.SourceIndex,
+                ["durationSec"] = s.Media.DurationSec
+            }).ToArray());
+        }
 
         // Gated on detail != None (rather than unconditionally): at None-detail, this view must
         // be byte-identical regardless of whether visual data exists internally but was merely
@@ -1058,11 +1772,33 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                 view["duplicateGroups"] = DuplicateGroupsNode(artifact.DuplicateGroups, config.MaxViewDuplicateGroups);
 
             if (artifact.Placements is { Count: > 0 })
-                view["placements"] = PlacementsNode(artifact.Placements);
+                view["placements"] = PlacementsNode(artifact.Placements, isMultiSource);
+
+            if (artifact.LookGroups is { Count: > 0 })
+                view["lookGroups"] = LookGroupsNode(artifact.LookGroups, config.MaxViewLookGroups);
         }
+
+        // Background music (see docs/video-editing.md "Background music"): deliberately
+        // UNCONDITIONAL (not inside the `detail != None` block above) — music tracks have nothing
+        // to do with visual detail, so this key's presence must never depend on VisualDetail. It IS
+        // dropped as a whole array when the caller (BuildBoundedView) determines it must suppress
+        // it for budget, via suppressMusicTracks.
+        if (!suppressMusicTracks && artifact.MusicCandidates is { Count: > 0 })
+            view["musicTracks"] = MusicTracksNode(artifact.MusicCandidates);
 
         return view;
     }
+
+    /// <summary>
+    /// Deliberately small: no <c>ProjectFileId</c>, no storage key, no size — the model needs the
+    /// name to choose and the id to reference; anything else is unnecessary surface area.
+    /// </summary>
+    private static JsonArray MusicTracksNode(IReadOnlyList<VideoAnalysisMusicCandidate> candidates) =>
+        new(candidates.Select(m => (JsonNode)new JsonObject
+        {
+            ["id"] = m.Id,
+            ["name"] = m.FileName
+        }).ToArray());
 
     private static JsonArray ToArray(IEnumerable<JsonObject> items)
     {
@@ -1086,9 +1822,11 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
     /// key at all — so existing golden-output-shaped tests never need updating for the
     /// "no visual data" case. The four base fields are deliberately left unrounded at every detail
     /// level (only the new visual/audio numbers inside <c>v</c>/<c>a</c> get rounded), so this node
-    /// is byte-identical to the original across the board.
+    /// is byte-identical to the original across the board. <paramref name="isMultiSource"/> gates
+    /// the new <c>"src"</c> key the exact same way every other multi-source addition in this view
+    /// is gated — a single-source view never gains this key.
     /// </summary>
-    private static JsonObject ShotNode(VideoAnalysisShot s, VideoVisualDetail detail, double stillMotionThreshold)
+    private static JsonObject ShotNode(VideoAnalysisShot s, VideoVisualDetail detail, double stillMotionThreshold, bool isMultiSource, bool lookUniform)
     {
         var node = new JsonObject
         {
@@ -1098,14 +1836,17 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             ["durationSec"] = s.EndSec - s.StartSec
         };
 
+        if (isMultiSource)
+            node["src"] = s.SourceIndex;
+
         if (detail == VideoVisualDetail.None)
             return node;
 
         if (s.Visual is not null)
-            node["v"] = VisualNode(s.Visual, detail, stillMotionThreshold);
+            node["v"] = VisualNode(s.Visual, detail, stillMotionThreshold, lookUniform);
 
         if (s.Audio is not null)
-            node["a"] = AudioNode(s.Audio);
+            node["a"] = AudioNode(s.Audio, detail);
 
         if (s.Caption is not null)
             node["c"] = CaptionNode(s.Caption, detail);
@@ -1125,11 +1866,19 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         {
             ["summary"] = c.Summary,
             ["scale"] = c.ShotScale,
-            ["mood"] = c.Mood
+            ["mood"] = c.Mood,
+            // Phase 4: how the shot is graded/finished — a usability signal the story editor
+            // should weigh on every take comparison, so it belongs at Compact.
+            ["style"] = c.VisualStyle
         };
 
         if (c.Tags.Count > 0)
             node["tags"] = new JsonArray(c.Tags.Select(t => (JsonNode)t).ToArray());
+
+        // Phase 4: visible technical defects — only present when non-empty, same "absence is
+        // never a signal" convention the rest of this view follows.
+        if (c.TechnicalIssues.Count > 0)
+            node["issues"] = new JsonArray(c.TechnicalIssues.Select(t => (JsonNode)t).ToArray());
 
         if (detail == VideoVisualDetail.Full)
         {
@@ -1142,12 +1891,16 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
 
             if (c.OnScreenText.Count > 0)
                 node["onScreenText"] = new JsonArray(c.OnScreenText.Select(t => (JsonNode)t).ToArray());
+
+            node["timeOfDay"] = c.TimeOfDay;
+            node["lighting"] = c.Lighting;
+            node["framing"] = c.Framing;
         }
 
         return node;
     }
 
-    private static JsonObject VisualNode(VideoAnalysisShotVisual v, VideoVisualDetail detail, double stillMotionThreshold)
+    private static JsonObject VisualNode(VideoAnalysisShotVisual v, VideoVisualDetail detail, double stillMotionThreshold, bool lookUniform)
     {
         var node = new JsonObject
         {
@@ -1199,6 +1952,12 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         if (v.KenBurnsCandidate)
             node["kenBurns"] = true;
 
+        // Phase 4 (D4): singleton (LookGroupId null) and uniform (one group covers every analyzed
+        // shot — the single-camera-talking-head case) both suppress this key. Exact precedent:
+        // DuplicateGroupId == null above.
+        if (v.LookGroupId is not null && !lookUniform)
+            node["look"] = v.LookGroupId;
+
         if (detail == VideoVisualDetail.Full)
         {
             node["motionStdDev"] = Score(v.MotionStdDev);
@@ -1217,16 +1976,68 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                     ["text"] = r.TextColor
                 }).ToArray());
             }
+
+            // Phase 4 (D1-D3): only present once a class was actually derived (AnalyzeColorGrading on).
+            if (v.ColorTemperatureClass is not null)
+            {
+                node["temp"] = v.ColorTemperatureClass;
+                node["tone"] = v.ToneClass;
+                node["sat"] = v.SaturationClass;
+                node["black"] = Score(v.BlackPoint);
+                node["white"] = Score(v.WhitePoint);
+            }
+
+            // Phase 4 (D6): only present when a real letterbox/pillarbox bar was detected.
+            if (v.ActiveCrop is not null)
+            {
+                node["crop"] = new JsonObject
+                {
+                    ["x"] = Score(v.ActiveCrop.X),
+                    ["y"] = Score(v.ActiveCrop.Y),
+                    ["w"] = Score(v.ActiveCrop.W),
+                    ["h"] = Score(v.ActiveCrop.H)
+                };
+            }
+
+            // Phase 4 (D7): only present when true — same "-Candidate" precedent as kenBurns above.
+            if (v.BacklitCandidate)
+                node["backlit"] = true;
+
+            // Phase 4 (§5.4): only present when a real sharpness measurement exists.
+            if (v.Sharpness is not null)
+                node["sharp"] = Score(v.Sharpness.Value);
+
+            // Phase 4 (D4): rank within the look group, present exactly when "look" is (i.e. never
+            // shown for a singleton or under a uniform-look suppression).
+            if (v.LookGroupId is not null && !lookUniform && v.LookRank is not null)
+                node["lookRank"] = v.LookRank.Value;
         }
 
         return node;
     }
 
-    private static JsonObject AudioNode(VideoAnalysisShotAudio a) => new()
+    private static JsonObject AudioNode(VideoAnalysisShotAudio a, VideoVisualDetail detail)
     {
-        ["rms"] = (int)Math.Round(a.RmsDbfs),
-        ["speech"] = Score(a.SpeechRatio)
-    };
+        var node = new JsonObject
+        {
+            ["rms"] = (int)Math.Round(a.RmsDbfs),
+            ["speech"] = Score(a.SpeechRatio),
+            // ALWAYS emitted, including the common "Dialogue" value: the absence of a key must
+            // never be a signal in this view (decision #2; see docs/video-editing.md's
+            // degrade-before-drop invariant).
+            ["char"] = a.AudioCharacterClass ?? "Dialogue"
+        };
+
+        if (detail == VideoVisualDetail.Full)
+        {
+            node["crest"] = (int)Math.Round(a.CrestFactorDb);
+            node["floor"] = (int)Math.Round(a.NoiseFloorDbfs);
+            node["steady"] = Score(a.LevelStability);
+            node["charFit"] = Score(a.AudioCharacterConfidence);
+        }
+
+        return node;
+    }
 
     private static JsonObject PacingNode(VideoAnalysisPacing p) => new()
     {
@@ -1247,38 +2058,81 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         }).ToArray());
 
     /// <summary>
+    /// Phase 4 (D4) — dereferences each shot's opaque <c>"look"</c> id to a few descriptive words.
+    /// Placement here (inside the same <c>detail != None</c> block as <c>duplicateGroups</c>) is
+    /// the whole degrade-before-drop compliance story for this addition and must not move: it
+    /// vanishes at <c>None</c> exactly like <c>pacing</c>/<c>duplicateGroups</c>/<c>placements</c>.
+    /// </summary>
+    private static JsonArray LookGroupsNode(IReadOnlyList<VideoAnalysisLookGroup> groups, int max) =>
+        new(groups.Take(Math.Max(0, max)).Select(g =>
+        {
+            var node = new JsonObject
+            {
+                ["id"] = g.Id,
+                ["shotIds"] = new JsonArray(g.ShotIds.Select(id => (JsonNode)id).ToArray()),
+                ["repShotId"] = g.RepresentativeShotId,
+                ["cohesion"] = Score(g.Cohesion)
+            };
+            if (g.ColorTemperatureClass is not null)
+                node["temp"] = g.ColorTemperatureClass;
+            if (g.ToneClass is not null)
+                node["tone"] = g.ToneClass;
+            if (g.SaturationClass is not null)
+                node["sat"] = g.SaturationClass;
+            return (JsonNode)node;
+        }).ToArray());
+
+    /// <summary>
     /// Phase 3's <c>view.placements</c> — deliberately small/budget-friendly (no rect, no time
     /// window, no anchor kind): a downstream motion-graphics planner only needs "which candidate
     /// ids exist, how good is each, is it a light- or dark-text region", never the geometry or
     /// timing that <c>VideoCompileStepExecutor</c> alone resolves from the full artifact.
     /// </summary>
-    private static JsonArray PlacementsNode(IReadOnlyList<VideoAnalysisPlacement> placements) =>
-        new(placements.Select(p => (JsonNode)new JsonObject
+    private static JsonArray PlacementsNode(IReadOnlyList<VideoAnalysisPlacement> placements, bool isMultiSource) =>
+        new(placements.Select(p =>
         {
-            ["id"] = p.Id,
-            ["shotId"] = p.ShotId,
-            ["region"] = p.Region,
-            ["fit"] = Score(p.Suitability),
-            ["text"] = p.TextColor
+            var node = new JsonObject
+            {
+                ["id"] = p.Id,
+                ["shotId"] = p.ShotId,
+                ["region"] = p.Region,
+                ["fit"] = Score(p.Suitability),
+                ["text"] = p.TextColor
+            };
+            if (isMultiSource)
+                node["src"] = p.SourceIndex;
+            return (JsonNode)node;
         }).ToArray());
 
-    private static JsonObject SilenceNode(VideoAnalysisSilenceSpan s) => new()
+    private static JsonObject SilenceNode(VideoAnalysisSilenceSpan s, bool isMultiSource)
     {
-        ["id"] = s.Id,
-        ["startSec"] = s.StartSec,
-        ["endSec"] = s.EndSec,
-        ["durationSec"] = s.EndSec - s.StartSec,
-        ["afterShot"] = s.AfterShot
-    };
+        var node = new JsonObject
+        {
+            ["id"] = s.Id,
+            ["startSec"] = s.StartSec,
+            ["endSec"] = s.EndSec,
+            ["durationSec"] = s.EndSec - s.StartSec,
+            ["afterShot"] = s.AfterShot
+        };
+        if (isMultiSource)
+            node["src"] = s.SourceIndex;
+        return node;
+    }
 
-    private static JsonObject SegmentNode(VideoAnalysisSegment s) => new()
+    private static JsonObject SegmentNode(VideoAnalysisSegment s, bool isMultiSource)
     {
-        ["id"] = s.Id,
-        ["shot"] = s.Shot,
-        ["startSec"] = s.StartSec,
-        ["endSec"] = s.EndSec,
-        ["text"] = s.Text
-    };
+        var node = new JsonObject
+        {
+            ["id"] = s.Id,
+            ["shot"] = s.Shot,
+            ["startSec"] = s.StartSec,
+            ["endSec"] = s.EndSec,
+            ["text"] = s.Text
+        };
+        if (isMultiSource)
+            node["src"] = s.SourceIndex;
+        return node;
+    }
 
     /// <summary>Seconds rounded to 2dp — used only for the new Phase 1 visual/pacing numbers.</summary>
     private static double Round2(double seconds) => Math.Round(seconds, 2);
@@ -1290,7 +2144,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
     // Expectation / failure / descriptor helpers
     // ---------------------------------------------------------------------
 
-    private static string? EvaluateExpect(VideoAnalyzeExpectation? expect, VideoAnalysisArtifact artifact)
+    private static string? EvaluateExpect(VideoAnalyzeExpectation? expect, VideoAnalysisArtifact artifact, double totalDurationSec)
     {
         if (expect is null)
             return null;
@@ -1304,10 +2158,10 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                    $"{artifact.Segments.Count} transcript segments were produced.";
         }
 
-        if (expect.MaxSilenceRatio.HasValue && artifact.Media.DurationSec > 0)
+        if (expect.MaxSilenceRatio.HasValue && totalDurationSec > 0)
         {
             double silenceSeconds = artifact.SilenceSpans.Sum(s => Math.Max(0, s.EndSec - s.StartSec));
-            double ratio = silenceSeconds / artifact.Media.DurationSec;
+            double ratio = silenceSeconds / totalDurationSec;
             if (ratio > expect.MaxSilenceRatio.Value)
             {
                 return $"expect.maxSilenceRatio={expect.MaxSilenceRatio.Value:F2} but measured silence ratio was {ratio:F2}.";
@@ -1327,15 +2181,16 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         return null;
     }
 
-    private static string BuildResolvedInputDescriptor(VideoAnalyzeStepConfig config, string storageKey, int? offeredIdCount = null)
+    private static string BuildResolvedInputDescriptor(
+        VideoAnalyzeStepConfig config, IReadOnlyList<VideoSourceRef> sources, IReadOnlyList<SourceAnalysisResult>? results, int? offeredIdCount = null)
     {
         var descriptor = new JsonObject
         {
-            ["source"] = new JsonObject
+            ["sources"] = new JsonArray(sources.Select((s, i) => (JsonNode)new JsonObject
             {
-                ["kind"] = config.Source.Kind.ToString(),
-                ["storageKey"] = storageKey
-            },
+                ["kind"] = s.Kind.ToString(),
+                ["storageKey"] = results is not null && i < results.Count ? results[i].StorageKey : null
+            }).ToArray()),
             ["detectSilence"] = config.DetectSilence,
             ["detectShots"] = config.DetectShots,
             ["transcription"] = config.Transcription.ToString(),

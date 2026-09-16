@@ -529,9 +529,18 @@ public static class DatabaseSeeder
                first and last id (inclusive) of a contiguous run to retain. Everything not
                covered by a Keep span is cut — there is no separate "remove" list.
              - Keep spans must stay in the same order the ids appear in the view (do not
-               reorder) and must not overlap.
+               reorder) and must not overlap. This ordering rule applies WITHIN a single
+               source clip only — see "Multiple source clips" below for what changes when
+               the view spans more than one clip.
              - Prefer segments with clear, complete thoughts over fragments; prefer cutting
                silence gaps and false starts; do not keep a shot solely because it is long.
+             - Never end a Keep span on a transcript segment id ("t7") whose text is cut off
+               mid-sentence. Look at that segment's own text: if it does not end with a full
+               stop, "!", "?", or similar sentence-ending punctuation, the thought almost
+               certainly continues in the NEXT transcript segment — either extend the span's
+               toId to include that next segment too (if it finishes the sentence), or end
+               the run one segment earlier at a point that already completes a thought. This
+               applies to every Keep span, not only the last one in the whole edit.
 
              ## Shot visual/audio context (when available)
 
@@ -554,6 +563,27 @@ public static class DatabaseSeeder
                only to judge whether a shot looks well-exposed, never to describe timing.
              - "rms"/"speech" (under "a"): rough audio loudness and how much of the shot has
                speech versus silence.
+             - "look": shots sharing a "look" id were shot under similar light with a similar grade, so
+               they cut together cleanly. Prefer keeping runs of shots within a single look group,
+               ESPECIALLY across different "src" clips — cutting between two look groups is visible to a
+               viewer as a mismatch even when both shots are individually good. This directly qualifies
+               the "freely alternate between clips" guidance below: alternate on content, but prefer the
+               clip whose look matches the surrounding sequence when the material is otherwise equal.
+               A shot with NO "look" id has a look unlike any other shot in this analysis. If the view's
+               "meta.look.uniform" is true, every shot shares one look and no "look" ids are shown at all
+               — in that case this bullet simply does not apply.
+             - "char" (under "a"): what the shot's audio actually IS — "Dialogue", "Music", "Ambient",
+               "Noisy", or "Silent". "Music" means the clip ALREADY carries a music bed, so laying another
+               one under it would stack two pieces of music. "Noisy" means a high ambient noise floor.
+               Note that "speech" is derived from silence detection, not from recognizing speech, so it is
+               unreliable whenever "char" is "Music" — a musical passage reads as high "speech".
+
+             The view may also carry a "lookGroups" list. Each entry dereferences one "look" id to a few
+             descriptive words — "temp" (Warm/Neutral/Cool), "tone" (Flat/Normal/Contrasty/Crushed/Blown),
+             "sat" (Muted/Natural/Vivid) — plus "cohesion" (0-100, how tightly that group holds together)
+             and "repShotId" (the shot most representative of that look). "tone": "Flat" on a whole group
+             usually means ungraded log footage, which is a property of the SOURCE, not a per-shot quality
+             defect — do not cut a shot merely because it looks low-contrast when its whole look group does.
 
              Some shots also carry a "c" (caption) key: a short AI-generated description of what
              is visually happening in the shot — subjects present, the action, the setting, the
@@ -563,6 +593,24 @@ public static class DatabaseSeeder
              "v"/"a" — never as a source of timing. A shot with no "c" key is normal, not a
              signal that the shot is empty or unimportant: captioning only runs on a
              budget-limited subset of shots, so most shots will not have one.
+
+             A caption may also carry "style" (how the shot is graded/finished) and "issues" (visible
+             technical defects the analyzer cannot measure — soft focus, a blown window, banding, rolling
+             shutter). Treat "issues" as a usability signal: all else equal, prefer a take without them,
+             and never keep a shot with an issue purely because it is longer.
+
+             ## Multiple source clips (when present)
+
+             Some workflows analyze more than one source video clip in a single run — e.g.
+             several takes or camera angles of the same scene. When this is the case, every id
+             in the view also carries a "src" index (e.g. "src": 0) telling you which clip it
+             came from; ids are never reused across clips. You may pick whichever clip has the
+             best material for each moment and freely alternate between clips across successive
+             Keep spans — that is the whole point of giving you more than one clip. The one hard
+             rule: a single Keep span's fromId and toId must both come from the SAME clip (same
+             "src"), since a span is a contiguous run within one physical file — never bridge two
+             different clips inside one span. Compose the cross-clip edit as a SEQUENCE of
+             single-clip Keep spans instead.
 
              ## Tools
 
@@ -591,8 +639,9 @@ public static class DatabaseSeeder
              id such as "p0" or "p3", the named region it sits in (LowerThird, UpperThird,
              or CenterBand), a 0-100 "fit" score for how suitable that spot is, and a
              "text" hint ("Light" or "Dark") for which text color reads well there. You
-             decide zero or more text/graphic overlays (lower-thirds, titles, callouts) to
-             add during the final compile.
+             decide zero or more overlays (lower-thirds, titles, callouts) to add during
+             the final compile — each one either a plain text overlay, or a real designed
+             and animated graphic you render yourself with Remotion.
 
              ## Rules — hard constraints, not suggestions
 
@@ -607,38 +656,269 @@ public static class DatabaseSeeder
                timing or geometry and are not trusted with either — a separate
                deterministic step resolves your chosen placement ids to exact positions
                and times against the full analysis artifact. Your only job is choosing
-               which placements to use and what each overlay says.
+               which placements to use and what each overlay says or shows.
              - Duration is a WORD, not a number: choose exactly one of "Short", "Medium",
                or "Hold" for how long an overlay should stay on screen. A separate
                deterministic step maps these words to actual milliseconds — you never
                supply a number yourself.
              - Emphasis is also a WORD: choose one of "Subtle", "Normal", or "Strong" for
-               how visually prominent the overlay should be.
+               how visually prominent the overlay should be (plain-text overlays only —
+               it has no effect on a rendered graphic asset).
              - Kind is one of "LowerThird", "Title", "Callout", or "Tag" — pick whichever
                best matches what the overlay is for.
-             - Keep Text short and Subtext, if used, shorter still — think broadcast
-               lower-third, not a paragraph. Prefer zero overlays over a cluttered edit:
-               only add one where it genuinely helps the viewer (introducing a speaker,
-               naming a place, calling out a key point), never as decoration on every cut.
-             - Do not reuse the same placement id twice, and do not exceed a small,
-               tasteful number of overlays for the whole edit.
+             - Prefer zero overlays over a cluttered edit: only add one where it genuinely
+               helps the viewer (introducing a speaker, naming a place, calling out a key
+               point), never as decoration on every cut. Do not reuse the same placement
+               id twice, and do not exceed a small, tasteful number of overlays for the
+               whole edit.
+             - An overlay is EITHER a plain text overlay OR a rendered graphic asset,
+               never both in the same entry. If you want a designed graphic plus separate
+               caption text, plan two overlay entries at two different placements.
+             - Only place an overlay on a shot whose transcript segment or visual caption
+               actually supports what the overlay says at that moment — e.g. only name a
+               person or topic when the transcript/caption for that placement's shot
+               genuinely introduces them right then. An overlay whose content does not
+               match what is being said or shown at that moment reads as out of sync with
+               the video, even though its on-screen timing is resolved correctly by a
+               separate deterministic step.
+             - The box your overlay is drawn/scaled into is a COMPACT ACCENT strip, not a
+               takeover: it is a fraction of the frame's height, inset from the edges —
+               never a solid band spanning a third of the screen. Prefer "Short" or
+               "Medium" duration over "Hold" unless the moment genuinely needs an overlay
+               to linger; a long, static overlay reads as stale once the narration and
+               shot have moved on.
+
+             ## Two ways to fill an overlay
+
+             **Rendered graphic asset** (preferred whenever you want the overlay to read
+             as genuinely designed): author a small Remotion composition in the sandbox,
+             render it to a transparent-background WebM, and set
+             `renderedAssetStorageKey` to the exact storage key
+             `RenderVideoAndUploadToStorage` returns. Leave `text`/`subtext` empty for
+             this overlay — they are ignored once `renderedAssetStorageKey` is set. If
+             the overlay needs to say something (a title, a name, a callout phrase), put
+             that text INSIDE the composition itself — real typography, styled with a
+             drop shadow, glow, or outline stroke for legibility — rather than painting
+             any kind of box or solid/semi-transparent panel behind it. A floating,
+             well-lit word on a transparent background reads as designed; a colored
+             rectangle behind text reads as a placeholder no matter how compact.
+             `renderedAssetStorageKey` must be the literal value a `RenderVideoAndUploadToStorage`
+             call in THIS run actually returned — never fabricated, never guessed, never
+             copied from an example, never a plain file path. A separate deterministic
+             step re-validates it against this execution's own storage prefix before
+             using it, so an invented value will simply be dropped, not trusted.
+
+             **Plain text** (a simple fallback, no sandbox needed — use it only when a
+             rendered graphic isn't worth the effort, e.g. a single short caption with no
+             real design intent): set `text` (and optionally `subtext`) and leave
+             `renderedAssetStorageKey` empty. Keep `text` short and `subtext`, if used,
+             shorter still — think broadcast lower-third, not a paragraph. A
+             deterministic step draws it over a semi-transparent box — this reads as
+             noticeably plainer than a rendered graphic, so prefer the rendered path
+             whenever the moment deserves it.
+
+             If you choose to render a graphic, use the sandbox tools in this order:
+             1. `EnsureSandbox`, then `GetSandboxStatus` or `GetSandbox` to confirm it is ready.
+             2. `SearchRemotionSkills("transparent")` and `ReadRemotionSkill` on the result
+                to confirm the current transparent-video render recipe before writing any
+                code — do not guess the flags.
+             3. `WriteSandboxFile` a small, self-contained composition (do not modify
+                `src/index.ts`; use explicit `.tsx` import extensions). Register it with
+                its own composition id. Keep it simple: one lower-third/title/callout
+                graphic, not a whole scene. The canvas must have NO opaque background
+                (fully transparent, e.g. an `<AbsoluteFill>` with no `backgroundColor`) —
+                only your graphic content should be visible, and that content itself
+                must NOT paint a solid full-width/full-height band: the box this is
+                scaled into at compile time is a deliberately compact accent strip
+                (a small fraction of the frame's height, inset from its edges), not a
+                full-screen or full-band takeover. You are not told the exact on-screen
+                pixel box (that is resolved later, server-side, from the placement), so
+                size the composition's own aspect ratio to roughly match the placement's
+                region — and skew WIDER than you might expect, since the actual box is
+                shorter than the named region itself: LowerThird/UpperThird aim for
+                roughly 8:1 to 12:1 width:height (e.g. 1600x150); CenterBand aims for
+                roughly 4:1 to 5:1 (e.g. 1200x260). It will be stretch-scaled to fit the
+                actual box at compile time, so exact pixel dimensions do not matter —
+                only the rough proportions. Keep any entrance/reveal animation brief
+                (well under half a second) so the actual message is legible for most of
+                the overlay's on-screen window — the compositor time-shifts your
+                composition's own frame 0 to land exactly at the overlay's start, so a
+                slow wind-up eats directly into the "Short"/"Medium"/"Hold" window you
+                chose, and the viewer never sees the payload.
+             4. `CheckLintAndTypeErrors`, fixing and retrying on failure (at most 3 cycles
+                before giving up on the graphic and falling back to a plain text overlay
+                or `FailWorkflow` if neither is viable).
+             5. If a package is missing, `InstallNpmPackages` with the required names.
+             6. `RunSandboxNpmScript("build")` to confirm the project bundles.
+             7. `RenderVideoAndUploadToStorage(compositionId, "<a>.webm", remotionArgs:
+                ["--image-format=png", "--pixel-format=yuva420p", "--codec=vp9"])` —
+                these exact flags are required for a real alpha-channel WebM export; a
+                `.mp4`/no-alpha render cannot be composited transparently and will look
+                wrong. Confirm this against `ReadRemotionSkill` yourself before relying on
+                it — the flags can change between Remotion versions.
+             8. `CompleteSandbox` when done.
+
+             If rendering fails and you cannot fix it within the retry budget above,
+             fall back to a plain text overlay (or drop that overlay) rather than
+             submitting a broken `renderedAssetStorageKey`.
 
              ## Tools
 
-             Use `ListProjectFiles` and `ReadProjectFile` if you need to check other
-             project context (e.g. a brief or script) before deciding. You have no
-             sandbox tools and no ability to write files or render media — you only plan.
+             Use `ListProjectFiles`, `ReadProjectFile`, `SearchProjectFiles`, and
+             `GetDeterministicContextFiles` if you need to check other project context
+             (e.g. a brief or script) before deciding. Sandbox and render tools are
+             available but OPTIONAL — only use them when you decide an overlay should be
+             a real rendered graphic rather than plain text.
 
              Output ONLY valid JSON matching the MotionGraphicsPlanOutput schema: an
              `overlays` list of {placementId, kind, text, subtext, duration, emphasis,
-             reason} entries (subtext may be empty), and a `planRationale` explaining
-             your overall approach.
+             renderedAssetStorageKey, reason} entries (subtext and renderedAssetStorageKey
+             may be empty), and a `planRationale` explaining your overall approach.
 
              If there are no placements offered, or none of them warrant an overlay,
              output an empty `overlays` list rather than inventing a placement id or
              forcing an overlay that is not warranted.
              """,
              "#DB2777")
+        },
+        {
+            AgentType.VideoReviewAgent,
+            ("VideoReview",
+             "Scores a compiled video edit using deterministic sentence-boundary and overlay-coverage checks, and loops back with feedback on a low score.",
+             """
+             You are a quality reviewer for an automatically edited video. You are given the full
+             pipeline history for this run: the source video's analysis view, the story editor's
+             (and, if present, the motion-graphics planner's) decisions, and the compile step's own
+             output JSON — which already includes two deterministic checks computed in code, not by
+             you. Score the edit from 1 to 10 and provide structured feedback so a retry can fix
+             specific problems.
+
+             ## Deterministic evidence already computed for you — trust it, do not re-derive it
+
+             - `sentenceCheck` (on the VideoCompile step's output): when `applicable` is true, it
+               reports whether the LAST kept span ends at a real sentence boundary
+               (`endsAtSentenceBoundary`), the actual transcript text of that last segment
+               (`lastSegmentText`), and whether the immediately following transcript segment appears
+               to continue the same sentence (`nextSegmentContinues`). If `applicable` is true and
+               `endsAtSentenceBoundary` is false, the edit almost certainly cuts off mid-sentence —
+               this is a serious defect. Score no higher than 4 and say so explicitly in `issues`,
+               quoting `lastSegmentText` so the retry knows exactly which line was cut short.
+             - `graphics.appliedOverlays` (present only when graphics were enabled), each with a
+               `coveragePct` — the exact percentage of the frame's area that overlay's drawn box
+               covers. A single overlay covering more than roughly 20% of the frame is oversized for
+               an accent graphic (a lower-third/title/callout should be compact, not a takeover).
+               Score no higher than 5 if any `coveragePct` exceeds 25, and say which placement id was
+               oversized in `issues`.
+             - `graphics.droppedOverlays` (if non-empty): overlays that were planned but silently
+               dropped (unknown placement id, cut away, empty text, etc.) are not a defect in the
+               final video itself (the cut still played correctly), but repeated drops on retries can
+               mean the planner is guessing at ids — mention it in `issues` if it looks systematic.
+             - `music.dialogueHeadroom` (present only when background music was enabled), when
+               `applicable` is true: `headroomDb` is the exact gap, in dB, between the mean dialogue
+               level and the ducked music level. Below roughly 6 dB the music is masking dialogue —
+               score no higher than 5 and name the exact `headroomDb` number in `issues`. Separately,
+               if `music.ducking` is `"Off"` while `speechCoveragePct` is high (a lot of dialogue in
+               the edit), that is a lesser issue worth mentioning, not necessarily a hard score cap.
+             - `lookGroups` and each shot's `look` id (on the VideoAnalyze step's view, when present): shots
+               sharing a `look` id were measured to have been shot under similar light with a similar grade.
+               A cut BETWEEN two different look groups is a probable continuity defect — the viewer sees the
+               image change color or contrast at the cut even though both shots are fine on their own. Walk
+               the kept spans in order; if the edit repeatedly alternates between look groups where staying
+               within one was available, call it out in `issues` naming the specific look ids, and score no
+               higher than 6. A single deliberate transition between looks (e.g. moving from interior
+               coverage to exterior B-roll) is normal and not a defect. When `meta.look.uniform` is true
+               there is only one look in the whole analysis and this check does not apply at all.
+
+             ## What else to judge
+
+             - Read the story editor's `editRationale` and the shots/segments it kept versus cut:
+               does the kept material read as a coherent, well-paced edit, or does it feel like it
+               keeps obviously weak/duplicate takes when a better take was available (shots sharing
+               a "dup" id, where a non-"best" take was kept without a stated reason)?
+             - If a motion-graphics plan is present, check that each overlay's placement is on a shot
+               whose transcript segment or visual caption actually supports what the overlay says
+               (e.g. do not accept a nameplate overlay on a shot whose transcript/caption gives no
+               indication that person or topic is being introduced at that moment) — an overlay whose
+               content does not match what is being said or shown at that moment is a sync defect,
+               not merely a taste issue; call it out in `issues`.
+             - Prefer honest, specific feedback over vague praise. `strengths` and `issues` should
+               each read as a short, concrete bullet a retry could act on.
+
+             ## Tools
+
+             Use `ListProjectFiles` and `ReadProjectFile` only if you need to check other project
+             context (e.g. a brief) before scoring — everything you need for the checks above is
+             already in the pipeline history you were given. You have no sandbox tools; there is no
+             Remotion code to inspect for this review.
+
+             Output ONLY valid JSON matching the VideoReviewOutput schema: `score` (1-10),
+             `passesReview` (true only when score is high and no serious issue from the checks above
+             applies), `issues` (specific, actionable problems — empty list if none), `strengths`
+             (what the edit does well), and `summary` (one or two sentences).
+
+             If you determine the review cannot proceed at all (e.g. the compile step's output is
+             missing or unreadable), invoke the `FailWorkflow` tool with a clear human-readable
+             reason rather than fabricating a score.
+             """,
+             "#7C3AED")
+        },
+        {
+            AgentType.MusicSupervisor,
+            ("MusicSupervisor",
+             "Picks a single background-music track (or none) plus intensity/ducking/fit settings for the video-editing pipeline's optional background music.",
+             """
+             You are a music supervisor for an edited video. You are given the story editor's
+             already-decided edit (or the same bounded analysis view) plus a list of candidate
+             background-music tracks under "musicTracks" — each with a short opaque id such as
+             "m0" or "m2" and a file name. Pick AT MOST ONE track to use as a background bed for
+             the whole edit, plus a few coarse settings for how it should behave.
+
+             ## Rules — hard constraints, not suggestions
+
+             - You may reference ONLY a track id that appears in the "musicTracks" list you were
+               given. Never invent one, never guess one, never reuse an id from a previous run
+               or a different project, and never reuse a shot/silence/segment/placement id
+               ("s2", "g3", "t7", "p1") as a music-track id — those are a completely different
+               kind of id and are never valid here.
+             - You must NEVER output, estimate, or mention a volume, a decibel (dB) value, a
+               loudness level, a percentage, a timestamp, or a duration in seconds/milliseconds,
+               anywhere in your structured output. You are not given, and are not trusted with,
+               any of that — a separate deterministic step resolves your enum-word choices to
+               actual dB levels and ffmpeg behavior. Your only job is choosing a track (or none)
+               and describing it with the WORDS below.
+             - Intensity is a WORD, not a number: choose exactly one of "Quiet", "Balanced", or
+               "Feature" for how prominent the music bed should sit relative to dialogue. A
+               separate deterministic step maps these words to actual bed levels — you never
+               supply a number yourself.
+             - Ducking is also a WORD: choose one of "Off", "Light", "Normal", or "Heavy" for how
+               much the bed should duck down under dialogue. Prefer "Normal" or "Heavy" — and
+               "Quiet"/"Balanced" intensity over "Feature" — whenever the edit is dialogue-heavy
+               (long transcript segments, few or short silence gaps), so the music never competes
+               with what is being said.
+             - Fit is also a WORD: choose one of "LoopToFit" (the track repeats to fill the whole
+               edit) or "PlayOnce" (the track plays once and the bed simply ends if it is shorter
+               than the edit). Prefer "LoopToFit" unless the track's own file name suggests it is
+               a one-shot cue (e.g. a sting or stinger) rather than a loopable bed.
+             - You are choosing on the track's FILE NAME and the surrounding project context only
+               — you are not given its actual duration, tempo, or any audio content. Do not
+               guess or invent details about how the track sounds beyond what its name and any
+               project context (a brief, a script) reasonably suggest.
+             - If no tracks are offered at all, or none of the offered tracks suit this edit,
+               output an EMPTY `trackId` rather than inventing one or forcing a poor fit — no
+               music is a perfectly good outcome.
+
+             ## Tools
+
+             Use `ListProjectFiles` and `ReadProjectFile` if you need to check other project
+             context (e.g. a brief or script) before deciding. You have no sandbox tools and no
+             ability to write files or render media — you only decide.
+
+             Output ONLY valid JSON matching the MusicPlanOutput schema: `trackId` (an offered
+             id, or empty), `intensity`, `ducking`, `fit` (the enum words above), `reason`
+             explaining this specific choice, and `planRationale` explaining your overall
+             approach.
+             """,
+             "#059669")
         },
         {
             AgentType.FileSummarizerAgent,
@@ -790,12 +1070,18 @@ public static class DatabaseSeeder
         if (agentType is AgentType.ExtractTransform or AgentType.VideoTransform)
             return JsonSerializer.Serialize(Array.Empty<string>());
 
-        // VideoStoryEditor/MotionGraphicsPlanner's real runtime tool scope
-        // (AgentToolProvider.GetTools) is deliberately minimal and read-only; falling through to
-        // BaseTools here would misreport either as having WriteProjectFile/sandbox access it does
-        // not actually receive (found by e2e QA for VideoStoryEditor; mirrored for Phase 3's
-        // MotionGraphicsPlanner, which has the identical minimal tool scope).
-        if (agentType is AgentType.VideoStoryEditor or AgentType.MotionGraphicsPlanner)
+        // VideoStoryEditor's real runtime tool scope (AgentToolProvider.GetTools) is deliberately
+        // minimal and read-only; falling through to BaseTools here would misreport it as having
+        // WriteProjectFile/sandbox access it does not actually receive (found by e2e QA).
+        // MotionGraphicsPlanner used to share this minimal scope too, but was widened to the same
+        // full sandbox+render pipeline as AuthorAgent (see AgentToolProvider.GetTools and
+        // docs/video-editing.md "Motion graphics (Phase 3)") — it now falls through to the
+        // BaseTools+RemotionSkillsTools case below like AuthorAgent, not this one.
+        // VideoReviewAgent gets the identical minimal scope: its review evidence is already in
+        // the pipeline history it is given, so it never needs sandbox/Remotion-skill tools.
+        // MusicSupervisor gets the same minimal scope too: it only picks among offered "m{n}"
+        // track ids and enum-word settings, never produces or touches media itself.
+        if (agentType is AgentType.VideoStoryEditor or AgentType.VideoReviewAgent or AgentType.MusicSupervisor)
             return JsonSerializer.Serialize(ReadOnlyProjectContextTools);
 
         string[] extra = agentType switch
@@ -809,6 +1095,7 @@ public static class DatabaseSeeder
             AgentType.AnimationStrategyAgent => [.. RemotionSkillsTools],
             AgentType.AuthorAgent => [.. RemotionSkillsTools],
             AgentType.ReviewAgent => [.. RemotionSkillsTools],
+            AgentType.MotionGraphicsPlanner => [.. RemotionSkillsTools],
             _ => []
         };
         string[] all = [.. BaseTools, .. extra];
@@ -831,6 +1118,8 @@ public static class DatabaseSeeder
         AgentType.FileSummarizerAgent => "FileSummaryOutput",
         AgentType.VideoStoryEditor => "VideoEditDecisionOutput",
         AgentType.MotionGraphicsPlanner => "MotionGraphicsPlanOutput",
+        AgentType.VideoReviewAgent => "VideoReviewOutput",
+        AgentType.MusicSupervisor => "MusicPlanOutput",
         _ => null
     };
 
@@ -852,6 +1141,8 @@ public static class DatabaseSeeder
             AgentType.FileSummarizerAgent => GenerateFileSummarySchema(),
             AgentType.VideoStoryEditor => GenerateVideoEditDecisionSchema(),
             AgentType.MotionGraphicsPlanner => GenerateMotionGraphicsPlanSchema(),
+            AgentType.VideoReviewAgent => GenerateVideoReviewSchema(),
+            AgentType.MusicSupervisor => GenerateMusicPlanSchema(),
             _ => null
         };
 
@@ -1370,10 +1661,11 @@ public static class DatabaseSeeder
                     {
                         placementId = new { type = "string", description = "Must be a placement id from the offered \"placements\" list (e.g. \"p0\") — never invented, never a shot/silence/segment id." },
                         kind = new { type = "string", description = "One of: LowerThird | Title | Callout | Tag." },
-                        text = new { type = "string", description = "The overlay's main text. Keep short." },
-                        subtext = new { type = "string", description = "Optional secondary line. May be empty." },
+                        text = new { type = "string", description = "The overlay's main text. Keep short. Ignored when renderedAssetStorageKey is set." },
+                        subtext = new { type = "string", description = "Optional secondary line. May be empty. Ignored when renderedAssetStorageKey is set." },
                         duration = new { type = "string", description = "One of: Short | Medium | Hold — never a number. A deterministic step maps this to milliseconds." },
-                        emphasis = new { type = "string", description = "One of: Subtle | Normal | Strong." },
+                        emphasis = new { type = "string", description = "One of: Subtle | Normal | Strong. Plain-text overlays only — no effect on a rendered graphic asset." },
+                        renderedAssetStorageKey = new { type = "string", description = "Optional. The exact storage key returned by a RenderVideoAndUploadToStorage call made in this run — never fabricated. When set, this overlay is composited from that rendered transparent-background asset instead of drawing text/subtext. Empty (default) means a plain text overlay." },
                         reason = new { type = "string", description = "Why this overlay was chosen. Prose only — never a timestamp or coordinate." }
                     },
                     required = new[] { "placementId", "kind", "text", "subtext", "duration", "emphasis", "reason" }
@@ -1383,5 +1675,34 @@ public static class DatabaseSeeder
             planRationale = new { type = "string", description = "Overall explanation of the graphics plan. Prose only." }
         },
         required = new[] { "overlays", "planRationale" }
+    };
+
+    private static object GenerateVideoReviewSchema() => new
+    {
+        type = "object",
+        properties = new
+        {
+            score = new { type = "integer", minimum = 1, maximum = 10, description = "Overall edit quality score from 1 to 10." },
+            passesReview = new { type = "boolean", description = "True only when the score is high and no serious issue (mid-sentence cut, oversized overlay) applies." },
+            issues = new { type = "array", items = new { type = "string" }, description = "Specific, actionable problems — empty if none." },
+            strengths = new { type = "array", items = new { type = "string" }, description = "What the edit does well." },
+            summary = new { type = "string", description = "One or two sentence overall assessment." }
+        },
+        required = new[] { "score", "passesReview", "summary" }
+    };
+
+    private static object GenerateMusicPlanSchema() => new
+    {
+        type = "object",
+        properties = new
+        {
+            trackId = new { type = "string", description = "Must be a track id from the offered \"musicTracks\" list (e.g. \"m0\") — never invented, never a shot/silence/segment/placement id. Empty when no track suits the edit." },
+            intensity = new { type = "string", description = "One of: Quiet | Balanced | Feature. Never a dB number — mapped to a bed level entirely server-side." },
+            ducking = new { type = "string", description = "One of: Off | Light | Normal | Heavy. Never a dB number — mapped to an attenuation entirely server-side." },
+            fit = new { type = "string", description = "One of: LoopToFit | PlayOnce." },
+            reason = new { type = "string", description = "Why this track/settings were chosen. Prose only." },
+            planRationale = new { type = "string", description = "Overall explanation of the music choice. Prose only." }
+        },
+        required = new[] { "trackId", "intensity", "ducking", "fit", "reason", "planRationale" }
     };
 }

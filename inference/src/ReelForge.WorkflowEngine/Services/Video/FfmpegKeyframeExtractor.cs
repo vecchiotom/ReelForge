@@ -33,4 +33,22 @@ public sealed class FfmpegKeyframeExtractor : IKeyframeExtractor
                 $"(exitCode={result.ExitCode}, timedOut={result.TimedOut}).");
         }
     }
+
+    public async Task ExtractContactSheetAsync(
+        string inputVideoPath, string outputJpgPath, IReadOnlyList<double> atSecs, int maxWidth, CancellationToken ct)
+    {
+        string[] args = FfmpegArgvBuilder.BuildContactSheetArgs(inputVideoPath, outputJpgPath, atSecs, maxWidth);
+        TimeSpan timeout = TimeSpan.FromSeconds(_options.AnalyzeTimeoutSeconds);
+
+        VideoToolResult result = await _runner.RunFfmpegAsync(args, timeout, ct).ConfigureAwait(false);
+        if (!result.Succeeded)
+        {
+            _logger.LogWarning(
+                "ffmpeg contact-sheet extraction failed (exitCode={ExitCode}, timedOut={TimedOut}): {StdErr}",
+                result.ExitCode, result.TimedOut, result.StdErr);
+            throw new InvalidOperationException(
+                $"ffmpeg contact-sheet extraction failed for '{inputVideoPath}' " +
+                $"(exitCode={result.ExitCode}, timedOut={result.TimedOut}).");
+        }
+    }
 }

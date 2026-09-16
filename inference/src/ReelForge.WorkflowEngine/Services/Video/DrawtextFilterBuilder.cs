@@ -21,7 +21,30 @@ public sealed record ResolvedOverlay(
     double OutputStartSec,
     double OutputEndSec,
     VideoAnalysisRect Rect,
-    string TextColor);
+    string TextColor,
+    // Phase 3 rendered-asset overlay path (docs/video-editing.md "Motion graphics (Phase 3)"):
+    // non-null only for an overlay whose MotionGraphicsOverlay.RenderedAssetStorageKey was
+    // validated (execution-scoped storage-key prefix) and successfully downloaded+probed by
+    // VideoCompileStepExecutor.ResolveGraphicsAsync — the local scratch-space path of that
+    // downloaded asset. When set, this overlay is composited by OverlayAssetFilterBuilder (the
+    // ffmpeg `overlay` filter) instead of DrawtextFilterBuilder; SanitizedText/SanitizedSubtext
+    // are always empty for an asset overlay (see IsAssetOverlay).
+    string? RenderedAssetLocalPath = null,
+    /// <summary>
+    /// The owning placement's named region ("LowerThird" / "UpperThird" / "CenterBand" — see
+    /// VideoAnalysisPlacement.Region), used only by <see cref="DrawtextFilterBuilder.ComputeAccentBoxPixels"/>
+    /// to decide which edge of the named band to anchor the (deliberately smaller) drawn box
+    /// against. Distinct from <see cref="Kind"/> (the model's own descriptive-only
+    /// LowerThird/Title/Callout/Tag choice, which happens to share some of the same words but is
+    /// never read for geometry — see MotionGraphicsOverlay.Kind's doc comment). Defaults to ""
+    /// (treated as CenterBand-style vertical centering) so existing callers that never set it keep
+    /// compiling and behaving predictably.
+    /// </summary>
+    string PlacementRegion = "")
+{
+    /// <summary>True when this overlay carries a resolved, locally-downloaded rendered asset and must be composited via <c>OverlayAssetFilterBuilder</c> rather than <c>DrawtextFilterBuilder</c>.</summary>
+    public bool IsAssetOverlay => !string.IsNullOrEmpty(RenderedAssetLocalPath);
+}
 
 /// <summary>
 /// Builds the drawbox/drawtext filter-chain fragment appended after the existing select/setpts
@@ -53,8 +76,14 @@ public static class DrawtextFilterBuilder
     /// Builds the filter-chain fragment for <paramref name="overlays"/> (must be non-empty — the
     /// caller keeps the existing zero-overlay label plumbing unchanged when there is nothing to
     /// draw). Starts from <paramref name="baseFilterChainEndLabel"/> (the cut stage's own output
-    /// label, e.g. <c>"[vcut]"</c>) and ends at the fixed label <c>"[vout]"</c>, which the
-    /// caller's existing <c>-map "[vout]"</c> continues to reference unchanged.
+    /// label, e.g. <c>"[vcut]"</c>) and ends at <paramref name="finalLabel"/> (default
+    /// <c>"[vout]"</c>, which the caller's existing <c>-map "[vout]"</c> continues to reference
+    /// unchanged when there is no further stage). Phase 3's rendered-asset overlay path
+    /// (<see cref="ResolvedOverlay.RenderedAssetLocalPath"/>, applied by a separate
+    /// <c>OverlayAssetFilterBuilder</c> stage) passes a non-default <paramref name="finalLabel"/>
+    /// (e.g. <c>"[vtxt]"</c>) when BOTH text and asset overlays are present in the same compile,
+    /// so the asset stage can chain after this one and become the actual <c>[vout]</c> itself —
+    /// see <c>VideoCompileStepExecutor.EncodeReencodeAsync</c>.
     /// </summary>
     public static string BuildFilterChain(
         string baseFilterChainEndLabel,
@@ -66,7 +95,10 @@ public static class DrawtextFilterBuilder
         string fontColor,
         string boxColor,
         string fontFilePath,
-        Func<int, string> textFilePathForIndex)
+        Func<int, string> textFilePathForIndex,
+        string finalLabel = "[vout]",
+        int boxHeightPct = 16,
+        int boxWidthPct = 82)
     {
         if (overlays.Count == 0)
             throw new ArgumentException("BuildFilterChain requires at least one overlay.", nameof(overlays));
@@ -90,7 +122,8 @@ public static class DrawtextFilterBuilder
             int fontSize = ComputeFontSize(probedHeight, fontSizePct, overlay.Emphasis);
             int subFontSize = Math.Max(10, (int)Math.Round(fontSize * 0.7));
 
-            (int boxX, int boxY, int boxW, int boxH) = ComputeBoxPixels(overlay.Rect, probedWidth, probedHeight);
+            (int boxX, int boxY, int boxW, int boxH) = ComputeAccentBoxPixels(
+                overlay.Rect, overlay.PlacementRegion, probedWidth, probedHeight, boxHeightPct, boxWidthPct);
             string start = FfmpegArgvFormat.Number(overlay.OutputStartSec);
             string end = FfmpegArgvFormat.Number(overlay.OutputEndSec);
             string enableExpr = $"between(t,{start},{end})";
@@ -110,7 +143,7 @@ public static class DrawtextFilterBuilder
             }
 
             string mainTextPath = textFilePathForIndex(MainTextSlot(i));
-            string mainLabel = !hasSubtext && isLast ? "[vout]" : hasSubtext ? $"[gfx{i}t]" : $"[gfx{i}]";
+            string mainLabel = !hasSubtext && isLast ? finalLabel : hasSubtext ? $"[gfx{i}t]" : $"[gfx{i}]";
 
             string mainY = hasSubtext
                 ? $"{boxY}+({boxH}/2-text_h)/2"
@@ -127,7 +160,7 @@ public static class DrawtextFilterBuilder
             if (hasSubtext)
             {
                 string subTextPath = textFilePathForIndex(SubtextSlot(i));
-                string subLabel = isLast ? "[vout]" : $"[gfx{i}]";
+                string subLabel = isLast ? finalLabel : $"[gfx{i}]";
                 string subY = $"{boxY}+{boxH}/2+({boxH}/2-text_h)/2";
 
                 segments.Add(
@@ -170,6 +203,51 @@ public static class DrawtextFilterBuilder
         int w = (int)Math.Round(rect.W * probedWidth);
         int h = (int)Math.Round(rect.H * probedHeight);
         return (x, y, w, h);
+    }
+
+    /// <summary>
+    /// The actual on-screen box a motion-graphics overlay (drawbox/drawtext OR a stretch-scaled
+    /// rendered asset — both DrawtextFilterBuilder and OverlayAssetFilterBuilder call this, never
+    /// the raw <see cref="ComputeBoxPixels"/>) is drawn into. A named overlay-safe-zone band
+    /// (<c>rect</c> — see <c>OverlayPlacementBuilder</c>/<c>FrameGridAnalyzer</c>) is a SAFE ZONE
+    /// for placement, not a target size to fill: <c>LowerThird</c>/<c>UpperThird</c> are literally
+    /// the frame's outer third (full width, ~33% of frame height), and naively stretch-filling
+    /// that whole band — the behavior <see cref="ComputeBoxPixels"/> alone produces — is what made
+    /// a rendered overlay visibly "block the whole screen" in practice (root-caused against a real
+    /// 1440x2558 output; see docs/video-editing.md "Motion graphics (Phase 3)"). This method instead
+    /// computes a compact ACCENT box: capped to <paramref name="boxHeightPct"/> percent of the
+    /// FULL FRAME height (never exceeding the named band's own height, so it still sits inside the
+    /// safe zone it was offered), and inset horizontally to <paramref name="boxWidthPct"/> percent
+    /// of the band's own width so it is never full-bleed edge-to-edge either. The box is anchored
+    /// to whichever edge of the band reads as a natural lower-third/upper-third accent strip
+    /// (<paramref name="region"/> — "LowerThird" hugs the band's bottom edge, "UpperThird" hugs its
+    /// top edge; any other/unrecognized region, including "CenterBand", is vertically centered
+    /// within the band) and horizontally centered.
+    /// </summary>
+    internal static (int X, int Y, int W, int H) ComputeAccentBoxPixels(
+        VideoAnalysisRect rect, string region, int probedWidth, int probedHeight,
+        int boxHeightPct = 16, int boxWidthPct = 82)
+    {
+        int bandX = (int)Math.Round(rect.X * probedWidth);
+        int bandY = (int)Math.Round(rect.Y * probedHeight);
+        int bandW = (int)Math.Round(rect.W * probedWidth);
+        int bandH = (int)Math.Round(rect.H * probedHeight);
+
+        double heightFraction = Math.Clamp(boxHeightPct, 6, 40) / 100.0;
+        double widthFraction = Math.Clamp(boxWidthPct, 30, 100) / 100.0;
+
+        int accentH = Math.Max(1, Math.Min(Math.Max(1, bandH), (int)Math.Round(probedHeight * heightFraction)));
+        int accentW = Math.Max(1, (int)Math.Round(bandW * widthFraction));
+
+        int x = bandX + (bandW - accentW) / 2;
+        int y = region switch
+        {
+            "LowerThird" => bandY + bandH - accentH,
+            "UpperThird" => bandY,
+            _ => bandY + (bandH - accentH) / 2
+        };
+
+        return (x, y, accentW, accentH);
     }
 
     /// <summary>

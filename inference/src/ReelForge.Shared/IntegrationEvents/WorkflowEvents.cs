@@ -90,6 +90,38 @@ public record WorkflowStepCompleted
 }
 
 /// <summary>
+/// Published as a lightweight, ephemeral progress signal while a long-running step (initially
+/// <c>VideoAnalyze</c>/<c>VideoCompile</c>, but any step executor may opt in) is still executing —
+/// e.g. "Downloading source", "Transcribing audio (chunk 2/5)", "Encoding" with a percent. This is
+/// transient UI signal, not execution history: unlike <see cref="WorkflowStepStarted"/>/
+/// <see cref="WorkflowStepCompleted"/> it is never persisted to <c>WorkflowStepResult</c> and
+/// carries no EF Core migration, so consumers must treat a later progress event for the same
+/// <see cref="StepResultId"/> as superseding any earlier one and must never rely on delivery —
+/// <see cref="WorkflowStepCompleted"/>/<see cref="WorkflowExecutionFailed"/> remain the only
+/// authoritative signal that a step is actually done.
+/// </summary>
+public record WorkflowStepProgress
+{
+    public Guid ExecutionId { get; init; }
+    public Guid StepId { get; init; }
+    public Guid StepResultId { get; init; }
+    public Guid? ProjectId { get; init; }
+    public Guid? WorkflowDefinitionId { get; init; }
+    public int? StepOrder { get; init; }
+    public string? StepLabel { get; init; }
+    public string? StepType { get; init; }
+    public string CorrelationId { get; init; } = string.Empty;
+
+    /// <summary>Short human-readable stage label, e.g. "Downloading source" or "Encoding".</summary>
+    public string Stage { get; init; } = string.Empty;
+
+    /// <summary>0-100 when a real percentage is available (e.g. ffmpeg encode progress); null otherwise — the frontend falls back to showing just the stage label.</summary>
+    public int? PercentComplete { get; init; }
+
+    public DateTime OccurredAt { get; init; } = DateTime.UtcNow;
+}
+
+/// <summary>
 /// Published when an agent invokes a tool while executing a workflow step.
 /// </summary>
 public record WorkflowStepToolCalled

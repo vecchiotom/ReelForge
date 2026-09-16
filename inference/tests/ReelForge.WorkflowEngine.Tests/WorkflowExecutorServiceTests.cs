@@ -398,6 +398,25 @@ namespace ReelForge.WorkflowEngine.Tests
             System.Text.Json.JsonDocument doc = System.Text.Json.JsonDocument.Parse(result!);
             doc.RootElement.ValueKind.Should().Be(System.Text.Json.JsonValueKind.String);
         }
+
+        // -----------------------------------------------------------------
+        // Review loop feedback window: whether a ReviewLoop step's loop-back feedback should be
+        // seeded onto a given step's context (see docs/video-editing.md "Review loop" — this is
+        // the generic mechanism, not video-specific, so it benefits every ReviewLoop pipeline).
+        // -----------------------------------------------------------------
+
+        [Theory]
+        [InlineData(2, 2, 4, true)]   // loop target itself (inclusive)
+        [InlineData(3, 2, 4, true)]   // a step between the loop target and the review step
+        [InlineData(4, 2, 4, false)]  // the ReviewLoop step itself (exclusive)
+        [InlineData(1, 2, 4, false)]  // before the loop target
+        [InlineData(5, 2, 4, false)]  // after the ReviewLoop step
+        public void IsWithinReviewFeedbackWindow_matches_the_half_open_loop_back_window(
+            int stepOrder, int minInclusive, int maxExclusive, bool expected)
+        {
+            WorkflowExecutorService.IsWithinReviewFeedbackWindow(stepOrder, minInclusive, maxExclusive)
+                .Should().Be(expected);
+        }
     }
 
     // helper classes for tests

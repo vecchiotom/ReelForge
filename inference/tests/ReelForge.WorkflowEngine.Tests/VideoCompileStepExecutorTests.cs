@@ -32,6 +32,12 @@ public class VideoCompileStepExecutorTests
 {
     private const string ProjectFileStorageRoot = "video-compile-tests";
     private static readonly Guid ProjectId = Guid.NewGuid();
+
+    // Fixed WorkflowExecution.Id used by CreateGraphicsContext (Phase 3 graphics tests only) so a
+    // test can construct a RenderedAssetStorageKey that matches the exact execution-scoped
+    // "projects/{ProjectId}/outputFiles/{GraphicsExecutionId}/..." prefix
+    // VideoCompileStepExecutor validates a rendered-asset overlay against.
+    private static readonly Guid GraphicsExecutionId = Guid.NewGuid();
     private const string AnalysisKey = "projects/p/agentFiles/video-analysis/e/step-1-analysis.json";
     private const string SourceVideoKey = "projects/p/outputFiles/e/render.mp4";
 
@@ -68,6 +74,139 @@ public class VideoCompileStepExecutorTests
         VideoCompileStepExecutor.ToStartFrame(10.0, 30, 1).Should().Be(300);
         VideoCompileStepExecutor.ToEndFrame(10.0, 30, 1).Should().Be(300);
         VideoCompileStepExecutor.FrameToSec(300, 30, 1).Should().Be(10.0);
+    }
+
+    // ---------------------------------------------------------------------
+    // Root-cause fix for the mid-sentence-cut defect: a transcript segment's raw ASR EndSec is
+    // extended forward, bounded, toward the nearest FOLLOWING detected silence gap before being
+    // trusted as a Keep span's resolved end time — see ExtendSegmentEndTowardNextSilence's doc
+    // comment on VideoCompileStepExecutor.
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public void ExtendSegmentEndTowardNextSilence_snaps_to_a_nearby_following_silence_gap()
+    {
+        var silences = new[] { new VideoAnalysisSilenceSpan("g0", 10.4, 12.0, null) };
+
+        VideoCompileStepExecutor.ExtendSegmentEndTowardNextSilence(10.1, silences).Should().Be(10.4);
+    }
+
+    [Fact]
+    public void ExtendSegmentEndTowardNextSilence_leaves_the_raw_end_unchanged_when_no_gap_is_close_enough()
+    {
+        var silences = new[] { new VideoAnalysisSilenceSpan("g0", 30.0, 31.0, null) };
+
+        VideoCompileStepExecutor.ExtendSegmentEndTowardNextSilence(10.1, silences).Should().Be(10.1);
+    }
+
+    [Fact]
+    public void ExtendSegmentEndTowardNextSilence_never_extends_backward_to_a_gap_that_already_passed()
+    {
+        var silences = new[] { new VideoAnalysisSilenceSpan("g0", 5.0, 6.0, null) };
+
+        VideoCompileStepExecutor.ExtendSegmentEndTowardNextSilence(10.1, silences).Should().Be(10.1);
+    }
+
+    [Fact]
+    public void ExtendSegmentEndTowardNextSilence_picks_the_nearest_of_several_following_gaps()
+    {
+        var silences = new[]
+        {
+            new VideoAnalysisSilenceSpan("g0", 10.9, 11.5, null),
+            new VideoAnalysisSilenceSpan("g1", 10.3, 10.6, null)
+        };
+
+        VideoCompileStepExecutor.ExtendSegmentEndTowardNextSilence(10.1, silences).Should().Be(10.3);
+    }
+
+    [Fact]
+    public void ExtendSegmentEndTowardNextSilence_respects_the_max_extension_cap_exactly_at_the_boundary()
+    {
+        // Exactly at MaxSegmentEndExtensionSec (1.0s) -> still extends (<=, not <).
+        var atCap = new[] { new VideoAnalysisSilenceSpan("g0", 11.1, 12.0, null) };
+        VideoCompileStepExecutor.ExtendSegmentEndTowardNextSilence(10.1, atCap).Should().Be(11.1);
+
+        // Just past the cap -> left unchanged.
+        var pastCap = new[] { new VideoAnalysisSilenceSpan("g0", 11.100001, 12.0, null) };
+        VideoCompileStepExecutor.ExtendSegmentEndTowardNextSilence(10.1, pastCap).Should().Be(10.1);
+    }
+
+    [Theory]
+    [InlineData("Hello world.", true)]
+    [InlineData("Hello world!", true)]
+    [InlineData("Hello world?", true)]
+    [InlineData("Hello world", false)]
+    [InlineData("He said \"stop.\"", true)]
+    [InlineData("Trailing space at the end. ", true)]
+    [InlineData("   ", false)]
+    public void EndsWithSentenceTerminalPunctuation_matches_expected(string text, bool expected)
+    {
+        VideoCompileStepExecutor.EndsWithSentenceTerminalPunctuation(text).Should().Be(expected);
+    }
+
+    [Fact]
+    public async Task SentenceCheck_reports_applicable_false_when_last_kept_id_is_not_a_transcript_segment()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" });
+
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        StepExecutionResult result = await CreateExecutor(workspace).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        doc.RootElement.GetProperty("sentenceCheck").GetProperty("applicable").GetBoolean().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SentenceCheck_reports_true_when_last_kept_segment_ends_with_terminal_punctuation()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            segments: new[] { ("t0", 1.0, 4.0) },
+            segmentTexts: new[] { "This is a complete sentence." },
+            offeredIds: new[] { "s0", "t0" });
+
+        string decisionJson = BuildDecisionJson(("s0", "t0", "keep"));
+        StepExecutionContext context = CreateContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        StepExecutionResult result = await CreateExecutor(workspace).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        JsonElement sentenceCheck = doc.RootElement.GetProperty("sentenceCheck");
+        sentenceCheck.GetProperty("applicable").GetBoolean().Should().BeTrue();
+        sentenceCheck.GetProperty("lastKeptId").GetString().Should().Be("t0");
+        sentenceCheck.GetProperty("endsAtSentenceBoundary").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task SentenceCheck_flags_a_mid_sentence_cut_and_notices_the_next_segment_continues()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            segments: new[] { ("t0", 1.0, 4.0), ("t1", 4.2, 6.0) },
+            segmentTexts: new[] { "This sentence keeps going", "and finishes here." },
+            // t1 deliberately NOT offered — the story editor never saw it, so this is purely
+            // deterministic evidence for the review agent, never a signal the compile step would
+            // trust to extend the actual cut.
+            offeredIds: new[] { "s0", "t0" });
+
+        string decisionJson = BuildDecisionJson(("s0", "t0", "keep"));
+        StepExecutionContext context = CreateContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        StepExecutionResult result = await CreateExecutor(workspace).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        JsonElement sentenceCheck = doc.RootElement.GetProperty("sentenceCheck");
+        sentenceCheck.GetProperty("applicable").GetBoolean().Should().BeTrue();
+        sentenceCheck.GetProperty("endsAtSentenceBoundary").GetBoolean().Should().BeFalse();
+        sentenceCheck.GetProperty("lastSegmentText").GetString().Should().Be("This sentence keeps going");
+        sentenceCheck.GetProperty("nextSegmentContinues").GetBoolean().Should().BeTrue();
     }
 
     // ---------------------------------------------------------------------
@@ -590,12 +729,16 @@ public class VideoCompileStepExecutorTests
 
     private static VideoCompileStepExecutor CreateExecutor(
         Mock<IProjectFileWorkspace> workspace, Action<JsonElement>? edlCaptured = null, bool drawtextAvailable = true,
-        Action<IReadOnlyList<string>>? ffmpegArgsCaptured = null)
+        Action<IReadOnlyList<string>>? ffmpegArgsCaptured = null,
+        Action<Mock<IMediaProbe>>? configureMediaProbe = null,
+        bool amixNormalizeAvailable = true)
     {
         // The drawtext-availability probe is a process-lifetime static cache in the executor
         // (see ResolveGraphicsAsync/IsDrawtextAvailableAsync) — reset it per test case so each
-        // test's own mocked IVideoToolRunner is actually consulted.
+        // test's own mocked IVideoToolRunner is actually consulted. Same for the amix
+        // normalize-option probe (background music — see ResolveMusicAsync/IsAmixNormalizeAvailableAsync).
         VideoCompileStepExecutor.ResetDrawtextAvailabilityCacheForTests();
+        VideoCompileStepExecutor.ResetAmixNormalizeCacheForTests();
 
         var toolRunner = new Mock<IVideoToolRunner>();
         toolRunner
@@ -607,11 +750,36 @@ public class VideoCompileStepExecutorTests
                 It.Is<IReadOnlyList<string>>(a => !a.Contains("-filters")), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
             .Callback<IReadOnlyList<string>, TimeSpan, CancellationToken>((args, _, _) => ffmpegArgsCaptured?.Invoke(args))
             .ReturnsAsync(new VideoToolResult(0, string.Empty, string.Empty, false));
+        // The reencode path's main encode call goes through the 4-arg overload (real ffmpeg
+        // "-progress pipe:1" percentage — see BuildFfmpegProgressLineHandler) whenever a
+        // StepExecutionContext + known output duration were supplied, which the executor always
+        // does — so this overload needs its own setup, mirroring the 3-arg one above exactly,
+        // or every reencode test would hit an unconfigured mock member and NRE on await.
+        toolRunner
+            .Setup(t => t.RunFfmpegAsync(
+                It.Is<IReadOnlyList<string>>(a => !a.Contains("-filters")), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>(),
+                It.IsAny<Action<string>>()))
+            .Callback<IReadOnlyList<string>, TimeSpan, CancellationToken, Action<string>>((args, _, _, _) => ffmpegArgsCaptured?.Invoke(args))
+            .ReturnsAsync(new VideoToolResult(0, string.Empty, string.Empty, false));
+        // Applied AFTER the two catch-all "not -filters" setups above — Moq resolves overlapping
+        // setups to the most recently configured one, same precedence discipline the
+        // configureMediaProbe comment below documents — so the amix probe (which also doesn't
+        // contain "-filters") gets its own realistic response instead of the catch-all's empty
+        // stdout (which would make IsAmixNormalizeAvailableAsync always resolve to unavailable).
+        toolRunner
+            .Setup(t => t.RunFfmpegAsync(
+                It.Is<IReadOnlyList<string>>(a => a.Contains("filter=amix")), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new VideoToolResult(0, amixNormalizeAvailable ? "... normalize ..." : "... (no normalize) ...", string.Empty, false));
 
         var mediaProbe = new Mock<IMediaProbe>();
         mediaProbe
             .Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new MediaProbeResult(10, 30, 1, 1920, 1080, "h264", "aac", 48000));
+        // Applied AFTER the catch-all setup above — Moq resolves overlapping setups to the most
+        // recently configured one, so a test-supplied override (e.g. "throw for this one asset
+        // path") takes precedence over the default success response without needing to know about
+        // every other path this test's executor run will probe.
+        configureMediaProbe?.Invoke(mediaProbe);
 
         if (edlCaptured is not null)
         {
@@ -771,7 +939,11 @@ public class VideoCompileStepExecutorTests
         int fpsNum = 30,
         int fpsDen = 1,
         IReadOnlyList<VideoAnalysisPlacement>? placements = null,
-        string[]? offeredPlacementIds = null)
+        string[]? offeredPlacementIds = null,
+        // Parallel to `segments` (same length/order) — lets a test control each segment's own
+        // text for sentence-boundary-check tests without disturbing every other BuildArtifact call
+        // site, which never sets this and keeps getting the fixed placeholder "text".
+        string[]? segmentTexts = null)
     {
         silences ??= Array.Empty<(string, double, double)>();
         segments ??= Array.Empty<(string, double, double)>();
@@ -784,7 +956,9 @@ public class VideoCompileStepExecutorTests
             Media: new VideoAnalysisMedia(duration, fpsNum, fpsDen, 1920, 1080),
             Shots: shots.Select(s => new VideoAnalysisShot(s.Id, s.Start, s.End)).ToList(),
             SilenceSpans: silences.Select(s => new VideoAnalysisSilenceSpan(s.Id, s.Start, s.End, null)).ToList(),
-            Segments: segments.Select(s => new VideoAnalysisSegment(s.Id, null, s.Start, s.End, "text")).ToList(),
+            Segments: segments.Select((s, i) => new VideoAnalysisSegment(
+                s.Id, null, s.Start, s.End,
+                segmentTexts is not null && i < segmentTexts.Length ? segmentTexts[i] : "text")).ToList(),
             Words: words.Select(s => new VideoAnalysisWord(s.Id, s.Start, s.End, "word")).ToList(),
             OfferedIds: offeredIds?.ToList() ?? shots.Select(s => s.Id).Concat(silences.Select(s => s.Id)).Concat(segments.Select(s => s.Id)).ToList(),
             Provenance: new VideoAnalysisProvenance(VideoTranscriptionMode.Off, false, false),
@@ -873,6 +1047,29 @@ public class VideoCompileStepExecutorTests
         // A Keep span naming "p0" — a placement id, not a cut-anchor id — must fail UNKNOWN_ID
         // exactly like any other id BuildIdTimeIndex does not contain.
         string decisionJson = BuildDecisionJson(("p0", "p0", "wrong namespace"));
+        StepExecutionContext context = CreateContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        StepExecutionResult result = await CreateExecutor(workspace).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Failed);
+        ErrorCode(result).Should().Be("UNKNOWN_ID");
+    }
+
+    [Fact]
+    public async Task Keep_span_naming_a_look_group_id_fails_UNKNOWN_ID_since_look_groups_are_a_separate_namespace()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 5.0), ("s1", 5.0, 10.0) },
+            offeredIds: new[] { "s0", "s1" });
+        artifact = artifact with
+        {
+            LookGroups = [new VideoAnalysisLookGroup("k0", ["s0", "s1"], "s0", 90.0, "Warm", "Normal", "Natural")]
+        };
+
+        // A Keep span naming "k0" — a look-group id, a purely descriptive namespace never offered
+        // to any agent at all — must fail UNKNOWN_ID exactly like a placement/music-track id does
+        // (§6.8: BuildIdTimeIndex deliberately excludes it).
+        string decisionJson = BuildDecisionJson(("k0", "k0", "wrong namespace"));
         StepExecutionContext context = CreateContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
 
         StepExecutionResult result = await CreateExecutor(workspace).ExecuteAsync(context);
@@ -984,6 +1181,270 @@ public class VideoCompileStepExecutorTests
     }
 
     [Fact]
+    public async Task Applied_overlay_records_its_exact_deterministic_frame_coverage_percentage()
+    {
+        // Evidence for AgentType.VideoReviewAgent's oversized-overlay check (docs/video-editing.md
+        // "Review loop") — must be the exact geometry the encode itself uses, not an
+        // approximation. Band (0.1, 0.8, 0.6, 0.15) at this artifact's 1920x1080 media shrinks via
+        // ComputeAccentBoxPixels's defaults to w=945,h=162 (identical arithmetic to
+        // DrawtextFilterBuilderTests' "Box_geometry_is_computed..." test) -> coverage =
+        // 945*162/(1920*1080) ≈ 7.4%, well under the ~20-25% VideoReviewAgent's prompt treats as
+        // oversized — proving the size fix actually shows up in reviewable evidence.
+        var placement = new VideoAnalysisPlacement(
+            "p0", "s0", "LowerThird", new VideoAnalysisRect(0.1, 0.8, 0.6, 0.15),
+            "ShotMiddle", 4.0, 6.0, 0.8, "Light");
+
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" },
+            placements: new[] { placement });
+
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        string graphicsPlanJson = JsonSerializer.Serialize(new
+        {
+            overlays = new[]
+            {
+                new { placementId = "p0", kind = "LowerThird", text = "Jane Doe", subtext = "", duration = "Short", emphasis = "Normal", reason = "intro" }
+            },
+            planRationale = "test"
+        });
+
+        StepExecutionContext context = CreateGraphicsContext(
+            artifact, decisionJson, graphicsPlanJson, out Mock<IProjectFileWorkspace> workspace);
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(workspace, edlCaptured: e => edl = e).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        JsonElement appliedOverlays = edl.GetProperty("graphics").GetProperty("appliedOverlays");
+        appliedOverlays.GetArrayLength().Should().Be(1);
+        appliedOverlays[0].GetProperty("placementId").GetString().Should().Be("p0");
+
+        double coveragePct = appliedOverlays[0].GetProperty("coveragePct").GetDouble();
+        coveragePct.Should().BeApproximately(7.4, 0.2);
+        coveragePct.Should().BeLessThan(20.0, "a compact accent overlay must not be reported as covering a large fraction of the frame");
+    }
+
+    // ---------------------------------------------------------------------
+    // Phase 3: rendered-asset overlays (MotionGraphicsOverlay.RenderedAssetStorageKey)
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public async Task Valid_rendered_asset_overlay_is_applied_via_the_overlay_filter_not_drawtext()
+    {
+        var placement = new VideoAnalysisPlacement(
+            "p0", "s0", "LowerThird", new VideoAnalysisRect(0.1, 0.8, 0.6, 0.15),
+            "ShotMiddle", 4.0, 6.0, 0.8, "Light");
+
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" },
+            placements: new[] { placement });
+
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        string assetKey = $"projects/{ProjectId}/outputFiles/{GraphicsExecutionId:D}/overlay.webm";
+        string graphicsPlanJson = JsonSerializer.Serialize(new
+        {
+            overlays = new[]
+            {
+                new { placementId = "p0", kind = "LowerThird", text = "", subtext = "", duration = "Short", emphasis = "Normal", renderedAssetStorageKey = assetKey, reason = "designed graphic" }
+            },
+            planRationale = "test"
+        });
+
+        StepExecutionContext context = CreateGraphicsContext(
+            artifact, decisionJson, graphicsPlanJson, out Mock<IProjectFileWorkspace> workspace);
+
+        workspace
+            .Setup(w => w.DownloadStorageKeyToFileAsync(It.IsAny<Guid>(), assetKey, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<Guid, string, string, CancellationToken>((_, _, destPath, _) =>
+            {
+                File.WriteAllBytes(destPath, new byte[] { 0x00, 0x01, 0x02 });
+                return Task.CompletedTask;
+            });
+
+        JsonElement edl = default;
+        List<string>? capturedArgs = null;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, edlCaptured: e => edl = e, ffmpegArgsCaptured: a => capturedArgs = a.ToList())
+            .ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed);
+        JsonElement graphics = edl.GetProperty("graphics");
+        graphics.GetProperty("applied").GetBoolean().Should().BeTrue();
+        graphics.GetProperty("appliedOverlayCount").GetInt32().Should().Be(1);
+        graphics.GetProperty("droppedOverlays").GetArrayLength().Should().Be(0);
+
+        capturedArgs.Should().NotBeNull();
+        string filterComplex = ExtractFilterComplexValue(capturedArgs!);
+        filterComplex.Should().Contain("overlay=x=", "the asset overlay must be composited via ffmpeg's overlay filter");
+        filterComplex.Should().NotContain("drawtext=", "a pure asset overlay must never fall through to the drawtext path");
+        capturedArgs!.Count(a => a == "-i").Should().Be(2, "the main source video AND the rendered asset must each be their own -i input");
+    }
+
+    [Fact]
+    public async Task Rendered_asset_overlay_outside_the_execution_output_prefix_is_dropped_without_downloading_it()
+    {
+        var placement = new VideoAnalysisPlacement(
+            "p0", "s0", "LowerThird", new VideoAnalysisRect(0.1, 0.8, 0.6, 0.15),
+            "ShotMiddle", 4.0, 6.0, 0.8, "Light");
+
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" },
+            placements: new[] { placement });
+
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        // Wrong execution id in the path — must never be trusted even though it is otherwise a
+        // well-formed "projects/{id}/outputFiles/..." key (see RenderVideoAndUploadToStorage's own
+        // key construction and VideoCompileStepExecutor's prefix re-validation).
+        string foreignAssetKey = $"projects/{ProjectId}/outputFiles/{Guid.NewGuid():D}/overlay.webm";
+        string graphicsPlanJson = JsonSerializer.Serialize(new
+        {
+            overlays = new[]
+            {
+                new { placementId = "p0", kind = "LowerThird", text = "", subtext = "", duration = "Short", emphasis = "Normal", renderedAssetStorageKey = foreignAssetKey, reason = "bad key" }
+            },
+            planRationale = "test"
+        });
+
+        StepExecutionContext context = CreateGraphicsContext(
+            artifact, decisionJson, graphicsPlanJson, out Mock<IProjectFileWorkspace> workspace);
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(workspace, edlCaptured: e => edl = e).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, "an untrustworthy asset key must degrade this ONE overlay, never fail the whole compile");
+        JsonElement graphics = edl.GetProperty("graphics");
+        graphics.GetProperty("applied").GetBoolean().Should().BeFalse();
+        graphics.GetProperty("appliedOverlayCount").GetInt32().Should().Be(0);
+        JsonElement dropped = graphics.GetProperty("droppedOverlays");
+        dropped.GetArrayLength().Should().Be(1);
+        dropped[0].GetProperty("reason").GetString().Should().Be("invalid_asset_storage_key");
+
+        workspace.Verify(
+            w => w.DownloadStorageKeyToFileAsync(It.IsAny<Guid>(), foreignAssetKey, It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "a storage key outside this execution's own prefix must never even be downloaded");
+    }
+
+    [Fact]
+    public async Task Rendered_asset_overlay_that_fails_ffprobe_is_dropped_not_a_step_failure()
+    {
+        // A corrupt/unreadable asset must never be allowed to reach ffmpeg as an extra -i input —
+        // that would fail the WHOLE encode (cut included), violating "graphics must never hold the
+        // cut hostage". ResolveGraphicsAsync must catch this per-overlay via IMediaProbe and drop
+        // just that one overlay instead.
+        var placement = new VideoAnalysisPlacement(
+            "p0", "s0", "LowerThird", new VideoAnalysisRect(0.1, 0.8, 0.6, 0.15),
+            "ShotMiddle", 4.0, 6.0, 0.8, "Light");
+
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" },
+            placements: new[] { placement });
+
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        string assetKey = $"projects/{ProjectId}/outputFiles/{GraphicsExecutionId:D}/corrupt.webm";
+        string graphicsPlanJson = JsonSerializer.Serialize(new
+        {
+            overlays = new[]
+            {
+                new { placementId = "p0", kind = "LowerThird", text = "", subtext = "", duration = "Short", emphasis = "Normal", renderedAssetStorageKey = assetKey, reason = "corrupt asset" }
+            },
+            planRationale = "test"
+        });
+
+        StepExecutionContext context = CreateGraphicsContext(
+            artifact, decisionJson, graphicsPlanJson, out Mock<IProjectFileWorkspace> workspace);
+
+        workspace
+            .Setup(w => w.DownloadStorageKeyToFileAsync(It.IsAny<Guid>(), assetKey, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<Guid, string, string, CancellationToken>((_, _, destPath, _) =>
+            {
+                File.WriteAllBytes(destPath, new byte[] { 0xDE, 0xAD });
+                return Task.CompletedTask;
+            });
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, edlCaptured: e => edl = e,
+            configureMediaProbe: probe => probe
+                .Setup(p => p.ProbeAsync(It.Is<string>(s => s.Contains("gfx-asset")), It.IsAny<CancellationToken>()))
+                .ThrowsAsync(new InvalidOperationException("ffprobe failed for this corrupt file")))
+            .ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed);
+        JsonElement graphics = edl.GetProperty("graphics");
+        graphics.GetProperty("applied").GetBoolean().Should().BeFalse();
+        JsonElement dropped = graphics.GetProperty("droppedOverlays");
+        dropped.GetArrayLength().Should().Be(1);
+        dropped[0].GetProperty("reason").GetString().Should().Be("asset_download_or_probe_failed");
+    }
+
+    [Fact]
+    public async Task Plain_text_overlay_and_rendered_asset_overlay_can_coexist_in_the_same_compile()
+    {
+        var textPlacement = new VideoAnalysisPlacement(
+            "p0", "s0", "LowerThird", new VideoAnalysisRect(0.1, 0.8, 0.6, 0.15),
+            "ShotMiddle", 4.0, 6.0, 0.8, "Light");
+        var assetPlacement = new VideoAnalysisPlacement(
+            "p1", "s0", "UpperThird", new VideoAnalysisRect(0.1, 0.05, 0.6, 0.15),
+            "ShotMiddle", 4.0, 6.0, 0.8, "Light");
+
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" },
+            placements: new[] { textPlacement, assetPlacement });
+
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        string assetKey = $"projects/{ProjectId}/outputFiles/{GraphicsExecutionId:D}/overlay.webm";
+        string graphicsPlanJson = JsonSerializer.Serialize(new
+        {
+            overlays = new[]
+            {
+                new { placementId = "p0", kind = "Tag", text = "Live", subtext = "", duration = "Short", emphasis = "Normal", renderedAssetStorageKey = "", reason = "plain text" },
+                new { placementId = "p1", kind = "Title", text = "", subtext = "", duration = "Short", emphasis = "Normal", renderedAssetStorageKey = assetKey, reason = "rendered graphic" }
+            },
+            planRationale = "test"
+        });
+
+        StepExecutionContext context = CreateGraphicsContext(
+            artifact, decisionJson, graphicsPlanJson, out Mock<IProjectFileWorkspace> workspace);
+
+        workspace
+            .Setup(w => w.DownloadStorageKeyToFileAsync(It.IsAny<Guid>(), assetKey, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<Guid, string, string, CancellationToken>((_, _, destPath, _) =>
+            {
+                File.WriteAllBytes(destPath, new byte[] { 0x00 });
+                return Task.CompletedTask;
+            });
+
+        JsonElement edl = default;
+        List<string>? capturedArgs = null;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, edlCaptured: e => edl = e, ffmpegArgsCaptured: a => capturedArgs = a.ToList())
+            .ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed);
+        JsonElement graphics = edl.GetProperty("graphics");
+        graphics.GetProperty("appliedOverlayCount").GetInt32().Should().Be(2);
+
+        string filterComplex = ExtractFilterComplexValue(capturedArgs!);
+        filterComplex.Should().Contain("drawtext=", "the plain-text overlay must still use the pre-existing drawtext path");
+        filterComplex.Should().Contain("overlay=x=", "the rendered-asset overlay must use the new overlay-filter path");
+        filterComplex.Should().Contain("[vtxt]", "the text stage must hand off to an internal label rather than [vout] directly when an asset stage follows it");
+    }
+
+    /// <summary>Pulls the value that follows "-filter_complex" out of a captured ffmpeg argv (never "-filter_complex_script", which these small test filter graphs never trigger).</summary>
+    private static string ExtractFilterComplexValue(IReadOnlyList<string> args)
+    {
+        int index = args.ToList().IndexOf("-filter_complex");
+        index.Should().BeGreaterThan(-1, "test compiles are small enough to never hit the -filter_complex_script threshold");
+        return args[index + 1];
+    }
+
+    [Fact]
     public async Task Explicit_null_overlays_in_graphics_plan_degrades_to_no_graphics_not_UNEXPECTED_ERROR()
     {
         // An explicit `"overlays": null` overwrites MotionGraphicsPlanOutput.Overlays' `= new()`
@@ -1081,12 +1542,421 @@ public class VideoCompileStepExecutorTests
 
         return new StepExecutionContext
         {
-            Execution = new WorkflowExecution { Id = Guid.NewGuid(), ProjectId = ProjectId },
+            // Fixed (not Guid.NewGuid()) so tests can construct a RenderedAssetStorageKey that
+            // matches the exact "projects/{ProjectId}/outputFiles/{GraphicsExecutionId}/..."
+            // prefix VideoCompileStepExecutor validates against, without needing an extra out
+            // parameter threaded through every call site.
+            Execution = new WorkflowExecution { Id = GraphicsExecutionId, ProjectId = ProjectId },
             Step = step,
             AllSteps = [analyzeStep, step],
             AccumulatedOutput = graphicsPlanJson,
             StepOutputHistory = history,
             CurrentStepIndex = 3,
+            IterationCount = 0,
+            CorrelationId = "test",
+            CancellationToken = CancellationToken.None
+        };
+    }
+
+    // =======================================================================
+    // Background music (see docs/video-editing.md "Background music")
+    // =======================================================================
+
+    private const string MusicTrackStorageKey = "projects/p/userFiles/music.mp3";
+    private static readonly Guid MusicProjectFileId = Guid.NewGuid();
+    private static readonly Guid MusicExecutionId = Guid.NewGuid();
+
+    [Fact]
+    public async Task EnableMusic_false_leaves_filter_string_and_output_byte_identical_to_pre_music_compile()
+    {
+        // The load-bearing backward-compatibility guarantee of this whole feature — mirrors
+        // EnableGraphics_false_produces_no_graphics_key_at_all_byte_identical_to_pre_phase3 exactly.
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" });
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+
+        string? baselineFilter = null;
+        StepExecutionContext baselineContext = CreateContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> baselineWorkspace);
+        JsonElement baselineEdl = default;
+        StepExecutionResult baselineResult = await CreateExecutor(
+            baselineWorkspace, edlCaptured: e => baselineEdl = e,
+            ffmpegArgsCaptured: args => baselineFilter ??= ExtractFilterComplexValue(args)).ExecuteAsync(baselineContext);
+
+        // Even with a MusicTrackProjectFileId configured, EnableMusic=false must leave everything
+        // byte-identical — the flag alone gates the whole feature.
+        string? musicOffFilter = null;
+        StepExecutionContext musicOffContext = CreateContext(
+            artifact, decisionJson, out Mock<IProjectFileWorkspace> musicOffWorkspace,
+            configOverride: cfg => cfg with { EnableMusic = false, MusicTrackProjectFileId = Guid.NewGuid() });
+        JsonElement musicOffEdl = default;
+        StepExecutionResult musicOffResult = await CreateExecutor(
+            musicOffWorkspace, edlCaptured: e => musicOffEdl = e,
+            ffmpegArgsCaptured: args => musicOffFilter ??= ExtractFilterComplexValue(args)).ExecuteAsync(musicOffContext);
+
+        baselineResult.Status.Should().Be(StepStatus.Completed);
+        musicOffResult.Status.Should().Be(StepStatus.Completed);
+        musicOffFilter.Should().Be(baselineFilter, "EnableMusic=false must leave the filter string byte-identical");
+        baselineFilter.Should().NotContain("amix").And.NotContain("[adial]").And.NotContain("[amus]");
+
+        baselineEdl.TryGetProperty("music", out _).Should().BeFalse();
+        musicOffEdl.TryGetProperty("music", out _).Should().BeFalse();
+        using JsonDocument outputDoc = JsonDocument.Parse(musicOffResult.Output);
+        outputDoc.RootElement.TryGetProperty("music", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task EnableMusic_true_with_StreamCopy_fails_MUSIC_REQUIRES_REENCODE()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" });
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateContext(
+            artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with
+            {
+                EnableMusic = true,
+                MusicTrackProjectFileId = Guid.NewGuid(),
+                Mode = VideoCompileMode.StreamCopy,
+                AllowKeyframeSnapping = true
+            });
+
+        StepExecutionResult result = await CreateExecutor(workspace).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Failed);
+        ErrorCode(result).Should().Be("MUSIC_REQUIRES_REENCODE");
+    }
+
+    [Fact]
+    public async Task EnableMusic_true_with_AudioCodec_copy_fails_MUSIC_REQUIRES_AUDIO_REENCODE()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" });
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateContext(
+            artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with
+            {
+                EnableMusic = true,
+                MusicTrackProjectFileId = Guid.NewGuid(),
+                AudioCodec = "copy"
+            });
+
+        StepExecutionResult result = await CreateExecutor(workspace).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Failed);
+        ErrorCode(result).Should().Be("MUSIC_REQUIRES_AUDIO_REENCODE");
+    }
+
+    [Fact]
+    public async Task Keep_span_naming_a_music_track_id_fails_UNKNOWN_ID_since_music_tracks_are_a_separate_namespace()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" });
+        string decisionJson = BuildDecisionJson(("m0", "m0", "wrong namespace"));
+        StepExecutionContext context = CreateContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        StepExecutionResult result = await CreateExecutor(workspace).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Failed);
+        ErrorCode(result).Should().Be("UNKNOWN_ID");
+    }
+
+    [Fact]
+    public async Task Deterministic_music_track_is_applied_and_recorded_in_the_music_block()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" });
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateMusicContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(workspace, edlCaptured: e => edl = e).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        JsonElement music = edl.GetProperty("music");
+        music.GetProperty("enabled").GetBoolean().Should().BeTrue();
+        music.GetProperty("applied").GetBoolean().Should().BeTrue();
+        music.GetProperty("source").GetString().Should().Be("config");
+        music.GetProperty("trackId").GetString().Should().Be(""); // no plan involved — the config path never assigns an m{n} id
+        music.GetProperty("intensity").GetString().Should().Be("Balanced");
+        music.GetProperty("ducking").GetString().Should().Be("Normal");
+        music.GetProperty("fit").GetString().Should().Be("LoopToFit");
+        // No shot in this artifact carries a Phase 1 Audio descriptor, so dialogueHeadroom must
+        // report inapplicable rather than fabricate a mean level from nothing.
+        music.GetProperty("dialogueHeadroom").GetProperty("applicable").GetBoolean().Should().BeFalse();
+
+        using JsonDocument outputDoc = JsonDocument.Parse(result.Output);
+        outputDoc.RootElement.GetProperty("music").GetProperty("applied").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Music_input_is_the_last_ffmpeg_input_and_the_audio_cut_label_flips_to_adial()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" });
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateMusicContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        IReadOnlyList<string>? capturedArgs = null;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, ffmpegArgsCaptured: args => capturedArgs ??= args).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        capturedArgs.Should().NotBeNull();
+
+        List<int> inputFlagIndices = capturedArgs!
+            .Select((a, i) => (a, i))
+            .Where(t => t.a == "-i")
+            .Select(t => t.i)
+            .ToList();
+        inputFlagIndices.Should().HaveCount(2, "the main source input plus the music input");
+        capturedArgs[inputFlagIndices[0] + 1].Should().NotContain("music", "input 0 must still be the main source video");
+        capturedArgs[inputFlagIndices[^1] + 1].Should().Contain("music", "the music track must be the LAST ffmpeg input");
+
+        string filterComplex = ExtractFilterComplexValue(capturedArgs);
+        filterComplex.Should().Contain("[adial]");
+        filterComplex.Should().Contain("[amus]");
+        filterComplex.Should().Contain("amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]");
+        filterComplex.Should().Contain("[1:a]atrim=end=", "music is ffmpeg input index 1 here (no asset overlays present)");
+    }
+
+    [Fact]
+    public async Task Plan_naming_an_unoffered_track_id_falls_back_to_the_configured_track()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" });
+        artifact = artifact with
+        {
+            MusicCandidates = [new VideoAnalysisMusicCandidate("m0", MusicProjectFileId, "music.mp3", "audio/mpeg", 4096)],
+            OfferedMusicIds = ["m0"]
+        };
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        string musicPlanJson = JsonSerializer.Serialize(new
+        {
+            trackId = "m9", // not in OfferedMusicIds
+            intensity = "Feature",
+            ducking = "Heavy",
+            fit = "PlayOnce",
+            reason = "test",
+            planRationale = "test"
+        });
+
+        StepExecutionContext context = CreateMusicContext(
+            artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with { MusicPlan = new ExtractInputRef(ExtractInputSource.Step, StepOrder: 3) },
+            musicPlanJson: musicPlanJson);
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(workspace, edlCaptured: e => edl = e).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        JsonElement music = edl.GetProperty("music");
+        music.GetProperty("source").GetString().Should().Be("config");
+        JsonElement dropped = music.GetProperty("dropped");
+        dropped.GetArrayLength().Should().Be(1);
+        dropped[0].GetProperty("reason").GetString().Should().Be("unknown_track_id");
+        dropped[0].GetProperty("trackId").GetString().Should().Be("m9");
+    }
+
+    [Fact]
+    public async Task Non_audio_project_file_is_dropped_as_track_not_audio_and_the_cut_still_succeeds()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" });
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateMusicContext(
+            artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace, musicMimeType: "video/mp4");
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(workspace, edlCaptured: e => edl = e).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, "a bad music track must never fail the cut itself");
+        JsonElement music = edl.GetProperty("music");
+        music.GetProperty("applied").GetBoolean().Should().BeFalse();
+        music.GetProperty("dropped")[0].GetProperty("reason").GetString().Should().Be("track_not_audio");
+    }
+
+    [Fact]
+    public async Task Track_probe_failure_drops_music_and_the_cut_still_succeeds()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" });
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateMusicContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, edlCaptured: e => edl = e,
+            configureMediaProbe: probe => probe
+                .Setup(p => p.ProbeAsync(It.Is<string>(path => path.Contains("music")), It.IsAny<CancellationToken>()))
+                .ThrowsAsync(new IOException("corrupt file"))).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, "a bad music track must never fail the cut itself");
+        JsonElement music = edl.GetProperty("music");
+        music.GetProperty("applied").GetBoolean().Should().BeFalse();
+        music.GetProperty("dropped")[0].GetProperty("reason").GetString().Should().Be("track_download_or_probe_failed");
+    }
+
+    [Fact]
+    public async Task Amix_without_normalize_option_skips_all_music_and_the_cut_still_succeeds()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" });
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateMusicContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, edlCaptured: e => edl = e, amixNormalizeAvailable: false).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        JsonElement music = edl.GetProperty("music");
+        music.GetProperty("unavailable").GetBoolean().Should().BeTrue();
+        music.GetProperty("applied").GetBoolean().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task LoopToFit_with_a_track_shorter_than_the_edit_loops_and_trims_to_the_edit_length()
+    {
+        // 10s edit, 4s track -> loops (ceil(10/4) = 3), -stream_loop present, atrim=end=10.
+        VideoAnalysisArtifact artifact = BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" });
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateMusicContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        JsonElement edl = default;
+        IReadOnlyList<string>? capturedArgs = null;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, edlCaptured: e => edl = e, ffmpegArgsCaptured: args => capturedArgs ??= args,
+            configureMediaProbe: probe => probe
+                .Setup(p => p.ProbeAsync(It.Is<string>(path => path.Contains("music")), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new MediaProbeResult(4, 30, 1, 0, 0, null, "mp3", 44100))).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        JsonElement music = edl.GetProperty("music");
+        music.GetProperty("fit").GetString().Should().Be("LoopToFit");
+        music.GetProperty("loops").GetInt32().Should().Be(3);
+        music.GetProperty("playEndSec").GetDouble().Should().BeApproximately(10.0, 0.01);
+        capturedArgs.Should().Contain("-stream_loop");
+
+        string filterComplex = ExtractFilterComplexValue(capturedArgs!);
+        filterComplex.Should().Contain("atrim=end=10");
+    }
+
+    [Fact]
+    public async Task PlayOnce_with_a_track_shorter_than_the_edit_never_loops_and_trims_to_the_track_length()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" });
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateMusicContext(
+            artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with { MusicFitPolicy = MusicFit.PlayOnce });
+
+        JsonElement edl = default;
+        IReadOnlyList<string>? capturedArgs = null;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, edlCaptured: e => edl = e, ffmpegArgsCaptured: args => capturedArgs ??= args,
+            configureMediaProbe: probe => probe
+                .Setup(p => p.ProbeAsync(It.Is<string>(path => path.Contains("music")), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new MediaProbeResult(4, 30, 1, 0, 0, null, "mp3", 44100))).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        JsonElement music = edl.GetProperty("music");
+        music.GetProperty("fit").GetString().Should().Be("PlayOnce");
+        music.GetProperty("playEndSec").GetDouble().Should().BeApproximately(4.0, 0.01);
+        capturedArgs.Should().NotContain("-stream_loop");
+
+        string filterComplex = ExtractFilterComplexValue(capturedArgs!);
+        filterComplex.Should().Contain("atrim=end=4");
+    }
+
+    /// <summary>Builds a context wired for background music: the deterministic MusicTrackProjectFileId path by default, and an optional 4th history entry (StepOrder 3, a MusicSupervisor step) when <paramref name="musicPlanJson"/> is supplied.</summary>
+    private static StepExecutionContext CreateMusicContext(
+        VideoAnalysisArtifact artifact,
+        string decisionJson,
+        out Mock<IProjectFileWorkspace> workspace,
+        Func<VideoCompileStepConfig, VideoCompileStepConfig>? configOverride = null,
+        string musicMimeType = "audio/mpeg",
+        string? musicPlanJson = null)
+    {
+        workspace = new Mock<IProjectFileWorkspace>();
+
+        string artifactJson = JsonSerializer.Serialize(artifact, ArtifactOptions());
+
+        workspace
+            .Setup(w => w.DownloadStorageKeyToFileAsync(
+                It.IsAny<Guid>(), AnalysisKey, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<Guid, string, string, CancellationToken>((_, _, destPath, _) =>
+            {
+                File.WriteAllText(destPath, artifactJson);
+                return Task.CompletedTask;
+            });
+
+        workspace
+            .Setup(w => w.DownloadStorageKeyToFileAsync(
+                It.IsAny<Guid>(), SourceVideoKey, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<Guid, string, string, CancellationToken>((_, _, destPath, _) =>
+            {
+                File.WriteAllBytes(destPath, new byte[] { 0x00, 0x01, 0x02 });
+                return Task.CompletedTask;
+            });
+
+        workspace
+            .Setup(w => w.DownloadStorageKeyToFileAsync(
+                It.IsAny<Guid>(), MusicTrackStorageKey, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<Guid, string, string, CancellationToken>((_, _, destPath, _) =>
+            {
+                File.WriteAllBytes(destPath, new byte[] { 0x00, 0x01, 0x02 });
+                return Task.CompletedTask;
+            });
+
+        workspace
+            .Setup(w => w.ListFilesAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ProjectWorkspaceFile>
+            {
+                new(MusicProjectFileId, ProjectId, "music.mp3", null, "userFiles", MusicTrackStorageKey, musicMimeType, 4096, DateTime.UtcNow, null)
+            });
+
+        VideoCompileStepConfig config = new(
+            Version: 1,
+            Decision: new ExtractInputRef(ExtractInputSource.Previous),
+            AnalysisStepOrder: 1,
+            EnableMusic: true,
+            MusicTrackProjectFileId: MusicProjectFileId);
+
+        if (configOverride is not null)
+            config = configOverride(config);
+
+        string configJson = JsonSerializer.Serialize(config, ConfigOptions());
+
+        var step = new WorkflowStep
+        {
+            Id = Guid.NewGuid(),
+            StepOrder = 3,
+            StepType = StepType.VideoCompile,
+            VideoCompileConfigJson = configJson
+        };
+
+        VideoAnalyzeStepConfig analyzeConfig = new(
+            Version: 1,
+            Source: new VideoSourceRef(VideoSourceKind.PreviousStepOutput));
+        var analyzeStep = new WorkflowStep
+        {
+            Id = Guid.NewGuid(),
+            StepOrder = 1,
+            StepType = StepType.VideoAnalyze,
+            VideoAnalyzeConfigJson = JsonSerializer.Serialize(analyzeConfig, ConfigOptions())
+        };
+
+        List<StepOutputHistoryEntry> history =
+        [
+            new StepOutputHistoryEntry(0, "Render", "{}", OutputStorageKey: SourceVideoKey, ArtifactStorageKey: null),
+            new StepOutputHistoryEntry(1, "Analyze", "{}", OutputStorageKey: null, ArtifactStorageKey: AnalysisKey),
+            new StepOutputHistoryEntry(2, "StoryEditor", decisionJson, OutputStorageKey: null, ArtifactStorageKey: null)
+        ];
+
+        if (musicPlanJson is not null)
+            history.Add(new StepOutputHistoryEntry(3, "MusicSupervisor", musicPlanJson, OutputStorageKey: null, ArtifactStorageKey: null));
+
+        return new StepExecutionContext
+        {
+            Execution = new WorkflowExecution { Id = MusicExecutionId, ProjectId = ProjectId },
+            Step = step,
+            AllSteps = [analyzeStep, step],
+            AccumulatedOutput = decisionJson,
+            StepOutputHistory = history,
+            CurrentStepIndex = 2,
             IterationCount = 0,
             CorrelationId = "test",
             CancellationToken = CancellationToken.None

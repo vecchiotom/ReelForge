@@ -460,7 +460,13 @@ public class InferenceProvidersController : ControllerBase
         {
             IChatClient chatClient = _chatClientFactory.Get(provider);
             List<ChatMessage> messages = new() { new ChatMessage(ChatRole.User, "ping") };
-            ChatOptions options = new() { MaxOutputTokens = 8 };
+            // Reasoning models (e.g. Qwen3 with thinking mode on) spend output tokens on a
+            // hidden reasoning chain before emitting any visible content — a too-tight budget
+            // gets exhausted mid-thought and comes back with content: null, which used to read
+            // as success here (no emptiness check) even though nothing useful was returned. 128
+            // gives a non-reasoning model plenty of headroom for "ping" while still comfortably
+            // covering a short reasoning preamble.
+            ChatOptions options = new() { MaxOutputTokens = 128 };
 
             ChatResponse response = await chatClient.GetResponseAsync(messages, options, ct);
             stopwatch.Stop();
@@ -471,7 +477,8 @@ public class InferenceProvidersController : ControllerBase
                 preview = preview[..200];
             }
 
-            return new TestInferenceProviderResponse(true, stopwatch.ElapsedMilliseconds, null, preview);
+            bool ok = !string.IsNullOrWhiteSpace(preview);
+            return new TestInferenceProviderResponse(ok, stopwatch.ElapsedMilliseconds, ok ? null : "Provider returned an empty response.", preview);
         }
         catch (Exception ex)
         {
@@ -538,7 +545,9 @@ public class InferenceProvidersController : ControllerBase
                     new TextContent("Reply with only the word ok."),
                     new DataContent(TinyTestJpeg, "image/jpeg")
                 });
-            ChatOptions options = new() { MaxOutputTokens = 8 };
+            // See the matching comment in RunTestAsync — a reasoning model needs headroom beyond
+            // its hidden chain-of-thought before content ever appears.
+            ChatOptions options = new() { MaxOutputTokens = 128 };
 
             ChatResponse response = await chatClient.GetResponseAsync(new[] { message }, options, ct);
             stopwatch.Stop();

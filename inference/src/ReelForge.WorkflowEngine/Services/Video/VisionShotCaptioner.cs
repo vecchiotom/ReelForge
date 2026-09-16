@@ -41,13 +41,31 @@ public sealed class VisionShotCaptioner : IShotCaptioner
         IChatClient client = _chatClientFactory.Get(provider);
         byte[] jpegBytes = await File.ReadAllBytesAsync(request.KeyframePath, ct).ConfigureAwait(false);
 
+        // Phase 4 (decision #1): prime the prompt with Phase 1's own deterministic measurements —
+        // words only, never numbers the model could restate — so the vision model's reading is
+        // informed by (but not overridden by) what the analyzer already measured.
+        string measuredContextBlock = request.MeasuredContext is not null
+            ? $"""
+
+               Measured for this shot by a deterministic analyzer (do not restate these as numbers;
+               use them only to inform your reading, and say what you actually see if the image
+               contradicts them):
+               {request.MeasuredContext}.
+               """
+            : "";
+
+        string contactSheetNote = request.IsContactSheet
+            ? "\nThis image is a contact sheet of frames sampled left-to-right across one shot's " +
+              "duration — describe the shot they collectively show, not separate shots.\n"
+            : "";
+
         string prompt =
             $"""
              You are looking at a single still frame — a representative keyframe from one shot of
              a source video. Describe only what is visible in THIS frame; you have no information
              about what happens before or after it, and you must never guess, state, or imply any
              timestamp, duration, or frame number.
-
+             {contactSheetNote}{measuredContextBlock}
              Respond with a short structured description:
              - summary: one or two sentences describing the frame overall (<= {maxCaptionChars} characters)
              - subjects: the people/objects/subjects visibly present
@@ -58,6 +76,12 @@ public sealed class VisionShotCaptioner : IShotCaptioner
              - cameraAngle: your best guess at camera angle (e.g. "Eye level", "Low angle", "High angle", "Overhead")
              - onScreenText: any text visibly burned into the frame (subtitles, titles, UI text) — empty if none
              - tags: a few short free-text tags summarizing the frame
+             - timeOfDay: "Day", "Night", "GoldenHour", "Indoor", or "Unknown"
+             - lighting: how the frame is lit, in plain words (e.g. "soft window light from camera left")
+             - visualStyle: how it is graded/finished (e.g. "flat ungraded log", "warm documentary grade")
+             - framing: a composition judgment (e.g. "centered, generous headroom", "subject cropped at frame edge")
+             - technicalIssues: visible defects, e.g. "soft focus", "blown window", "visible banding",
+               "rolling shutter" — an empty list when the frame is technically clean
              """;
 
         ChatMessage message = new(
@@ -71,7 +95,7 @@ public sealed class VisionShotCaptioner : IShotCaptioner
         ChatOptions options = new()
         {
             ResponseFormat = ChatResponseFormat.ForJsonSchema<VideoShotCaption>(),
-            MaxOutputTokens = 500
+            MaxOutputTokens = 700
         };
 
         ChatResponse response = await client.GetResponseAsync(new[] { message }, options, ct).ConfigureAwait(false);
@@ -135,7 +159,12 @@ public sealed class VisionShotCaptioner : IShotCaptioner
             CameraAngle = OverlayTextSanitizer.TruncateByTextElements(parsed.CameraAngle ?? string.Empty, safeCaptionChars),
             Subjects = CapList(parsed.Subjects),
             OnScreenText = CapList(parsed.OnScreenText),
-            Tags = CapList(parsed.Tags)
+            Tags = CapList(parsed.Tags),
+            TimeOfDay = OverlayTextSanitizer.TruncateByTextElements(parsed.TimeOfDay ?? string.Empty, safeCaptionChars),
+            Lighting = OverlayTextSanitizer.TruncateByTextElements(parsed.Lighting ?? string.Empty, safeCaptionChars),
+            VisualStyle = OverlayTextSanitizer.TruncateByTextElements(parsed.VisualStyle ?? string.Empty, safeCaptionChars),
+            Framing = OverlayTextSanitizer.TruncateByTextElements(parsed.Framing ?? string.Empty, safeCaptionChars),
+            TechnicalIssues = CapList(parsed.TechnicalIssues)
         };
     }
 

@@ -87,7 +87,27 @@ public enum AgentType
     /// (Phase 3). Never emits a coordinate or a timestamp — see
     /// ReelForge.Shared.Data.OutputSchemas.MotionGraphicsPlanOutput.
     /// </summary>
-    MotionGraphicsPlanner
+    MotionGraphicsPlanner,
+    /// <summary>
+    /// LLM agent used by a StepType.ReviewLoop step in the video-editing templates
+    /// (video-derush-edit / video-derush-edit-graphics) to score the compiled edit and, when the
+    /// score is below MinScore, loop execution back to an earlier VideoStoryEditor/
+    /// MotionGraphicsPlanner step with concrete feedback. Reviews deterministic facts already
+    /// computed by VideoCompileStepExecutor (transcript sentence-boundary check, overlay frame
+    /// coverage) rather than judging code/lint quality like AgentType.ReviewAgent — see
+    /// ReelForge.Shared.Data.OutputSchemas.VideoReviewOutput and docs/video-editing.md.
+    /// </summary>
+    VideoReviewAgent,
+    /// <summary>
+    /// LLM agent that picks a single background-music track (an offered "m{n}" id, drawn from a
+    /// StepType.VideoAnalyze step's OfferMusicTracks-derived candidate list) plus enum-word
+    /// choices for intensity/ducking/fit for the video-editing pipeline's optional background
+    /// music (see docs/video-editing.md "Background music"). Never emits a dB value, level, or
+    /// timestamp - see ReelForge.Shared.Data.OutputSchemas.MusicPlanOutput. The deterministic
+    /// alternative (VideoCompileStepConfig.MusicTrackProjectFileId, set directly by the workflow
+    /// author) does not require this agent at all.
+    /// </summary>
+    MusicSupervisor
 }
 
 /// <summary>

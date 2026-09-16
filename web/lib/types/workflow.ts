@@ -212,9 +212,14 @@ export interface VideoAnalyzeExpectation {
  */
 export type VideoVisualDetail = 'None' | 'Compact' | 'Full';
 
+export type VideoVisionMode = 'Off' | 'Optional' | 'Required';
+export type VideoCaptionSelection = 'PerDuplicateGroup' | 'LongestShots' | 'EvenlySpaced';
+
 export interface VideoAnalyzeStepConfig {
   version: number;
   source: VideoSourceRef;
+  /** Multi-source analysis. A one-element list behaves identically to a single `source`. Optional — omitted for the (still overwhelmingly common) single-source case. */
+  sources?: VideoSourceRef[] | null;
   // -- silence detection --
   detectSilence: boolean;
   silenceThresholdDb: number;
@@ -244,9 +249,9 @@ export interface VideoAnalyzeStepConfig {
   stillMotionThreshold: number;
   minStillWindowMs: number;
   maxStillWindowsPerShot: number;
-  /** Opt-in, lower priority than the core grid pipeline — see docs/video-editing.md. */
+  /** Now implemented and free from the grid — defaults true. See docs/video-editing.md; under-reports on soft/gradient letterbox edges (§4.3). */
   detectLetterbox: boolean;
-  /** Opt-in, lower priority than the core grid pipeline — see docs/video-editing.md. */
+  /** One extra ffmpeg invocation per measured shot (capped by `maxSharpnessShots`) — off by default, unlike the other free Phase 1/4 dimensions. */
   detectSharpness: boolean;
   // -- Phase 1: audio loudness (reuses the WAV already extracted for transcription, or extracts it) --
   analyzeAudioLevels: boolean;
@@ -257,7 +262,39 @@ export interface VideoAnalyzeStepConfig {
   // -- Phase 1: bounded-view detail level --
   visualDetail: VideoVisualDetail;
   maxViewDuplicateGroups: number;
+  // -- Phase 4: semantic visual dimensions (D1-D4/D6 are free, derived from the same grid data) --
+  /** Gates D1-D3 (colour temperature, tone curve, saturation character). Free. */
+  analyzeColorGrading: boolean;
+  /** Gates D4 look grouping (`k{n}`). Free. */
+  detectLookGroups: boolean;
+  /** Minimum look similarity (0..1) for two shots to share a look group. */
+  lookSimilarityThreshold: number;
+  /** Caps `view.lookGroups`. */
+  maxViewLookGroups: number;
+  /** Frames combined into one contact-sheet keyframe per captioned shot (clamped 1..3 server-side). 1 = a single mid-shot still, byte-identical to the pre-Phase-4 vision path. */
+  keyframesPerShot: number;
+  /** Step-wide ceiling on sharpness measurements when `detectSharpness` is on. */
+  maxSharpnessShots: number;
   expect?: VideoAnalyzeExpectation | null;
+  // -- Phase 2: vision-LLM shot captioning (default Off) — optional so createDefaultVideoAnalyzeStepConfig need not enumerate them --
+  vision?: VideoVisionMode;
+  visionProviderId?: string | null;
+  captionSelection?: VideoCaptionSelection;
+  maxCaptionedShots?: number;
+  minCaptionShotSeconds?: number;
+  keyframeMaxWidth?: number;
+  visionTimeoutSeconds?: number;
+  maxCaptionChars?: number;
+  /** Persists each captioned shot's keyframe JPEG to storage under the video-analysis prefix. */
+  persistKeyframes?: boolean;
+  // -- Phase 3: motion-graphics overlay placement candidates --
+  emitOverlayPlacements?: boolean;
+  maxPlacementsPerShot?: number;
+  maxPlacements?: number;
+  maxTimeSlicesPerRegion?: number;
+  // -- background-music candidate offering --
+  offerMusicTracks?: boolean;
+  maxMusicTracks?: number;
 }
 
 export type VideoCompileMode = 'Reencode' | 'StreamCopy';

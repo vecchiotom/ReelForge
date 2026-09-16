@@ -334,6 +334,32 @@ public class ReviewCriterion
     public string Feedback { get; set; } = string.Empty;
 }
 
+/// <summary>
+/// Structured output for AgentType.VideoReviewAgent — the video-editing pipelines' ReviewLoop
+/// review, mirroring ReviewOutput's role for the main promo pipeline but judging the compiled
+/// EDIT rather than code/lint quality. Deliberately a separate, smaller schema rather than
+/// reusing ReviewOutput: the criteria this agent actually has evidence for (a deterministic
+/// sentence-boundary check and overlay frame-coverage numbers VideoCompileStepExecutor already
+/// computed) don't map onto ReviewOutput's narrativeClarity/visualAccuracy/timing/completeness
+/// criteria, which are meaningless for a video edit with no Remotion code to inspect.
+/// </summary>
+/// <remarks>
+/// The top-level property is deliberately named <see cref="Score"/> (serializing to "score"),
+/// not "overallScore" — ReviewLoopStepExecutor.ParseReviewScore checks "score" first, and the
+/// main pipeline's ReviewOutput.OverallScore actually serializes as "overallScore", a pre-existing
+/// mismatch that meant the main pipeline's review score silently always parsed as 0 (found while
+/// wiring this agent's own score through the same method — fixed there by also accepting
+/// "overallScore" as a fallback, but this type is named correctly from the start regardless).
+/// </remarks>
+public class VideoReviewOutput
+{
+    public int Score { get; set; }
+    public bool PassesReview { get; set; }
+    public List<string> Issues { get; set; } = new();
+    public List<string> Strengths { get; set; } = new();
+    public string Summary { get; set; } = string.Empty;
+}
+
 // ============================================================================
 // FILE PROCESSING AGENT OUTPUT SCHEMAS
 // ============================================================================
@@ -448,6 +474,29 @@ public class MotionGraphicsOverlay
 
     /// <summary>Why this overlay was chosen. Prose only.</summary>
     public string Reason { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Optional: the S3 storage key of a rendered, transparent-background motion-graphics asset
+    /// this agent produced ITSELF by actually calling <c>RenderVideoAndUploadToStorage</c> — a
+    /// real tool call that performs a real render and a real S3 upload, unlike <see cref="PlacementId"/>
+    /// which is merely echoed back from a set the model was shown. Still not trusted blindly:
+    /// <c>VideoCompileStepExecutor</c> validates this key matches the exact
+    /// <c>projects/{projectId}/outputFiles/{executionId}/...</c> prefix
+    /// <c>RenderVideoAndUploadToStorage</c> itself constructs for the CURRENT execution before
+    /// downloading or compositing anything at this key — the same prefix-validation discipline
+    /// <c>StepResultArtifactsController</c> already applies to <c>ArtifactStorageKey</c>.
+    /// </summary>
+    /// <remarks>
+    /// When non-empty, this overlay is composited via ffmpeg's <c>overlay</c> filter (the asset is
+    /// added as an extra input, scaled to the resolved placement box, and alpha-blended) INSTEAD
+    /// of the plain-text drawbox/drawtext path — <see cref="Text"/>/<see cref="Subtext"/> are
+    /// ignored for an overlay that carries a rendered asset. Empty/absent (the default) leaves
+    /// this overlay a plain text overlay exactly as before this field existed — additive, not a
+    /// replacement. An overlay is one or the other, never both: author two separate
+    /// <see cref="MotionGraphicsOverlay"/> entries (at different placements) to combine a
+    /// rendered graphic with separate caption text.
+    /// </remarks>
+    public string RenderedAssetStorageKey { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -458,6 +507,44 @@ public class MotionGraphicsOverlay
 public class MotionGraphicsPlanOutput
 {
     public List<MotionGraphicsOverlay> Overlays { get; set; } = new();
+
+    public string PlanRationale { get; set; } = string.Empty;
+}
+
+// ============================================================================
+// BACKGROUND MUSIC AGENT OUTPUT SCHEMA (see docs/video-editing.md "Background music")
+// ============================================================================
+
+/// <summary>
+/// Structured output for <c>MusicSupervisorAgent</c>. Flat, single-track, no list: one background
+/// bed per edit in v1 (no cue sheet, no per-section music). Every property is a plain string, so
+/// the same rushcut invariant <see cref="VideoEditDecisionOutput"/>/<see cref="MotionGraphicsPlanOutput"/>
+/// established holds here by construction — there is no numeric/time-bearing CLR type to even ban.
+/// </summary>
+/// <remarks>
+/// The model's only contribution is an opaque <see cref="TrackId"/> drawn from the set it was
+/// actually offered (<c>VideoAnalysisArtifact.OfferedMusicIds</c>) plus enum-word choices
+/// (<see cref="Intensity"/>/<see cref="Ducking"/>/<see cref="Fit"/>) that
+/// <c>VideoCompileStepExecutor</c> alone resolves to dB levels/ffmpeg behavior — never a dB value,
+/// a volume, a level, a percentage, or a timestamp/duration in seconds anywhere in this type. See
+/// <c>MusicPlanOutputInvariantTests</c>.
+/// </remarks>
+public class MusicPlanOutput
+{
+    /// <summary>Must be one of the ids in <c>VideoAnalysisArtifact.OfferedMusicIds</c> — never invented. Empty when no track suits the edit.</summary>
+    public string TrackId { get; set; } = string.Empty;
+
+    /// <summary>One of: Quiet | Balanced | Feature. Never a dB number — mapped to a bed level entirely server-side.</summary>
+    public string Intensity { get; set; } = string.Empty;
+
+    /// <summary>One of: Off | Light | Normal | Heavy. Never a dB number — mapped to an attenuation entirely server-side.</summary>
+    public string Ducking { get; set; } = string.Empty;
+
+    /// <summary>One of: LoopToFit | PlayOnce.</summary>
+    public string Fit { get; set; } = string.Empty;
+
+    /// <summary>Why this track/settings were chosen. Prose only.</summary>
+    public string Reason { get; set; } = string.Empty;
 
     public string PlanRationale { get; set; } = string.Empty;
 }

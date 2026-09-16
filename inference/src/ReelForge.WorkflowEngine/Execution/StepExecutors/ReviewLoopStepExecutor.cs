@@ -110,18 +110,90 @@ public class ReviewLoopStepExecutor : IStepExecutor
         };
     }
 
-    private static int ParseReviewScore(string reviewOutput)
+    /// <summary>
+    /// Internal (not private) so both the main pipeline and video-editing review outputs' scores
+    /// are directly unit-testable. Checks "score" first — the property name
+    /// <c>AgentType.VideoReviewAgent</c>'s <c>VideoReviewOutput.Score</c> serializes as — then
+    /// falls back to "overallScore", the property name the main pipeline's
+    /// <c>AgentType.ReviewAgent</c> (<c>ReviewOutput.OverallScore</c>) actually serializes as. The
+    /// fallback fixes a real pre-existing gap: this method previously only ever checked "score",
+    /// which does not exist at the root of a ReviewOutput completion, so the main pipeline's
+    /// review score silently always parsed as 0 (always below MinScore) regardless of what the
+    /// review agent actually judged — found while wiring this same method for the new
+    /// video-editing review loop, which needed to confirm the property name it should use.
+    /// </summary>
+    internal static int ParseReviewScore(string reviewOutput)
     {
         try
         {
             using JsonDocument doc = JsonDocument.Parse(reviewOutput);
-            if (doc.RootElement.TryGetProperty("score", out JsonElement scoreProp))
+            if (doc.RootElement.TryGetProperty("score", out JsonElement scoreProp) &&
+                scoreProp.ValueKind == JsonValueKind.Number)
             {
                 return scoreProp.GetInt32();
+            }
+            if (doc.RootElement.TryGetProperty("overallScore", out JsonElement overallScoreProp) &&
+                overallScoreProp.ValueKind == JsonValueKind.Number)
+            {
+                return overallScoreProp.GetInt32();
             }
         }
         catch (JsonException) { }
         return 0;
+    }
+
+    /// <summary>
+    /// Builds a short, prose feedback string from a review agent's raw JSON output — schema-
+    /// tolerant across both <c>ReviewOutput</c> ("summary" + "improvementAreas") and
+    /// <c>VideoReviewOutput</c> ("summary" + "issues") shapes, since both flow through this same
+    /// ReviewLoop machinery. Used by <c>WorkflowExecutorService</c> to seed the loop-back target
+    /// step's <see cref="Execution.StepExecutionContext.RetryFeedback"/>/<c>RetryGuidance</c> —
+    /// the same mechanism <c>AgentStepExecutor</c> already uses for schema-validation retries —
+    /// so the next attempt gets the actual critique instead of retrying blind. Returns null when
+    /// nothing usable could be extracted (malformed JSON, or no summary/issues present at all).
+    /// </summary>
+    internal static string? ExtractFeedbackSummary(string reviewOutput)
+    {
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(reviewOutput);
+            JsonElement root = doc.RootElement;
+            List<string> parts = new();
+
+            if (root.TryGetProperty("summary", out JsonElement summaryProp) &&
+                summaryProp.ValueKind == JsonValueKind.String)
+            {
+                string? summary = summaryProp.GetString();
+                if (!string.IsNullOrWhiteSpace(summary))
+                    parts.Add(summary.Trim());
+            }
+
+            List<string> issues = new();
+            foreach (string propName in new[] { "issues", "improvementAreas" })
+            {
+                if (root.TryGetProperty(propName, out JsonElement arr) && arr.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (JsonElement item in arr.EnumerateArray())
+                    {
+                        if (item.ValueKind != JsonValueKind.String)
+                            continue;
+
+                        string? s = item.GetString();
+                        if (!string.IsNullOrWhiteSpace(s))
+                            issues.Add(s.Trim());
+                    }
+                }
+            }
+
+            if (issues.Count > 0)
+                parts.Add("Issues: " + string.Join("; ", issues));
+
+            return parts.Count == 0 ? null : string.Join(" ", parts);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     private static string CreatePreview(string? value, int maxLength)

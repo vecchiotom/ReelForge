@@ -93,6 +93,11 @@ const (
 	exchangeStepComplete     = "ReelForge.Shared.IntegrationEvents:WorkflowStepCompleted"
 	exchangeStepToolCalled   = "ReelForge.Shared.IntegrationEvents:WorkflowStepToolCalled"
 	exchangeStepReasoning    = "ReelForge.Shared.IntegrationEvents:WorkflowStepReasoningCaptured"
+	// Ephemeral progress signal for long-running steps (VideoAnalyze/VideoCompile) — see
+	// WorkflowStepProgress's doc comment in ReelForge.Shared.IntegrationEvents. Relayed the same
+	// way as every other workflow event here; never persisted, so there is no corresponding DB
+	// model or migration on either side.
+	exchangeStepProgress = "ReelForge.Shared.IntegrationEvents:WorkflowStepProgress"
 
     queueName = "go-api-workflow-events"
 )
@@ -141,7 +146,7 @@ func runConsumer() error {
 	// Bind queue to each MassTransit fanout exchange. MassTransit creates these
 	// exchanges when the WorkflowEngine publishes the first event; declare them
 	// here as well so the binding is idempotent even if we start before the engine.
-	for _, exchange := range []string{exchangeExecutionRunning, exchangeCompleted, exchangeFailed, exchangeStepStarted, exchangeStepComplete, exchangeStepToolCalled, exchangeStepReasoning} {
+	for _, exchange := range []string{exchangeExecutionRunning, exchangeCompleted, exchangeFailed, exchangeStepStarted, exchangeStepComplete, exchangeStepToolCalled, exchangeStepReasoning, exchangeStepProgress} {
 		if err := ch.ExchangeDeclare(exchange, "fanout", true, false, false, false, nil); err != nil {
 			return fmt.Errorf("exchange declare %q: %w", exchange, err)
 		}
@@ -195,6 +200,8 @@ func dispatchMessage(msg amqp.Delivery) {
 		eventType = "step.tool-called"
 	case exchangeStepReasoning:
 		eventType = "step.reasoning"
+	case exchangeStepProgress:
+		eventType = "step.progress"
 	default:
 		return
 	}

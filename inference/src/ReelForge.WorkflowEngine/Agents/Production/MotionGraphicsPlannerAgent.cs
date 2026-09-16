@@ -9,14 +9,28 @@ namespace ReelForge.WorkflowEngine.Agents.Production;
 /// <summary>
 /// Plans zero or more motion-graphics overlays (lower-thirds, titles, callouts) anchored ONLY to
 /// opaque placement ids offered by a <c>StepType.VideoAnalyze</c> step (Phase 3 — see
-/// docs/video-editing.md "Motion graphics (Phase 3)").
+/// docs/video-editing.md "Motion graphics (Phase 3)"). Each overlay is either plain drawtext, or —
+/// optionally — a real Remotion-authored, transparent-background graphic this agent renders
+/// itself via the same sandbox+render pipeline <c>AuthorAgent</c> uses
+/// (<see cref="MotionGraphicsOverlay.RenderedAssetStorageKey"/>), composited by
+/// <c>VideoCompileStepExecutor</c> via ffmpeg's <c>overlay</c> filter instead of drawtext for that
+/// one entry.
 ///
 /// The rushcut invariant, extended: <see cref="MotionGraphicsPlanOutput"/> has no numeric or
 /// time-bearing property at all (guarded by <c>MotionGraphicsPlanOutputInvariantTests</c>), so
 /// this agent is physically incapable of emitting a timestamp OR a pixel coordinate — it can only
 /// choose among the opaque placement ids it was actually shown and a handful of enum-word
 /// choices (Kind/Duration/Emphasis) that <c>VideoCompileStepExecutor</c> alone resolves to
-/// concrete geometry/timing/ms values.
+/// concrete geometry/timing/ms values. Rendering a graphic asset does not weaken this: the WHERE/
+/// WHEN of an overlay still comes only from the offered placement id, never from anything this
+/// agent renders or supplies — <see cref="MotionGraphicsOverlay.RenderedAssetStorageKey"/> is
+/// re-validated against this execution's own storage-key prefix before it is trusted (see
+/// docs/video-editing.md "Motion graphics (Phase 3)").
+///
+/// Tool access mirrors <c>AuthorAgent</c>'s full sandbox+Remotion+render pipeline, minus
+/// <c>WriteProjectFile</c> (this agent renders a small overlay asset, never a whole project
+/// artifact). Unlike <c>VideoStoryEditorAgent</c>, this is NOT the minimal read-only tool set —
+/// see <c>AgentToolProvider.GetTools</c>.
 /// </summary>
 public class MotionGraphicsPlannerAgent : ReelForgeAgentBase
 {
@@ -34,8 +48,9 @@ public class MotionGraphicsPlannerAgent : ReelForgeAgentBase
         id such as "p0" or "p3", the named region it sits in (LowerThird, UpperThird,
         or CenterBand), a 0-100 "fit" score for how suitable that spot is, and a
         "text" hint ("Light" or "Dark") for which text color reads well there. You
-        decide zero or more text/graphic overlays (lower-thirds, titles, callouts) to
-        add during the final compile.
+        decide zero or more overlays (lower-thirds, titles, callouts) to add during
+        the final compile — each one either a plain text overlay, or a real designed
+        and animated graphic you render yourself with Remotion.
 
         ## Rules — hard constraints, not suggestions
 
@@ -50,32 +65,124 @@ public class MotionGraphicsPlannerAgent : ReelForgeAgentBase
           timing or geometry and are not trusted with either — a separate
           deterministic step resolves your chosen placement ids to exact positions
           and times against the full analysis artifact. Your only job is choosing
-          which placements to use and what each overlay says.
+          which placements to use and what each overlay says or shows.
         - Duration is a WORD, not a number: choose exactly one of "Short", "Medium",
           or "Hold" for how long an overlay should stay on screen. A separate
           deterministic step maps these words to actual milliseconds — you never
           supply a number yourself.
         - Emphasis is also a WORD: choose one of "Subtle", "Normal", or "Strong" for
-          how visually prominent the overlay should be.
+          how visually prominent the overlay should be (plain-text overlays only —
+          it has no effect on a rendered graphic asset).
         - Kind is one of "LowerThird", "Title", "Callout", or "Tag" — pick whichever
           best matches what the overlay is for.
-        - Keep Text short and Subtext, if used, shorter still — think broadcast
-          lower-third, not a paragraph. Prefer zero overlays over a cluttered edit:
-          only add one where it genuinely helps the viewer (introducing a speaker,
-          naming a place, calling out a key point), never as decoration on every cut.
-        - Do not reuse the same placement id twice, and do not exceed a small,
-          tasteful number of overlays for the whole edit.
+        - Prefer zero overlays over a cluttered edit: only add one where it genuinely
+          helps the viewer (introducing a speaker, naming a place, calling out a key
+          point), never as decoration on every cut. Do not reuse the same placement
+          id twice, and do not exceed a small, tasteful number of overlays for the
+          whole edit.
+        - An overlay is EITHER a plain text overlay OR a rendered graphic asset,
+          never both in the same entry. If you want a designed graphic plus separate
+          caption text, plan two overlay entries at two different placements.
+        - Only place an overlay on a shot whose transcript segment or visual caption
+          actually supports what the overlay says at that moment — e.g. only name a
+          person or topic when the transcript/caption for that placement's shot
+          genuinely introduces them right then. An overlay whose content does not
+          match what is being said or shown at that moment reads as out of sync with
+          the video, even though its on-screen timing is resolved correctly by a
+          separate deterministic step.
+        - The box your overlay is drawn/scaled into is a COMPACT ACCENT strip, not a
+          takeover: it is a fraction of the frame's height, inset from the edges —
+          never a solid band spanning a third of the screen. Prefer "Short" or
+          "Medium" duration over "Hold" unless the moment genuinely needs an overlay
+          to linger; a long, static overlay reads as stale once the narration and
+          shot have moved on.
+
+        ## Two ways to fill an overlay
+
+        **Rendered graphic asset** (preferred whenever you want the overlay to read
+        as genuinely designed): author a small Remotion composition in the sandbox,
+        render it to a transparent-background WebM, and set
+        `renderedAssetStorageKey` to the exact storage key
+        `RenderVideoAndUploadToStorage` returns. Leave `text`/`subtext` empty for
+        this overlay — they are ignored once `renderedAssetStorageKey` is set. If
+        the overlay needs to say something (a title, a name, a callout phrase), put
+        that text INSIDE the composition itself — real typography, styled with a
+        drop shadow, glow, or outline stroke for legibility — rather than painting
+        any kind of box or solid/semi-transparent panel behind it. A floating,
+        well-lit word on a transparent background reads as designed; a colored
+        rectangle behind text reads as a placeholder no matter how compact.
+        `renderedAssetStorageKey` must be the literal value a `RenderVideoAndUploadToStorage`
+        call in THIS run actually returned — never fabricated, never guessed, never
+        copied from an example, never a plain file path. A separate deterministic
+        step re-validates it against this execution's own storage prefix before
+        using it, so an invented value will simply be dropped, not trusted.
+
+        **Plain text** (a simple fallback, no sandbox needed — use it only when a
+        rendered graphic isn't worth the effort, e.g. a single short caption with no
+        real design intent): set `text` (and optionally `subtext`) and leave
+        `renderedAssetStorageKey` empty. Keep `text` short and `subtext`, if used,
+        shorter still — think broadcast lower-third, not a paragraph. A
+        deterministic step draws it over a semi-transparent box — this reads as
+        noticeably plainer than a rendered graphic, so prefer the rendered path
+        whenever the moment deserves it.
+
+        If you choose to render a graphic, use the sandbox tools in this order:
+        1. `EnsureSandbox`, then `GetSandboxStatus` or `GetSandbox` to confirm it is ready.
+        2. `SearchRemotionSkills("transparent")` and `ReadRemotionSkill` on the result
+           to confirm the current transparent-video render recipe before writing any
+           code — do not guess the flags.
+        3. `WriteSandboxFile` a small, self-contained composition (do not modify
+           `src/index.ts`; use explicit `.tsx` import extensions). Register it with
+           its own composition id. Keep it simple: one lower-third/title/callout
+           graphic, not a whole scene. The canvas must have NO opaque background
+           (fully transparent, e.g. an `<AbsoluteFill>` with no `backgroundColor`) —
+           only your graphic content should be visible, and that content itself
+           must NOT paint a solid full-width/full-height band: the box this is
+           scaled into at compile time is a deliberately compact accent strip
+           (a small fraction of the frame's height, inset from its edges), not a
+           full-screen or full-band takeover. You are not told the exact on-screen
+           pixel box (that is resolved later, server-side, from the placement), so
+           size the composition's own aspect ratio to roughly match the placement's
+           region — and skew WIDER than you might expect, since the actual box is
+           shorter than the named region itself: LowerThird/UpperThird aim for
+           roughly 8:1 to 12:1 width:height (e.g. 1600x150); CenterBand aims for
+           roughly 4:1 to 5:1 (e.g. 1200x260). It will be stretch-scaled to fit the
+           actual box at compile time, so exact pixel dimensions do not matter —
+           only the rough proportions. Keep any entrance/reveal animation brief
+           (well under half a second) so the actual message is legible for most of
+           the overlay's on-screen window — the compositor time-shifts your
+           composition's own frame 0 to land exactly at the overlay's start, so a
+           slow wind-up eats directly into the "Short"/"Medium"/"Hold" window you
+           chose, and the viewer never sees the payload.
+        4. `CheckLintAndTypeErrors`, fixing and retrying on failure (at most 3 cycles
+           before giving up on the graphic and falling back to a plain text overlay
+           or `FailWorkflow` if neither is viable).
+        5. If a package is missing, `InstallNpmPackages` with the required names.
+        6. `RunSandboxNpmScript("build")` to confirm the project bundles.
+        7. `RenderVideoAndUploadToStorage(compositionId, "<a>.webm", remotionArgs:
+           ["--image-format=png", "--pixel-format=yuva420p", "--codec=vp9"])` —
+           these exact flags are required for a real alpha-channel WebM export; a
+           `.mp4`/no-alpha render cannot be composited transparently and will look
+           wrong. Confirm this against `ReadRemotionSkill` yourself before relying on
+           it — the flags can change between Remotion versions.
+        8. `CompleteSandbox` when done.
+
+        If rendering fails and you cannot fix it within the retry budget above,
+        fall back to a plain text overlay (or drop that overlay) rather than
+        submitting a broken `renderedAssetStorageKey`.
 
         ## Tools
 
-        Use `ListProjectFiles` and `ReadProjectFile` if you need to check other
-        project context (e.g. a brief or script) before deciding. You have no
-        sandbox tools and no ability to write files or render media — you only plan.
+        Use `ListProjectFiles`, `ReadProjectFile`, `SearchProjectFiles`, and
+        `GetDeterministicContextFiles` if you need to check other project context
+        (e.g. a brief or script) before deciding. Sandbox and render tools are
+        available but OPTIONAL — only use them when you decide an overlay should be
+        a real rendered graphic rather than plain text.
 
         Output ONLY valid JSON matching the MotionGraphicsPlanOutput schema: an
         `overlays` list of {placementId, kind, text, subtext, duration, emphasis,
-        reason} entries (subtext may be empty), and a `planRationale` explaining
-        your overall approach.
+        renderedAssetStorageKey, reason} entries (subtext and renderedAssetStorageKey
+        may be empty), and a `planRationale` explaining your overall approach.
 
         If there are no placements offered, or none of them warrant an overlay,
         output an empty `overlays` list rather than inventing a placement id or

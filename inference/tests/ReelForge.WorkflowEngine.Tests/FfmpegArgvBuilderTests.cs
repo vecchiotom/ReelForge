@@ -1,4 +1,6 @@
+using System;
 using System.Globalization;
+using System.Linq;
 using FluentAssertions;
 using ReelForge.WorkflowEngine.Services.Video;
 using Xunit;
@@ -42,6 +44,7 @@ public class FfmpegArgvBuilderTests
             "-loglevel", "info",
             "-protocol_whitelist", "file",
             "-i", "/scratch/input.mp4",
+            "-vn",
             "-af", "silencedetect=noise=-34dB:d=0.5",
             "-f", "null", "-");
     }
@@ -49,13 +52,15 @@ public class FfmpegArgvBuilderTests
     [Fact]
     public void BuildShotDetectArgs_produces_the_exact_expected_token_array()
     {
-        string[] args = FfmpegArgvBuilder.BuildShotDetectArgs("/scratch/input.mp4", 0.3);
+        string[] args = FfmpegArgvBuilder.BuildShotDetectArgs("/scratch/input.mp4", 0.3, 4);
 
         args.Should().Equal(
             "-nostdin", "-hide_banner", "-y",
             "-loglevel", "info",
             "-protocol_whitelist", "file",
+            "-threads", "4",
             "-i", "/scratch/input.mp4",
+            "-an",
             "-vf", "select='gt(scene,0.3)',showinfo",
             "-f", "null", "-");
     }
@@ -104,8 +109,9 @@ public class FfmpegArgvBuilderTests
             // and ffmpeg would silently misparse the filter graph.
             string[] args = FfmpegArgvBuilder.BuildSilenceDetectArgs("/scratch/input.mp4", -34.5, 0.35);
 
-            args[9].Should().Be("-af");
-            string filterArg = args[10];
+            args[9].Should().Be("-vn");
+            args[10].Should().Be("-af");
+            string filterArg = args[11];
             filterArg.Should().Be("silencedetect=noise=-34.5dB:d=0.35");
             filterArg.Should().NotContain(",");
         }
@@ -123,10 +129,12 @@ public class FfmpegArgvBuilderTests
         {
             CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("de-DE");
 
-            string[] args = FfmpegArgvBuilder.BuildShotDetectArgs("/scratch/input.mp4", 0.42);
+            string[] args = FfmpegArgvBuilder.BuildShotDetectArgs("/scratch/input.mp4", 0.42, 4);
 
-            args[9].Should().Be("-vf");
-            string filterArg = args[10];
+            args[9].Should().Be("-i");
+            args[11].Should().Be("-an");
+            args[12].Should().Be("-vf");
+            string filterArg = args[13];
             // The filter syntax itself uses a comma as an argument separator (gt(scene,0.42)) —
             // the real assertion is that the *number* renders with a decimal point ("0.42"), not
             // a decimal comma ("0,42"), under de-DE.
@@ -195,6 +203,120 @@ public class FfmpegArgvBuilderTests
             args.Should().Contain("10.75");
             args.Should().Contain("scale='min(640,iw)':-2");
             args.Should().NotContain(a => a.Contains("10,75"));
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = original;
+        }
+    }
+
+    [Fact]
+    public void BuildSharpnessPatchArgs_produces_the_exact_expected_token_array()
+    {
+        string[] args = FfmpegArgvBuilder.BuildSharpnessPatchArgs("/scratch/input.mp4", "/scratch/sharp-s2.gray", 12.5, 200);
+
+        args.Should().Equal(
+            "-nostdin", "-hide_banner", "-y",
+            "-loglevel", "error",
+            "-protocol_whitelist", "file",
+            "-ss", "12.5",
+            "-i", "/scratch/input.mp4",
+            "-frames:v", "1",
+            "-vf", "crop=200:200:(iw-200)/2:(ih-200)/2,format=gray",
+            "-f", "rawvideo",
+            "-pix_fmt", "gray",
+            "/scratch/sharp-s2.gray");
+    }
+
+    [Fact]
+    public void BuildSharpnessPatchArgs_formats_numbers_with_invariant_culture_even_under_de_DE()
+    {
+        CultureInfo original = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("de-DE");
+
+            string[] args = FfmpegArgvBuilder.BuildSharpnessPatchArgs("/scratch/input.mp4", "/scratch/sharp.gray", 10.75, 200);
+
+            args.Should().Contain("10.75");
+            args.Should().Contain("crop=200:200:(iw-200)/2:(ih-200)/2,format=gray");
+            args.Should().NotContain(a => a.Contains("10,75"));
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = original;
+        }
+    }
+
+    [Fact]
+    public void BuildKeyframeArgs_is_unchanged_by_Phase_4()
+    {
+        // Pins the "KeyframesPerShot == 1 is byte-identical" claim — re-asserts the exact same
+        // array as BuildKeyframeArgs_places_ss_before_i_and_produces_the_exact_expected_token_array.
+        string[] args = FfmpegArgvBuilder.BuildKeyframeArgs("/scratch/input.mp4", "/scratch/keyframe-s2.jpg", 12.5, 512);
+
+        args.Should().Equal(
+            "-nostdin", "-hide_banner", "-y",
+            "-loglevel", "error",
+            "-protocol_whitelist", "file",
+            "-ss", "12.5",
+            "-i", "/scratch/input.mp4",
+            "-frames:v", "1",
+            "-vf", "scale='min(512,iw)':-2",
+            "-f", "image2",
+            "-c:v", "mjpeg",
+            "-q:v", "4",
+            "/scratch/keyframe-s2.jpg");
+    }
+
+    [Fact]
+    public void BuildContactSheetArgs_emits_one_ss_i_pair_per_frame_and_an_hstack_filter_complex()
+    {
+        string[] args = FfmpegArgvBuilder.BuildContactSheetArgs(
+            "/scratch/input.mp4", "/scratch/sheet.jpg", [1.0, 2.0, 3.0], maxWidth: 600);
+
+        args.Count(a => a == "-ss").Should().Be(3);
+        args.Count(a => a == "-i").Should().Be(3);
+        args.Should().Contain("1");
+        args.Should().Contain("2");
+        args.Should().Contain("3");
+
+        string filterComplex = args[Array.IndexOf(args, "-filter_complex") + 1];
+        filterComplex.Should().Contain("[0:v]scale=200:-2[p0]");
+        filterComplex.Should().Contain("[1:v]scale=200:-2[p1]");
+        filterComplex.Should().Contain("[2:v]scale=200:-2[p2]");
+        filterComplex.Should().Contain("[p0][p1][p2]hstack=inputs=3[out]");
+
+        args.Should().Contain("-map");
+        args.Should().Contain("[out]");
+        args.Should().Contain("/scratch/sheet.jpg");
+    }
+
+    [Fact]
+    public void BuildContactSheetArgs_divides_the_pane_width_so_the_sheet_stays_within_maxWidth()
+    {
+        string[] args = FfmpegArgvBuilder.BuildContactSheetArgs(
+            "/scratch/input.mp4", "/scratch/sheet.jpg", [1.0, 2.0], maxWidth: 100);
+
+        string filterComplex = args[Array.IndexOf(args, "-filter_complex") + 1];
+        // maxWidth/N = 50, but a pane never shrinks below 64.
+        filterComplex.Should().Contain("scale=64:-2");
+    }
+
+    [Fact]
+    public void BuildContactSheetArgs_formats_numbers_with_invariant_culture_even_under_de_DE()
+    {
+        CultureInfo original = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("de-DE");
+
+            string[] args = FfmpegArgvBuilder.BuildContactSheetArgs(
+                "/scratch/input.mp4", "/scratch/sheet.jpg", [1.5, 2.75], maxWidth: 600);
+
+            args.Should().Contain("1.5");
+            args.Should().Contain("2.75");
+            args.Should().NotContain(a => a.Contains("1,5") || a.Contains("2,75"));
         }
         finally
         {

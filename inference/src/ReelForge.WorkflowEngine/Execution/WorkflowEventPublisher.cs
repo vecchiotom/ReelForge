@@ -110,6 +110,38 @@ public class WorkflowEventPublisher : IWorkflowEventPublisher
         }, ct);
     }
 
+    public Task PublishStepProgressAsync(
+        WorkflowExecution execution,
+        WorkflowStep step,
+        WorkflowStepResult stepResult,
+        string stage,
+        int? percentComplete,
+        CancellationToken ct)
+    {
+        _logger.LogDebug(
+            "Publishing step progress event: ExecutionId={ExecutionId}, StepId={StepId}, Stage={Stage}, Percent={Percent}",
+            execution.Id,
+            step.Id,
+            stage,
+            percentComplete);
+
+        return _publishEndpoint.Publish(new WorkflowStepProgress
+        {
+            ExecutionId = execution.Id,
+            StepId = step.Id,
+            StepResultId = stepResult.Id,
+            ProjectId = execution.ProjectId,
+            WorkflowDefinitionId = execution.WorkflowDefinitionId,
+            StepOrder = step.StepOrder,
+            StepLabel = step.Label,
+            StepType = step.StepType.ToString(),
+            CorrelationId = execution.CorrelationId,
+            Stage = stage,
+            PercentComplete = percentComplete,
+            OccurredAt = DateTime.UtcNow
+        }, ct);
+    }
+
     public async Task PublishStepDiagnosticsAsync(
         WorkflowExecution execution,
         WorkflowStep step,

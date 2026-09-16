@@ -230,6 +230,85 @@ public class KeyframeSelectorTests
         selected.Should().BeEmpty();
     }
 
+    // ---------------------------------------------------------------------
+    // Phase 4 (§7.4): ChooseKeyframeSecs, and (judgment call 9) source round-robin
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public void ChooseKeyframeSecs_with_n_equal_one_returns_exactly_ChooseKeyframeSec()
+    {
+        VideoAnalysisShot shot = new("s0", 0.0, 10.0);
+
+        IReadOnlyList<double> secs = KeyframeSelector.ChooseKeyframeSecs(shot, 1);
+
+        secs.Should().Equal(KeyframeSelector.ChooseKeyframeSec(shot));
+    }
+
+    [Fact]
+    public void ChooseKeyframeSecs_with_n_equal_three_returns_quarter_half_three_quarter_points_inside_the_shot()
+    {
+        VideoAnalysisShot shot = new("s0", 0.0, 8.0);
+
+        IReadOnlyList<double> secs = KeyframeSelector.ChooseKeyframeSecs(shot, 3);
+
+        secs.Should().Equal(2.0, 4.0, 6.0);
+        secs.Should().OnlyContain(s => s >= shot.StartSec && s <= shot.EndSec);
+    }
+
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(1, 1)]
+    [InlineData(5, 3)]
+    public void ChooseKeyframeSecs_clamps_n_to_one_through_three(int requestedN, int expectedCount)
+    {
+        VideoAnalysisShot shot = new("s0", 0.0, 8.0);
+
+        IReadOnlyList<double> secs = KeyframeSelector.ChooseKeyframeSecs(shot, requestedN);
+
+        secs.Should().HaveCount(expectedCount);
+    }
+
+    [Fact]
+    public void Pass_two_fill_round_robins_across_source_clips()
+    {
+        // 2 sources x 5 shots (all equally eligible, all the same duration so pure longest-first
+        // tie-breaking wouldn't visibly round-robin) — budget 4 should take 2 from each source, not
+        // 4 from one and 0 from the other.
+        var shots = new List<VideoAnalysisShot>();
+        for (int src = 0; src < 2; src++)
+            for (int i = 0; i < 5; i++)
+                shots.Add(new VideoAnalysisShot($"s{src * 5 + i}", i, i + 2, SourceIndex: src));
+
+        IReadOnlyList<string> selected = KeyframeSelector.SelectShotsToCaption(
+            shots, duplicateGroups: null, VideoCaptionSelection.LongestShots, maxCaptionedShots: 4, minCaptionShotSeconds: 0.0);
+
+        selected.Should().HaveCount(4);
+        int fromSource0 = selected.Count(id => shots.First(s => s.Id == id).SourceIndex == 0);
+        int fromSource1 = selected.Count(id => shots.First(s => s.Id == id).SourceIndex == 1);
+        fromSource0.Should().Be(2);
+        fromSource1.Should().Be(2);
+    }
+
+    [Fact]
+    public void Single_source_selection_is_byte_identical_to_the_pre_round_robin_order()
+    {
+        // All shots SourceIndex 0 (the default) -> one round-robin "group" -> must be identical to
+        // plain longest-first, pinning judgment call 9's safety property.
+        var shots = new List<VideoAnalysisShot>
+        {
+            new("s0", 0, 3),   // 3s
+            new("s1", 3, 4),   // 1s
+            new("s2", 4, 9),   // 5s <- longest
+            new("s3", 9, 11),  // 2s
+        };
+
+        IReadOnlyList<string> selected = KeyframeSelector.SelectShotsToCaption(
+            shots, duplicateGroups: null, VideoCaptionSelection.LongestShots, maxCaptionedShots: 2, minCaptionShotSeconds: 0.0);
+
+        // Chronological order of the two longest: s2 (5s), s0 (3s).
+        selected.Should().Equal("s0", "s2");
+    }
+
     private static int ParseShotIndex(string shotId) => int.Parse(shotId[1..]);
 
     private static VideoAnalysisShotVisual MakeVisual(IReadOnlyList<VideoAnalysisStillWindow> stillWindows) => new(

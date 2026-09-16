@@ -78,7 +78,7 @@ public class WorkflowTemplateCatalogConfigDeserializationTests
         config.Vision.Should().Be(VideoVisionMode.Off);
         config.VisionProviderId.Should().BeNull();
         config.CaptionSelection.Should().Be(VideoCaptionSelection.PerDuplicateGroup);
-        config.MaxCaptionedShots.Should().Be(24);
+        config.MaxCaptionedShots.Should().Be(50);
         config.MinCaptionShotSeconds.Should().Be(1.0);
         config.KeyframeMaxWidth.Should().Be(512);
         config.VisionTimeoutSeconds.Should().Be(120);
@@ -192,6 +192,116 @@ public class WorkflowTemplateCatalogConfigDeserializationTests
         config.OverlayHoldMs.Should().Be(6000);
         config.OverlayFontColor.Should().Be("white");
         config.OverlayBoxColor.Should().Be("black@0.45");
+    }
+
+    [Fact]
+    public void The_fourth_video_derush_edit_step_is_a_ReviewLoop_looping_back_to_the_story_editor()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit", 3);
+        step.AgentType.Should().Be(AgentType.VideoReviewAgent);
+        step.StepType.Should().Be(StepType.ReviewLoop);
+        step.LoopTargetStepOrder.Should().Be(2, "must loop back to the story-editor step, not the deterministic VideoAnalyze step");
+        step.MaxIterations.Should().Be(2);
+        step.MinScore.Should().Be(7);
+        step.AgentInputContextMode.Should().Be(AgentInputContextMode.FullWorkflow);
+    }
+
+    [Fact]
+    public void The_fifth_video_derush_edit_graphics_step_is_a_ReviewLoop_looping_back_to_the_story_editor()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-graphics", 4);
+        step.AgentType.Should().Be(AgentType.VideoReviewAgent);
+        step.StepType.Should().Be(StepType.ReviewLoop);
+        step.LoopTargetStepOrder.Should().Be(2, "must loop back to the story-editor step so the story editor, motion-graphics planner, and compile all re-run");
+        step.MaxIterations.Should().Be(2);
+        step.MinScore.Should().Be(7);
+        step.AgentInputContextMode.Should().Be(AgentInputContextMode.FullWorkflow);
+    }
+
+    [Fact]
+    public void VideoAnalyze_music_step_literal_deserializes_against_the_real_config_type()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-music", 0);
+        step.StepType.Should().Be(StepType.VideoAnalyze);
+        step.VideoAnalyzeConfigJson.Should().NotBeNullOrWhiteSpace();
+
+        VideoAnalyzeStepConfig? config = JsonSerializer.Deserialize<VideoAnalyzeStepConfig>(
+            step.VideoAnalyzeConfigJson!, ConfigJsonOptions);
+
+        config.Should().NotBeNull();
+        config!.Version.Should().Be(1);
+        config.Source.Kind.Should().Be(VideoSourceKind.ProjectFile);
+        config.OfferMusicTracks.Should().BeTrue();
+
+        // Defaults not set by the literal — confirm they fall back to sane values rather than
+        // being silently nulled/zeroed by a future property-name mismatch.
+        config.MaxMusicTracks.Should().Be(20);
+    }
+
+    [Fact]
+    public void The_second_video_derush_edit_music_step_is_the_story_editor_agent()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-music", 1);
+        step.AgentType.Should().Be(AgentType.VideoStoryEditor);
+        step.StepType.Should().Be(StepType.Agent);
+    }
+
+    [Fact]
+    public void The_third_video_derush_edit_music_step_is_the_music_supervisor_agent_with_no_deterministic_config()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-music", 2);
+        step.AgentType.Should().Be(AgentType.MusicSupervisor);
+        step.StepType.Should().Be(StepType.Agent);
+        step.VideoAnalyzeConfigJson.Should().BeNull();
+        step.VideoCompileConfigJson.Should().BeNull();
+        step.ExtractConfigJson.Should().BeNull();
+        step.AgentInputContextMode.Should().Be(AgentInputContextMode.FullWorkflow);
+    }
+
+    [Fact]
+    public void VideoCompile_music_step_literal_deserializes_against_the_real_config_type()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-music", 3);
+        step.StepType.Should().Be(StepType.VideoCompile);
+        step.VideoCompileConfigJson.Should().NotBeNullOrWhiteSpace();
+
+        VideoCompileStepConfig? config = JsonSerializer.Deserialize<VideoCompileStepConfig>(
+            step.VideoCompileConfigJson!, ConfigJsonOptions);
+
+        config.Should().NotBeNull();
+        config!.Version.Should().Be(1);
+        config.Decision.From.Should().Be(ExtractInputSource.Step);
+        config.Decision.StepOrder.Should().Be(2);
+        config.AnalysisStepOrder.Should().Be(1);
+        config.EnableMusic.Should().BeTrue();
+        config.MusicPlan.Should().NotBeNull();
+        config.MusicPlan!.From.Should().Be(ExtractInputSource.Step);
+        config.MusicPlan.StepOrder.Should().Be(3);
+
+        // Untouched defaults — confirm they really landed rather than being silently
+        // nulled/zeroed by a future property-name mismatch.
+        config.MusicDucking.Should().Be(MusicDuckingMode.SpeechEnvelope);
+        config.MusicFitPolicy.Should().Be(MusicFit.LoopToFit);
+        config.MusicFadeInMs.Should().Be(1500);
+        config.MusicFadeOutMs.Should().Be(2500);
+        config.MusicBedQuietDb.Should().Be(-26);
+        config.MusicBedBalancedDb.Should().Be(-20);
+        config.MusicBedFeatureDb.Should().Be(-14);
+        config.MusicDuckLightDb.Should().Be(-6);
+        config.MusicDuckNormalDb.Should().Be(-11);
+        config.MusicDuckHeavyDb.Should().Be(-18);
+    }
+
+    [Fact]
+    public void The_fifth_video_derush_edit_music_step_is_a_ReviewLoop_looping_back_to_the_story_editor()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-music", 4);
+        step.AgentType.Should().Be(AgentType.VideoReviewAgent);
+        step.StepType.Should().Be(StepType.ReviewLoop);
+        step.LoopTargetStepOrder.Should().Be(2, "must loop back to the story-editor step so the story editor, music supervisor, and compile all re-run");
+        step.MaxIterations.Should().Be(2);
+        step.MinScore.Should().Be(7);
+        step.AgentInputContextMode.Should().Be(AgentInputContextMode.FullWorkflow);
     }
 
     [Fact]

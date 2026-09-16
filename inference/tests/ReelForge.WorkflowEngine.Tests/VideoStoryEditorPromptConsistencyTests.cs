@@ -4,6 +4,7 @@ using FluentAssertions;
 using ReelForge.Inference.Api.Data;
 using ReelForge.Shared.Data.Models;
 using ReelForge.WorkflowEngine.Agents.Production;
+using ReelForge.WorkflowEngine.Agents.Quality;
 using Xunit;
 
 namespace ReelForge.WorkflowEngine.Tests;
@@ -20,6 +21,10 @@ namespace ReelForge.WorkflowEngine.Tests;
 ///
 /// <see cref="MotionGraphicsPlannerAgent"/> (Phase 3) gets the exact same verbatim-consistency
 /// check, mirroring the same risk for its own no-timestamp/no-coordinate contract.
+/// <see cref="VideoReviewAgentImpl"/> (the video-editing templates' ReviewLoop agent) gets the
+/// same check for the same reason — a drift here would mean the fallback describes stale
+/// deterministic-evidence field names (e.g. a renamed "sentenceCheck" key) the agent never
+/// actually receives day to day.
 /// </summary>
 public class VideoStoryEditorPromptConsistencyTests
 {
@@ -33,6 +38,18 @@ public class VideoStoryEditorPromptConsistencyTests
     public void MotionGraphicsPlanner_fallback_prompt_matches_the_seeded_built_in_agent_prompt_verbatim()
     {
         AssertFallbackMatchesSeeded(typeof(MotionGraphicsPlannerAgent), AgentType.MotionGraphicsPlanner);
+    }
+
+    [Fact]
+    public void VideoReviewAgent_fallback_prompt_matches_the_seeded_built_in_agent_prompt_verbatim()
+    {
+        AssertFallbackMatchesSeeded(typeof(VideoReviewAgentImpl), AgentType.VideoReviewAgent);
+    }
+
+    [Fact]
+    public void MusicSupervisor_fallback_prompt_matches_the_seeded_built_in_agent_prompt_verbatim()
+    {
+        AssertFallbackMatchesSeeded(typeof(MusicSupervisorAgent), AgentType.MusicSupervisor);
     }
 
     private static void AssertFallbackMatchesSeeded(System.Type agentType, AgentType builtInAgentType)

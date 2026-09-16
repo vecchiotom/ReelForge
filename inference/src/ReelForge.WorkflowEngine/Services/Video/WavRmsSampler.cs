@@ -9,7 +9,14 @@ namespace ReelForge.WorkflowEngine.Services.Video;
 /// </summary>
 public static class WavRmsSampler
 {
-    public sealed record RmsWindow(double StartSec, double EndSec, double RmsDbfs, double PeakDbfs);
+    public sealed record RmsWindow(
+        double StartSec, double EndSec, double RmsDbfs, double PeakDbfs,
+        /// <summary>
+        /// Phase 4 (D5) addition — fraction of consecutive channel-interleaved samples in this
+        /// window whose sign flipped, in 0..1. Appended with a default so every pre-existing
+        /// <c>new RmsWindow(...)</c> call site keeps compiling.
+        /// </summary>
+        double ZeroCrossingRate = 0);
 
     /// <summary>dBFS floor for a silent (all-zero) window, used instead of -Infinity.</summary>
     private const double SilenceFloorDbfs = -96.0;
@@ -50,6 +57,8 @@ public static class WavRmsSampler
             double sumSquares = 0;
             int peakAbs = 0;
             long sampleCount = 0;
+            long crossings = 0;
+            int prevSign = 0;
 
             for (int f = frameStart; f < frameEnd; f++)
             {
@@ -65,6 +74,17 @@ public static class WavRmsSampler
                         peakAbs = abs;
                     }
 
+                    int sign = Math.Sign((int)sample);
+                    if (sign != 0)
+                    {
+                        if (prevSign != 0 && sign != prevSign)
+                        {
+                            crossings++;
+                        }
+
+                        prevSign = sign;
+                    }
+
                     sampleCount++;
                 }
             }
@@ -72,8 +92,9 @@ public static class WavRmsSampler
             double rms = sampleCount > 0 ? Math.Sqrt(sumSquares / sampleCount) : 0.0;
             double startSec = (double)frameStart / sampleRate;
             double endSec = (double)frameEnd / sampleRate;
+            double zcr = sampleCount > 1 ? crossings / (double)(sampleCount - 1) : 0.0;
 
-            windows.Add(new RmsWindow(startSec, endSec, ToDbfs(rms), ToDbfs(peakAbs)));
+            windows.Add(new RmsWindow(startSec, endSec, ToDbfs(rms), ToDbfs(peakAbs), zcr));
         }
 
         return windows;

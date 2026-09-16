@@ -22,7 +22,7 @@ public sealed class FfmpegShotDetector : IShotDetector
         double totalDurationSec,
         CancellationToken ct)
     {
-        string[] args = FfmpegArgvBuilder.BuildShotDetectArgs(localFilePath, sceneThreshold);
+        string[] args = FfmpegArgvBuilder.BuildShotDetectArgs(localFilePath, sceneThreshold, _options.FfmpegThreads);
         TimeSpan timeout = TimeSpan.FromSeconds(_options.AnalyzeTimeoutSeconds);
 
         VideoToolResult result = await _runner.RunFfmpegAsync(args, timeout, ct).ConfigureAwait(false);

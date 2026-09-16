@@ -76,6 +76,7 @@ services:
       - "127.0.0.1:${RABBITMQ_MGMT_PORT:-15672}:15672"
     volumes:
       - rabbitmqdata:/var/lib/rabbitmq
+      - ./rabbitmq/conf.d:/etc/rabbitmq/conf.d:ro
     healthcheck:
       test: ["CMD-SHELL", "rabbitmq-diagnostics -q check_running"]
       interval: 10s

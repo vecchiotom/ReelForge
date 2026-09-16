@@ -155,4 +155,48 @@ public class OverlayPlacementBuilderTests
         OverlayPlacementBuilder.BuildPlacements(shots, maxPerShot: 0, maxTotal: 40).Should().BeEmpty();
         OverlayPlacementBuilder.BuildPlacements(shots, maxPerShot: 2, maxTotal: 0).Should().BeEmpty();
     }
+
+    [Fact]
+    public void A_long_still_window_is_split_into_multiple_non_overlapping_time_slices_per_region()
+    {
+        // A single continuous 45s shot with one still window spanning nearly the whole thing
+        // (the exact real-world shape that produced two overlay candidates sharing one identical
+        // window before this fix) should now offer several distinct moments per region instead
+        // of the same 35.5s window reused for every candidate.
+        var regions = new[] { Region("CenterBand", 0.9), Region("UpperThird", 0.8) };
+        var visual = VisualWithRegions(regions) with
+        {
+            StillWindows = [new VideoAnalysisStillWindow(7.0, 42.5, 0.01)]
+        };
+        var shots = new List<VideoAnalysisShot> { new("s0", 0, 45.226, Visual: visual) };
+
+        IReadOnlyList<VideoAnalysisPlacement> placements =
+            OverlayPlacementBuilder.BuildPlacements(shots, maxPerShot: 2, maxTotal: 40, maxTimeSlicesPerRegion: 3);
+
+        List<VideoAnalysisPlacement> centerBandSlices = placements.Where(p => p.Region == "CenterBand").ToList();
+        centerBandSlices.Should().HaveCount(3, "a 35.5s window should split into the requested 3 slices");
+
+        // Contiguous and non-overlapping: each slice's start equals the previous slice's end.
+        for (int i = 1; i < centerBandSlices.Count; i++)
+            centerBandSlices[i].StartSec.Should().Be(centerBandSlices[i - 1].EndSec);
+
+        centerBandSlices[0].StartSec.Should().Be(7.0);
+        centerBandSlices[^1].EndSec.Should().Be(42.5);
+
+        // A different region gets its own independent set of slices covering the same window —
+        // so an agent can pick a CenterBand slice and an UpperThird slice that don't collide.
+        List<VideoAnalysisPlacement> upperThirdSlices = placements.Where(p => p.Region == "UpperThird").ToList();
+        upperThirdSlices.Should().HaveCount(3);
+    }
+
+    [Fact]
+    public void A_short_window_is_not_split_even_when_slices_are_allowed()
+    {
+        var shots = new List<VideoAnalysisShot> { ShotWithRegions("s0", 0, 10, Region("LowerThird", 0.9)) };
+
+        IReadOnlyList<VideoAnalysisPlacement> placements =
+            OverlayPlacementBuilder.BuildPlacements(shots, maxPerShot: 1, maxTotal: 40, maxTimeSlicesPerRegion: 3);
+
+        placements.Should().ContainSingle("a ~2.5s ShotMiddle window is under the 4s minimum slice width");
+    }
 }

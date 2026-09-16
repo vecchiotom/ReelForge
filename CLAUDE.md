@@ -328,7 +328,15 @@ compilation. Full design in [`docs/video-editing.md`](docs/video-editing.md); su
   degrade-before-drop discipline as `"v"`/`"a"`). The shot-id↔caption binding is never
   model-controlled — the executor always overwrites the model-returned `ShotId` with the id it
   actually requested. `VideoAnalysisArtifact.Version` stays at 2 (purely additive optional fields).
-  See `docs/video-editing.md` § "Vision captioning (Phase 2)".
+  See `docs/video-editing.md` § "Vision captioning (Phase 2)". **Phase 4** adds seven semantic
+  visual dimensions (D1-D7: colour temperature/tone/saturation, look grouping — `view.lookGroups`,
+  id namespace `k{n}`, never offered to any agent — audio character, letterbox/pillarbox, backlit
+  candidate) plus an opt-in native-resolution sharpness metric; D1-D4/D6 are free (derived from the
+  grid Phase 1 already samples) and default on, only sharpness costs a new ffmpeg call per shot and
+  stays opt-in. Also primes the Phase 2 vision prompt with Phase 1's own measured words
+  (`ShotCaptionRequest.MeasuredContext`), adds optional multi-frame contact-sheet keyframes
+  (`KeyframesPerShot`, clamped 1..3), and wires `PersistKeyframes`. `VideoAnalysisArtifact.Version`
+  stays at 2 (purely additive). See `docs/video-editing.md` § "Semantic visual dimensions (Phase 4)".
 - **`StepType.Agent` + `AgentType.VideoStoryEditor`** — an LLM decides which offered ids to KEEP
   (`VideoEditDecisionOutput`); no existing step type is duplicated for this, `AgentStepExecutor`
   already provides structured output, retry-with-feedback, and tool scoping.

@@ -54,6 +54,50 @@ public class StepExecutionContext
     public string? UserRequest { get; init; }
 
     /// <summary>
+    /// The <see cref="WorkflowStepResult"/> id for this attempt — set by
+    /// <see cref="WorkflowExecutorService"/> once the row is created (after this context is first
+    /// constructed), so it is <see cref="Guid.Empty"/> for the brief window before that. Mutable
+    /// (not <c>init</c>) for that reason.
+    /// </summary>
+    public Guid StepResultId { get; set; }
+
+    /// <summary>
+    /// Wired by <see cref="WorkflowExecutorService"/> to publish an ephemeral
+    /// <c>WorkflowStepProgress</c> event via <see cref="IWorkflowEventPublisher"/>. Null in any
+    /// context built without that wiring (e.g. a unit test constructing this directly) — callers
+    /// should always go through <see cref="ReportProgressAsync"/>, which no-ops when this is null,
+    /// rather than invoking the delegate directly.
+    /// </summary>
+    public Func<string, int?, CancellationToken, Task>? ProgressReporter { get; set; }
+
+    /// <summary>
+    /// Reports a lightweight, best-effort progress checkpoint for a long-running step (e.g.
+    /// <c>VideoAnalyze</c>/<c>VideoCompile</c>) — a short stage label, and a 0-100 percent when one
+    /// is naturally available (e.g. real ffmpeg encode progress). Never persisted, never throws
+    /// (progress reporting must never be able to fail the step it is reporting on); a no-op when
+    /// <see cref="ProgressReporter"/> was never wired.
+    /// </summary>
+    public async Task ReportProgressAsync(string stage, int? percentComplete = null)
+    {
+        if (ProgressReporter is null)
+            return;
+
+        try
+        {
+            await ProgressReporter(stage, percentComplete, CancellationToken);
+        }
+        catch (OperationCanceledException) when (CancellationToken.IsCancellationRequested)
+        {
+            // Execution is winding down anyway — swallow, same as any other best-effort signal.
+        }
+        catch
+        {
+            // Progress reporting is pure UI signal (see WorkflowStepProgress's doc comment) — a
+            // publish failure (e.g. a transient RabbitMQ hiccup) must never fail the step itself.
+        }
+    }
+
+    /// <summary>
     /// Stores retry feedback (for example schema validation errors) so the next
     /// agent attempt can self-correct based on the previous failure.
     /// </summary>

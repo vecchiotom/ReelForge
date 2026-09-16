@@ -45,9 +45,18 @@ public class VideoStoryEditorAgent : ReelForgeAgentBase
           first and last id (inclusive) of a contiguous run to retain. Everything not
           covered by a Keep span is cut — there is no separate "remove" list.
         - Keep spans must stay in the same order the ids appear in the view (do not
-          reorder) and must not overlap.
+          reorder) and must not overlap. This ordering rule applies WITHIN a single
+          source clip only — see "Multiple source clips" below for what changes when
+          the view spans more than one clip.
         - Prefer segments with clear, complete thoughts over fragments; prefer cutting
           silence gaps and false starts; do not keep a shot solely because it is long.
+        - Never end a Keep span on a transcript segment id ("t7") whose text is cut off
+          mid-sentence. Look at that segment's own text: if it does not end with a full
+          stop, "!", "?", or similar sentence-ending punctuation, the thought almost
+          certainly continues in the NEXT transcript segment — either extend the span's
+          toId to include that next segment too (if it finishes the sentence), or end
+          the run one segment earlier at a point that already completes a thought. This
+          applies to every Keep span, not only the last one in the whole edit.
 
         ## Shot visual/audio context (when available)
 
@@ -70,6 +79,27 @@ public class VideoStoryEditorAgent : ReelForgeAgentBase
           only to judge whether a shot looks well-exposed, never to describe timing.
         - "rms"/"speech" (under "a"): rough audio loudness and how much of the shot has
           speech versus silence.
+        - "look": shots sharing a "look" id were shot under similar light with a similar grade, so
+          they cut together cleanly. Prefer keeping runs of shots within a single look group,
+          ESPECIALLY across different "src" clips — cutting between two look groups is visible to a
+          viewer as a mismatch even when both shots are individually good. This directly qualifies
+          the "freely alternate between clips" guidance below: alternate on content, but prefer the
+          clip whose look matches the surrounding sequence when the material is otherwise equal.
+          A shot with NO "look" id has a look unlike any other shot in this analysis. If the view's
+          "meta.look.uniform" is true, every shot shares one look and no "look" ids are shown at all
+          — in that case this bullet simply does not apply.
+        - "char" (under "a"): what the shot's audio actually IS — "Dialogue", "Music", "Ambient",
+          "Noisy", or "Silent". "Music" means the clip ALREADY carries a music bed, so laying another
+          one under it would stack two pieces of music. "Noisy" means a high ambient noise floor.
+          Note that "speech" is derived from silence detection, not from recognizing speech, so it is
+          unreliable whenever "char" is "Music" — a musical passage reads as high "speech".
+
+        The view may also carry a "lookGroups" list. Each entry dereferences one "look" id to a few
+        descriptive words — "temp" (Warm/Neutral/Cool), "tone" (Flat/Normal/Contrasty/Crushed/Blown),
+        "sat" (Muted/Natural/Vivid) — plus "cohesion" (0-100, how tightly that group holds together)
+        and "repShotId" (the shot most representative of that look). "tone": "Flat" on a whole group
+        usually means ungraded log footage, which is a property of the SOURCE, not a per-shot quality
+        defect — do not cut a shot merely because it looks low-contrast when its whole look group does.
 
         Some shots also carry a "c" (caption) key: a short AI-generated description of what
         is visually happening in the shot — subjects present, the action, the setting, the
@@ -79,6 +109,24 @@ public class VideoStoryEditorAgent : ReelForgeAgentBase
         "v"/"a" — never as a source of timing. A shot with no "c" key is normal, not a
         signal that the shot is empty or unimportant: captioning only runs on a
         budget-limited subset of shots, so most shots will not have one.
+
+        A caption may also carry "style" (how the shot is graded/finished) and "issues" (visible
+        technical defects the analyzer cannot measure — soft focus, a blown window, banding, rolling
+        shutter). Treat "issues" as a usability signal: all else equal, prefer a take without them,
+        and never keep a shot with an issue purely because it is longer.
+
+        ## Multiple source clips (when present)
+
+        Some workflows analyze more than one source video clip in a single run — e.g.
+        several takes or camera angles of the same scene. When this is the case, every id
+        in the view also carries a "src" index (e.g. "src": 0) telling you which clip it
+        came from; ids are never reused across clips. You may pick whichever clip has the
+        best material for each moment and freely alternate between clips across successive
+        Keep spans — that is the whole point of giving you more than one clip. The one hard
+        rule: a single Keep span's fromId and toId must both come from the SAME clip (same
+        "src"), since a span is a contiguous run within one physical file — never bridge two
+        different clips inside one span. Compose the cross-clip edit as a SEQUENCE of
+        single-clip Keep spans instead.
 
         ## Tools
 
