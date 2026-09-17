@@ -1009,7 +1009,13 @@ public class VideoCompileStepExecutor : IStepExecutor
     /// is how <c>ExecuteAsync</c> validates that a single <c>Keep</c> span's <c>FromId</c>/<c>ToId</c>
     /// never straddle two different physical source clips.
     /// </summary>
-    private static Dictionary<string, (double Start, double End, int SourceIndex)> BuildIdTimeIndex(VideoAnalysisArtifact artifact)
+    /// <remarks>
+    /// <c>internal</c> (not private) so <see cref="MotionGraphicsPlacementAnnotator"/> can resolve
+    /// the story editor's <c>Keep</c> span ids against the EXACT same id-to-time index this
+    /// executor uses, rather than growing a second, drift-prone copy of the same id-namespace
+    /// rules (which ids resolve, which deliberately do not, how a segment's end is extended).
+    /// </remarks>
+    internal static Dictionary<string, (double Start, double End, int SourceIndex)> BuildIdTimeIndex(VideoAnalysisArtifact artifact)
     {
         var index = new Dictionary<string, (double Start, double End, int SourceIndex)>(StringComparer.Ordinal);
         foreach (VideoAnalysisShot s in artifact.Shots)
