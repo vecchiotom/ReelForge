@@ -2179,4 +2179,156 @@ public class VideoAnalyzeStepExecutorTests
         reported.Should().Contain(s => s.Contains("Extracting keyframes"),
             "keyframe extraction must actually report Stage.ExtractKeyframes progress, not silently eat its weight");
     }
+
+    // =======================================================================
+    // Phase 3: view.placements carries a distinguishing time window
+    //
+    // MaxTimeSlicesPerRegion splits ONE long shot's region into several candidate
+    // sub-windows. Before startSec/endSec were in the view, those candidates
+    // serialized byte-identically except for their id, so MotionGraphicsPlanner had
+    // nothing to choose on and defaulted to the first of each identical run. These
+    // tests pin the field down at the view layer (OverlayPlacementBuilderTests
+    // already covers the slicing itself).
+    // =======================================================================
+
+    /// <summary>
+    /// One long, perfectly static shot: a uniform grid means zero inter-frame motion, so the whole
+    /// shot is one still window and <c>SplitIntoTimeSlices</c> actually splits it — the exact
+    /// talking-head shape that produced the byte-identical candidates in production.
+    /// </summary>
+    private async Task<(StepExecutionResult Result, JsonDocument Artifact)> RunOneLongStaticShotWithPlacementsAsync(
+        Func<VideoAnalyzeStepConfig, VideoAnalyzeStepConfig>? extraOverride = null)
+    {
+        const double ShotSeconds = 30.0;
+
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out _, out _,
+            configOverride: cfg =>
+            {
+                VideoAnalyzeStepConfig c = cfg with
+                {
+                    DetectSilence = false, Transcription = VideoTranscriptionMode.Off,
+                    AnalyzeVisuals = true, AnalyzeAudioLevels = false, DetectNearDuplicates = false,
+                    VisualDetail = VideoVisualDetail.Full, MaxOutputChars = 24_000,
+                    EmitOverlayPlacements = true, MaxPlacementsPerShot = 1, MaxTimeSlicesPerRegion = 3
+                };
+                return extraOverride is not null ? extraOverride(c) : c;
+            });
+
+        probe.Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MediaProbeResult(ShotSeconds, 30, 1, 1920, 1080, "h264", "aac", 48000));
+        shotDetector
+            .Setup(s => s.DetectShotsAsync(It.IsAny<string>(), It.IsAny<double>(), It.IsAny<double>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync([(0.0, ShotSeconds)]);
+
+        var frameGridSampler = new Mock<IFrameGridSampler>();
+        frameGridSampler
+            .Setup(g => g.SampleAsync(
+                It.IsAny<string>(), It.IsAny<VideoScratchSpace>(), It.IsAny<double>(), It.IsAny<int>(), It.IsAny<int>(),
+                It.IsAny<double>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(BuildColoredGrid(4, 4, fps: 2.0, (60, 150, 140, 130)));
+
+        VideoAnalyzeStepExecutor executor = CreateExecutor(
+            workspace, probe, silence, shotDetector,
+            new Mock<ITranscriptionClientFactory>(), new Mock<IInferenceProviderResolver>(),
+            audioExtractor: null, frameGridSampler: frameGridSampler);
+
+        // Added AFTER CreateExecutor so this wins over its own default setup (Moq resolves
+        // overlapping setups in most-recently-defined order).
+        string? capturedArtifactJson = null;
+        workspace
+            .Setup(w => w.UploadArtifactAsync(
+                It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<CancellationToken>(), It.IsAny<string>()))
+            .Callback<Guid, string, string, string, CancellationToken, string>((_, path, _, _, _, _) =>
+                capturedArtifactJson = File.ReadAllText(path))
+            .ReturnsAsync("projects/p/agentFiles/video-analysis/e/step-1-analysis.json");
+
+        StepExecutionResult result = await executor.ExecuteAsync(context);
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        capturedArtifactJson.Should().NotBeNull();
+        return (result, JsonDocument.Parse(capturedArtifactJson!));
+    }
+
+    [Fact]
+    public async Task Placements_sharing_a_shot_and_region_are_distinguishable_by_their_time_window()
+    {
+        (StepExecutionResult result, JsonDocument artifact) = await RunOneLongStaticShotWithPlacementsAsync();
+        using JsonDocument artifactDoc = artifact;
+
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        JsonElement placements = doc.RootElement.GetProperty("view").GetProperty("placements");
+
+        List<JsonElement> all = placements.EnumerateArray().ToList();
+        all.Should().HaveCountGreaterThan(1,
+            "MaxTimeSlicesPerRegion must actually split this one long still shot into several candidates — " +
+            "otherwise this test proves nothing about telling them apart");
+
+        // Everything EXCEPT the time window is identical across these candidates: that is exactly
+        // the production shape that left the planner with nothing to choose on.
+        all.Select(p => p.GetProperty("shotId").GetString()).Distinct().Should().HaveCount(1);
+        all.Select(p => p.GetProperty("region").GetString()).Distinct().Should().HaveCount(1);
+        all.Select(p => p.GetProperty("fit").GetInt32()).Distinct().Should().HaveCount(1);
+
+        List<double> starts = all.Select(p => p.GetProperty("startSec").GetDouble()).ToList();
+        List<double> ends = all.Select(p => p.GetProperty("endSec").GetDouble()).ToList();
+
+        starts.Should().OnlyHaveUniqueItems("two candidates on the same shot+region must not be indistinguishable");
+        starts.Should().BeInAscendingOrder();
+        for (int i = 0; i < all.Count; i++)
+        {
+            ends[i].Should().BeGreaterThan(starts[i]);
+            starts[i].Should().BeGreaterThanOrEqualTo(0);
+            ends[i].Should().BeLessThanOrEqualTo(30.0);
+            if (i > 0)
+                starts[i].Should().BeGreaterThanOrEqualTo(ends[i - 1], "time slices must not overlap");
+        }
+
+        // The whole point: serializing two entries must not produce identical JSON.
+        all[0].GetRawText().Should().NotBe(all[1].GetRawText());
+    }
+
+    [Fact]
+    public async Task Placement_view_time_window_is_the_artifacts_own_window_rounded_never_an_invented_one()
+    {
+        (StepExecutionResult result, JsonDocument artifact) = await RunOneLongStaticShotWithPlacementsAsync();
+        using JsonDocument artifactDoc = artifact;
+
+        Dictionary<string, (double Start, double End)> fromArtifact = artifactDoc.RootElement
+            .GetProperty("placements")
+            .EnumerateArray()
+            .ToDictionary(
+                p => p.GetProperty("id").GetString()!,
+                p => (p.GetProperty("startSec").GetDouble(), p.GetProperty("endSec").GetDouble()));
+
+        fromArtifact.Should().NotBeEmpty();
+
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        foreach (JsonElement p in doc.RootElement.GetProperty("view").GetProperty("placements").EnumerateArray())
+        {
+            string id = p.GetProperty("id").GetString()!;
+            fromArtifact.Should().ContainKey(id);
+            (double artifactStart, double artifactEnd) = fromArtifact[id];
+
+            p.GetProperty("startSec").GetDouble().Should().Be(Math.Round(artifactStart, 2));
+            p.GetProperty("endSec").GetDouble().Should().Be(Math.Round(artifactEnd, 2));
+        }
+    }
+
+    [Fact]
+    public async Task None_detail_still_omits_placements_entirely_even_now_that_they_carry_time()
+    {
+        (StepExecutionResult result, JsonDocument artifact) = await RunOneLongStaticShotWithPlacementsAsync(
+            c => c with { VisualDetail = VideoVisualDetail.None });
+        using JsonDocument artifactDoc = artifact;
+
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        doc.RootElement.GetProperty("view").TryGetProperty("placements", out _).Should().BeFalse(
+            "adding a time window must not move placements out of the degrade-before-drop gate");
+        doc.RootElement.GetProperty("meta").GetProperty("offeredPlacementIdCount").GetInt32().Should().Be(0);
+    }
 }

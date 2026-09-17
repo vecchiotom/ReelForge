@@ -963,9 +963,32 @@ whatever detail level the view actually settled on. `VideoCompileStepExecutor.Bu
 comment there explains why — and a dedicated test proves a `Keep` span naming a `p0` id fails
 `UNKNOWN_ID` exactly like any other id that index does not contain.
 
-`view.placements` entries are deliberately small: `{id, shotId, region, fit, text}` — a
-0-100 suitability score and a `"Light"`/`"Dark"` text-color hint, never a rect or a time window
-(those are resolved server-side only, at compile time, from the full artifact).
+`view.placements` entries are deliberately small: `{id, shotId, region, startSec, endSec, fit,
+text}` (plus `src` in a multi-source run) — a 2dp-rounded source-timeline window, a 0-100
+suitability score, and a `"Light"`/`"Dark"` text-color hint, never a rect (geometry is resolved
+server-side only, at compile time, from the full artifact).
+
+`startSec`/`endSec` are **input to** the planner, not output from it, and that distinction is the
+whole no-timestamp rule: `MotionGraphicsPlanOutput` still has no time-bearing property whatsoever
+(`MotionGraphicsPlanOutputInvariantTests`), and `VideoCompileStepExecutor` still resolves an
+overlay's real window from the full artifact's own unrounded
+`VideoAnalysisPlacement.StartSec`/`EndSec` — never from the rounded numbers the view showed. The
+precedent is `view.segments`, which has exposed exactly these two field names to
+`AgentType.VideoStoryEditor` since the feature's first phase.
+
+They are there because without them the view was undecidable. `MaxTimeSlicesPerRegion` splits one
+long shot's region into several candidate sub-windows, so on a static shot (a talking-head
+interview, say) several placements serialized **byte-identically except for their id**:
+
+```json
+{"id":"p6","shotId":"s1","region":"LowerThird","fit":69,"text":"Light"}
+{"id":"p7","shotId":"s1","region":"LowerThird","fit":69,"text":"Light"}
+```
+
+The planner had no information on which to prefer one over another and defaulted to the first of
+each identical run — an arbitrary choice dressed up as an editorial one. The time window is the
+only thing that distinguishes them, and it is also what lets the planner line an overlay up with
+the `view.segments` entry (same units, same source timeline) whose content the overlay is about.
 
 ### `AgentType.MotionGraphicsPlanner` and `MotionGraphicsPlanOutput`
 
