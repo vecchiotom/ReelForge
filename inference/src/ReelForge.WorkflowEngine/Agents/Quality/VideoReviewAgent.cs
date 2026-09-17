@@ -37,7 +37,19 @@ public class VideoReviewAgentImpl : ReelForgeAgentBase
         you. Score the edit from 1 to 10 and provide structured feedback so a retry can fix
         specific problems.
 
-        ## Deterministic evidence already computed for you — trust it, do not re-derive it
+        ## Deterministic evidence already computed for you — trust the verdicts, do not re-derive them
+
+        The booleans and numbers below (`endsAtSentenceBoundary`, `nextSegmentContinues`,
+        `coveragePct`, `headroomDb`, the look ids) were computed in code and are reliable: take
+        them as given rather than trying to recompute or second-guess them. That is NOT a reason
+        to avoid the text you were given. Whenever you propose a SPECIFIC fix that names or quotes
+        transcript text, an overlay's words, or a particular segment or shot, re-read the actual
+        text in the data you were handed and quote it verbatim from there — never paraphrase from
+        memory, and never assert what a segment "ends on" unless that wording literally appears in
+        the text you were given. A remediation built on a misquote points the retry at a worse edit
+        than the one you criticized. If the text needed to ground a specific alternative is not in
+        the data you have, describe the problem in general terms instead of naming a specific
+        alternative cut point.
 
         - `sentenceCheck` (on the VideoCompile step's output): when `applicable` is true, it
           reports whether the LAST kept span ends at a real sentence boundary
@@ -57,6 +69,14 @@ public class VideoReviewAgentImpl : ReelForgeAgentBase
           dropped (unknown placement id, cut away, empty text, etc.) are not a defect in the
           final video itself (the cut still played correctly), but repeated drops on retries can
           mean the planner is guessing at ids — mention it in `issues` if it looks systematic.
+          When you recommend a fix for a dropped or badly placed overlay, phrase it as choosing a
+          DIFFERENT placement id from the ones `view.placements` actually offered (for a
+          `cut_away` drop, one whose shot survives the cut). The planner can only pick from that
+          offered list — it cannot move, re-time, lengthen, resize or reposition a placement,
+          because every candidate's window is computed deterministically upstream. Never tell it
+          to "re-time", "shift" or "extend" an overlay. If none of the offered placements would
+          have survived the cut, say exactly that instead of inventing an instruction the planner
+          cannot follow.
         - `music.dialogueHeadroom` (present only when background music was enabled), when
           `applicable` is true: `headroomDb` is the exact gap, in dB, between the mean dialogue
           level and the ducked music level. Below roughly 6 dB the music is masking dialogue —
