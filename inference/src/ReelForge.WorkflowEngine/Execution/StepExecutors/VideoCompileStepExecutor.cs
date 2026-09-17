@@ -1431,26 +1431,43 @@ public class VideoCompileStepExecutor : IStepExecutor
             }
 
             // The placement's own window already encodes WHERE (spatially/temporally) is a good
-            // moment; Duration (Short/Medium/Hold) controls HOW LONG the overlay stays up,
-            // extended from the placement's start and clamped to the owning shot's own bounds —
-            // never beyond what Phase 1 actually analyzed for that shot.
+            // moment; Duration (Short/Medium/Hold) controls HOW LONG the overlay stays up, and the
+            // owning shot's own end bounds the whole candidate window — never beyond what Phase 1
+            // actually analyzed for that shot.
             double shotEnd = shotById.TryGetValue(placement.ShotId, out VideoAnalysisShot? shot)
                 ? shot.EndSec
                 : placement.EndSec;
+
+            // ORDER MATTERS (bug fix): the FULL candidate window [placement.StartSec, shotEnd] is
+            // intersected with the kept spans FIRST, and durationMs is applied only to whatever
+            // survived. Truncating to durationMs BEFORE the intersection tested only the window's
+            // first few seconds, which can sit entirely inside a cut region even when the full
+            // window overlaps a kept span by many seconds — the overlay was then wrongly dropped as
+            // "cut_away". (Observed: placement p6, real window [0, 29.83]s, kept span [4.8, 51.4]s
+            // — 25s of genuine overlap, but only [0, 3.0]s was tested.)
             double sourceStart = placement.StartSec;
-            double sourceEnd = Math.Min(placement.StartSec + durationMs / 1000.0, shotEnd);
+            double sourceEnd = shotEnd;
 
             // Multi-source addition: a placement's window is only meaningful on ITS OWN source
             // clip's clock (placement.SourceIndex, resolved server-side from the artifact's own
             // id-space when placements were built — never trusted from the model). Passing it
             // through here is what stops a placement from one clip spuriously mapping against a
             // DIFFERENT clip's kept spans that merely happen to share overlapping numeric ranges.
-            (double Start, double End)? outputWindow = MapSourceWindowToOutput(resolvedSpans, sourceStart, sourceEnd, placement.SourceIndex);
-            if (outputWindow is null)
+            (double Start, double End)? keptWindow = MapSourceWindowToOutput(resolvedSpans, sourceStart, sourceEnd, placement.SourceIndex);
+            if (keptWindow is null)
             {
                 dropped.Add(new DroppedOverlay(overlay.PlacementId, "cut_away"));
                 continue;
             }
+
+            // The overlay goes up where the surviving intersection actually BEGINS on the output
+            // timeline and stays up for durationMs, clamped to that intersection's own end (which
+            // can itself be shorter than durationMs). Source and output time advance 1:1 inside a
+            // single kept span — MapSourceWindowToOutput only ever returns a window within ONE
+            // span — so applying the duration on the output clock is exact, not an approximation.
+            (double Start, double End) outputWindow = (
+                keptWindow.Value.Start,
+                Math.Min(keptWindow.Value.Start + durationMs / 1000.0, keptWindow.Value.End));
 
             string emphasis = overlay.Emphasis is "Subtle" or "Normal" or "Strong" ? overlay.Emphasis : "Normal";
 
@@ -1500,7 +1517,7 @@ public class VideoCompileStepExecutor : IStepExecutor
 
             resolved.Add(new ResolvedOverlay(
                 overlay.PlacementId, overlay.Kind, text, subtext, durationMs, emphasis,
-                outputWindow.Value.Start, outputWindow.Value.End, placement.Rect, placement.TextColor,
+                outputWindow.Start, outputWindow.End, placement.Rect, placement.TextColor,
                 renderedAssetLocalPath, PlacementRegion: placement.Region));
         }
 

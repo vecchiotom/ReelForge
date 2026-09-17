@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using FluentAssertions;
@@ -1385,6 +1387,193 @@ public class VideoCompileStepExecutorTests
         double coveragePct = appliedOverlays[0].GetProperty("coveragePct").GetDouble();
         coveragePct.Should().BeApproximately(7.4, 0.2);
         coveragePct.Should().BeLessThan(20.0, "a compact accent overlay must not be reported as covering a large fraction of the frame");
+    }
+
+    // ---------------------------------------------------------------------
+    // Phase 3: overlay window resolution — intersect the FULL placement window with the kept
+    // spans FIRST, then apply durationMs to whatever survived (the production "p6" defect).
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Fixture for the overlay-window-ordering tests. Kept spans (after the decision below) are
+    /// source <c>[0,5]</c> and <c>[30,60]</c>, i.e. output <c>[0,5)</c> and <c>[5,35)</c>, with one
+    /// long cut region at source <c>[5,30]</c>. Shot <c>s2</c> = <c>[20,45]</c> deliberately STARTS
+    /// inside that cut region and continues well past it — exactly the shape that produced the
+    /// production p6 drop.
+    /// </summary>
+    private static VideoAnalysisArtifact BuildOverlayWindowArtifact(params VideoAnalysisPlacement[] placements) =>
+        BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0), ("s1", 10.0, 20.0), ("s2", 20.0, 45.0), ("s3", 45.0, 60.0) },
+            segments: new[] { ("t0", 0.0, 5.0), ("t1", 5.0, 30.0), ("t2", 30.0, 60.0) },
+            offeredIds: new[] { "s0", "s1", "s2", "s3", "t0", "t1", "t2" },
+            durationSec: 60.0,
+            placements: placements);
+
+    /// <summary>Keeps t0 (source [0,5]) and t2 (source [30,60]), cutting t1 (source [5,30]).</summary>
+    private static string OverlayWindowDecisionJson() =>
+        BuildDecisionJson(("t0", "t0", "intro"), ("t2", "t2", "body"));
+
+    /// <summary>Zero padding so the resolved spans are exactly the segment times, keeping the expected output windows exact.</summary>
+    private static VideoCompileStepConfig NoPadding(VideoCompileStepConfig cfg) =>
+        cfg with { PrePaddingMs = 0, PostPaddingMs = 0 };
+
+    /// <summary>
+    /// Pulls the distinct <c>between(t,START,END)</c> windows out of a captured ffmpeg filtergraph —
+    /// the drawbox/drawtext <c>enable=</c> terms, which are the overlay's ACTUAL on-screen window on
+    /// the output timeline (see <see cref="DrawtextFilterBuilder"/>).
+    /// </summary>
+    private static List<(double Start, double End)> ExtractOverlayEnableWindows(IReadOnlyList<string> args)
+    {
+        string filterComplex = ExtractFilterComplexValue(args);
+        return Regex.Matches(filterComplex, @"between\(t,([0-9.]+),([0-9.]+)\)")
+            .Select(m => (
+                Start: double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture),
+                End: double.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture)))
+            .Distinct()
+            .ToList();
+    }
+
+    [Fact]
+    public async Task Overlay_whose_full_window_overlaps_a_kept_span_survives_even_when_its_first_duration_seconds_are_cut()
+    {
+        // Regression test for the production "p6" drop. The overlay's candidate window is
+        // [placement.StartSec, owningShot.EndSec]; durationMs only decides HOW LONG it stays up.
+        // Truncating to durationMs BEFORE intersecting with the kept spans tested only
+        // [20.0, 23.0] here — entirely inside the cut region [5,30] — so the overlay was dropped as
+        // "cut_away" despite its full window [20,45] overlapping the kept span [30,60] by 15s.
+        // (Real run: p6's window was [0, 29.83]s against a kept span of [4.8, 51.4]s — 25s of
+        // genuine overlap, of which only the first 3.0s were ever tested.)
+        var survives = new VideoAnalysisPlacement(
+            "p6", "s2", "LowerThird", new VideoAnalysisRect(0.1, 0.8, 0.6, 0.15),
+            "ShotStart", 20.0, 22.0, 0.8, "Light");
+        // Its owning shot s1 = [10,20] lies WHOLLY inside the cut region [5,30], so even the full
+        // window never overlaps a kept span — this one must still be dropped (no regression on the
+        // legitimate-drop case).
+        var legitimatelyCutAway = new VideoAnalysisPlacement(
+            "p3", "s1", "LowerThird", new VideoAnalysisRect(0.1, 0.8, 0.6, 0.15),
+            "ShotMiddle", 12.0, 14.0, 0.8, "Light");
+
+        VideoAnalysisArtifact artifact = BuildOverlayWindowArtifact(survives, legitimatelyCutAway);
+
+        string graphicsPlanJson = JsonSerializer.Serialize(new
+        {
+            overlays = new[]
+            {
+                new { placementId = "p6", kind = "LowerThird", text = "Jane Doe", subtext = "", duration = "Medium", emphasis = "Normal", reason = "intro" },
+                new { placementId = "p3", kind = "Tag", text = "Cut away", subtext = "", duration = "Medium", emphasis = "Normal", reason = "in a cut region" }
+            },
+            planRationale = "test"
+        });
+
+        StepExecutionContext context = CreateGraphicsContext(
+            artifact, OverlayWindowDecisionJson(), graphicsPlanJson,
+            out Mock<IProjectFileWorkspace> workspace, configOverride: NoPadding);
+
+        JsonElement edl = default;
+        List<string>? capturedArgs = null;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, edlCaptured: e => edl = e, ffmpegArgsCaptured: a => capturedArgs = a.ToList())
+            .ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+
+        JsonElement graphics = edl.GetProperty("graphics");
+        graphics.GetProperty("applied").GetBoolean().Should().BeTrue();
+        graphics.GetProperty("appliedOverlayCount").GetInt32().Should().Be(
+            1, "the placement whose FULL window overlaps a kept span must survive");
+        graphics.GetProperty("appliedOverlays")[0].GetProperty("placementId").GetString().Should().Be("p6");
+
+        JsonElement dropped = graphics.GetProperty("droppedOverlays");
+        dropped.GetArrayLength().Should().Be(1, "only the wholly-cut-away placement may be dropped");
+        dropped[0].GetProperty("placementId").GetString().Should().Be("p3");
+        dropped[0].GetProperty("reason").GetString().Should().Be("cut_away");
+
+        // The surviving intersection is source [30,45] -> output [5,20); the overlay goes up where
+        // that intersection BEGINS (output 5.0s) and stays up for its Medium duration (3.0s).
+        capturedArgs.Should().NotBeNull();
+        List<(double Start, double End)> windows = ExtractOverlayEnableWindows(capturedArgs!);
+        windows.Should().HaveCount(1);
+        windows[0].Start.Should().BeApproximately(5.0, 1e-6);
+        windows[0].End.Should().BeApproximately(8.0, 1e-6);
+    }
+
+    [Fact]
+    public async Task Overlay_already_starting_inside_a_kept_span_keeps_its_previous_window_unchanged()
+    {
+        // Guardrail for the fix above: for a placement whose first durationMs seconds were ALREADY
+        // inside a kept span, intersect-then-truncate must produce exactly the same window
+        // truncate-then-intersect did. Placement starts at source 31.0, inside the kept span
+        // [30,60] -> output 6.0s, + 3.0s Medium = [6,9].
+        var placement = new VideoAnalysisPlacement(
+            "p1", "s2", "LowerThird", new VideoAnalysisRect(0.1, 0.8, 0.6, 0.15),
+            "ShotMiddle", 31.0, 33.0, 0.8, "Light");
+
+        VideoAnalysisArtifact artifact = BuildOverlayWindowArtifact(placement);
+
+        string graphicsPlanJson = JsonSerializer.Serialize(new
+        {
+            overlays = new[]
+            {
+                new { placementId = "p1", kind = "LowerThird", text = "Jane Doe", subtext = "", duration = "Medium", emphasis = "Normal", reason = "intro" }
+            },
+            planRationale = "test"
+        });
+
+        StepExecutionContext context = CreateGraphicsContext(
+            artifact, OverlayWindowDecisionJson(), graphicsPlanJson,
+            out Mock<IProjectFileWorkspace> workspace, configOverride: NoPadding);
+
+        JsonElement edl = default;
+        List<string>? capturedArgs = null;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, edlCaptured: e => edl = e, ffmpegArgsCaptured: a => capturedArgs = a.ToList())
+            .ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        edl.GetProperty("graphics").GetProperty("appliedOverlayCount").GetInt32().Should().Be(1);
+        edl.GetProperty("graphics").GetProperty("droppedOverlays").GetArrayLength().Should().Be(0);
+
+        List<(double Start, double End)> windows = ExtractOverlayEnableWindows(capturedArgs!);
+        windows.Should().HaveCount(1);
+        windows[0].Start.Should().BeApproximately(6.0, 1e-6);
+        windows[0].End.Should().BeApproximately(9.0, 1e-6);
+    }
+
+    [Fact]
+    public async Task Overlay_window_is_clamped_to_the_kept_intersection_when_that_is_shorter_than_its_duration()
+    {
+        // The surviving intersection can itself be shorter than durationMs — the overlay must be
+        // clamped to it rather than running on past the cut into unrelated footage. Shot s0 =
+        // [0,10] intersected with the kept span [0,5] -> output [0,5); a Hold (6s) duration must
+        // still end at 5.0s, not 6.0s.
+        var placement = new VideoAnalysisPlacement(
+            "p0", "s0", "LowerThird", new VideoAnalysisRect(0.1, 0.8, 0.6, 0.15),
+            "ShotStart", 0.0, 2.0, 0.8, "Light");
+
+        VideoAnalysisArtifact artifact = BuildOverlayWindowArtifact(placement);
+
+        string graphicsPlanJson = JsonSerializer.Serialize(new
+        {
+            overlays = new[]
+            {
+                new { placementId = "p0", kind = "Title", text = "Hold me", subtext = "", duration = "Hold", emphasis = "Normal", reason = "long title" }
+            },
+            planRationale = "test"
+        });
+
+        StepExecutionContext context = CreateGraphicsContext(
+            artifact, OverlayWindowDecisionJson(), graphicsPlanJson,
+            out Mock<IProjectFileWorkspace> workspace, configOverride: NoPadding);
+
+        List<string>? capturedArgs = null;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, ffmpegArgsCaptured: a => capturedArgs = a.ToList()).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        List<(double Start, double End)> windows = ExtractOverlayEnableWindows(capturedArgs!);
+        windows.Should().HaveCount(1);
+        windows[0].Start.Should().BeApproximately(0.0, 1e-6);
+        windows[0].End.Should().BeApproximately(5.0, 1e-6, "the overlay must never outlive the kept portion it was mapped into");
     }
 
     // ---------------------------------------------------------------------
