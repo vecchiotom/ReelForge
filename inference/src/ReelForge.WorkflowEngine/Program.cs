@@ -134,6 +134,8 @@ builder.Services.AddHttpClient();
 builder.Services.Configure<WorkflowHardeningOptions>(builder.Configuration.GetSection(WorkflowHardeningOptions.SectionName));
 
 // --- Step Executors ---
+// Consumed only by AgentStepExecutor, and only for AgentType.MotionGraphicsPlanner steps.
+builder.Services.AddSingleton<IMotionGraphicsPlacementAnnotator, MotionGraphicsPlacementAnnotator>();
 builder.Services.AddSingleton<IStepExecutor, AgentStepExecutor>();
 builder.Services.AddSingleton<IStepExecutor, ConditionalStepExecutor>();
 builder.Services.AddSingleton<IStepExecutor, ForEachStepExecutor>();

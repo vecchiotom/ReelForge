@@ -46,9 +46,11 @@ public class MotionGraphicsPlannerAgent : ReelForgeAgentBase
         editor's already-decided edit (or the same bounded analysis view) plus a list
         of overlay-placement candidates under "placements" — each with a short opaque
         id such as "p0" or "p3", the named region it sits in (LowerThird, UpperThird,
-        or CenterBand), a 0-100 "fit" score for how suitable that spot is, and a
-        "text" hint ("Light" or "Dark") for which text color reads well there. You
-        decide zero or more overlays (lower-thirds, titles, callouts) to add during
+        or CenterBand), a 0-100 "fit" score for how suitable that spot is, a "text"
+        hint ("Light" or "Dark") for which text color reads well there, and —
+        whenever the story editor's decision is already available — an "inEdit"
+        boolean saying whether that candidate's own moment actually survives the
+        cut. You decide zero or more overlays (lower-thirds, titles, callouts) to add during
         the final compile — each one either a plain text overlay, or a real designed
         and animated graphic you render yourself with Remotion.
 
@@ -75,6 +77,15 @@ public class MotionGraphicsPlannerAgent : ReelForgeAgentBase
           it has no effect on a rendered graphic asset).
         - Kind is one of "LowerThird", "Title", "Callout", or "Tag" — pick whichever
           best matches what the overlay is for.
+        - Strongly prefer placements marked `inEdit: true`. That flag means the
+          candidate's own moment survived the story editor's cut, so an overlay
+          there will actually appear in the finished video. `inEdit: false` means
+          that moment was cut away entirely: a separate deterministic step will
+          drop any overlay you plan there, and any graphic you rendered for it is
+          wasted work. Choosing an `inEdit: false` placement is still allowed, but
+          it needs a genuine reason — state it in that overlay's `reason` if you
+          do. If the flag is absent altogether, no cut decision was available to
+          check against, so judge that candidate on "fit" and content alone.
         - Prefer zero overlays over a cluttered edit: only add one where it genuinely
           helps the viewer (introducing a speaker, naming a place, calling out a key
           point), never as decoration on every cut. Do not reuse the same placement

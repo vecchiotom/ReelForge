@@ -13,15 +13,18 @@ public class AgentStepExecutor : IStepExecutor
 {
     private readonly IAgentRegistry _agentRegistry;
     private readonly IWorkflowExecutionContextAccessor _executionContextAccessor;
+    private readonly IMotionGraphicsPlacementAnnotator _placementAnnotator;
     private readonly ILogger<AgentStepExecutor> _logger;
 
     public AgentStepExecutor(
         IAgentRegistry agentRegistry,
         IWorkflowExecutionContextAccessor executionContextAccessor,
+        IMotionGraphicsPlacementAnnotator placementAnnotator,
         ILogger<AgentStepExecutor> logger)
     {
         _agentRegistry = agentRegistry;
         _executionContextAccessor = executionContextAccessor;
+        _placementAnnotator = placementAnnotator;
         _logger = logger;
     }
 
@@ -51,6 +54,18 @@ public class AgentStepExecutor : IStepExecutor
                 ErrorDetails = $"No agent registered for type {context.Step.AgentDefinition.AgentType} and agent definition id {context.Step.AgentDefinitionId}"
             };
         }
+
+        // Narrowly scoped, agent-type-specific INPUT augmentation (the mirror image of the
+        // AgentType.AuthorAgent-specific OUTPUT validation further down): the motion-graphics
+        // planner is the one agent whose prompt contains overlay-placement candidates AND, via
+        // AgentInputContextMode.FullWorkflow, the story editor's already-made cut decision — so it
+        // is the first and only point in the pipeline where "does this placement survive the cut?"
+        // is answerable at all. Display-only: it adds an `inEdit` flag to each candidate, never
+        // removes one. A no-op for every other agent type, and internally soft-failing (see
+        // IMotionGraphicsPlacementAnnotator), so the prompt is simply un-annotated if anything
+        // about the resolution goes wrong.
+        if (context.Step.AgentDefinition.AgentType == AgentType.MotionGraphicsPlanner)
+            await _placementAnnotator.AnnotateAsync(context, context.CancellationToken);
 
         string stepInput = context.BuildAgentInput();
 

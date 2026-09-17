@@ -26,6 +26,7 @@ public record StepOutputHistoryEntry(
 public class StepExecutionContext
 {
     private readonly List<string> _retryFeedback = new();
+    private readonly Dictionary<int, string> _promptOutputOverrides = new();
 
     public required WorkflowExecution Execution { get; init; }
     public required WorkflowStep Step { get; init; }
@@ -146,6 +147,40 @@ public class StepExecutionContext
     /// </summary>
     public void RecordResolvedInput(string? value) => LastResolvedAgentInput = value;
 
+    /// <summary>
+    /// Substitutes an enriched rendering of an already-completed step's output for PROMPT-BUILDING
+    /// purposes only — <see cref="StepOutputHistory"/> itself, the persisted
+    /// <c>WorkflowStepResult.OutputJson</c> of the step being overridden, and every deterministic
+    /// consumer that resolves a step's output by <c>StepOrder</c> (e.g.
+    /// <c>VideoCompileStepExecutor</c>'s decision/plan/artifact resolution) all keep seeing the
+    /// original, unmodified output.
+    ///
+    /// <para>
+    /// Added for exactly one caller: <see cref="StepExecutors.MotionGraphicsPlacementAnnotator"/>,
+    /// which marks each <c>view.placements</c> candidate with whether it survives the story
+    /// editor's cut — information that only exists once BOTH the analyze step and the story-editor
+    /// step have completed, and therefore cannot be baked into the analyze step's own output. An
+    /// override must only ever ADD derived, server-computed context to a step's output; it is not
+    /// a mechanism for rewriting what a step actually produced.
+    /// </para>
+    /// </summary>
+    public void SetPromptOutputOverride(int stepOrder, string output)
+    {
+        if (string.IsNullOrWhiteSpace(output))
+            return;
+
+        _promptOutputOverrides[stepOrder] = output;
+    }
+
+    /// <summary>
+    /// The prompt-facing output for <paramref name="entry"/> — its override if one was installed
+    /// by <see cref="SetPromptOutputOverride"/>, otherwise its own output verbatim.
+    /// </summary>
+    private StepOutputHistoryEntry ForPrompt(StepOutputHistoryEntry entry) =>
+        _promptOutputOverrides.TryGetValue(entry.StepOrder, out string? overridden)
+            ? entry with { Output = overridden }
+            : entry;
+
     public void RecordRetryFeedback(int attemptNumber, string? reason)
     {
         if (string.IsNullOrWhiteSpace(reason))
@@ -167,6 +202,7 @@ public class StepExecutionContext
         List<StepOutputHistoryEntry> history = StepOutputHistory
             .Where(h => h.StepOrder < Step.StepOrder && !string.IsNullOrWhiteSpace(h.Output))
             .OrderBy(h => h.StepOrder)
+            .Select(ForPrompt)
             .ToList();
 
         return BuildConcatenated(history);
@@ -186,7 +222,7 @@ public class StepExecutionContext
             .Where(h => h.StepOrder < Step.StepOrder && !string.IsNullOrWhiteSpace(h.Output))
             .OrderByDescending(h => h.StepOrder)
             .FirstOrDefault();
-        return latest is null ? "[\"Begin analysis of the project.\"]" : latest.Output;
+        return latest is null ? "[\"Begin analysis of the project.\"]" : ForPrompt(latest).Output;
     }
 
     private string BuildSelectedPriorStepsInput()
@@ -199,6 +235,7 @@ public class StepExecutionContext
         List<StepOutputHistoryEntry> selected = StepOutputHistory
             .Where(h => selectedSet.Contains(h.StepOrder) && !string.IsNullOrWhiteSpace(h.Output))
             .OrderBy(h => h.StepOrder)
+            .Select(ForPrompt)
             .ToList();
 
         return BuildConcatenated(selected);
