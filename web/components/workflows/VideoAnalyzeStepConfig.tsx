@@ -2,9 +2,9 @@
 
 import { useState } from 'react';
 import {
-  Stack, Select, SegmentedControl, TextInput, NumberInput, Switch, Collapse, Button, Text, Divider, Code, Group, Paper,
+  Stack, Select, SegmentedControl, TextInput, NumberInput, Switch, Collapse, Button, Text, Divider, Code, Group, Paper, ActionIcon,
 } from '@mantine/core';
-import { IconChevronDown, IconChevronUp, IconSettings } from '@tabler/icons-react';
+import { IconChevronDown, IconChevronUp, IconSettings, IconPlus, IconTrash } from '@tabler/icons-react';
 import type {
   VideoAnalyzeStepConfig as VideoAnalyzeStepConfigValue,
   VideoSourceRef,
@@ -69,6 +69,8 @@ const SOURCE_KIND_OPTIONS: { value: VideoSourceKind; label: string }[] = [
   { value: 'ProjectFile', label: 'Uploaded project file' },
 ];
 
+const DEFAULT_SOURCE_REF: VideoSourceRef = { kind: 'PreviousStepOutput', projectFileId: null, stepOrder: null };
+
 interface VideoSourceRefPickerProps {
   value: VideoSourceRef;
   onChange: (ref: VideoSourceRef) => void;
@@ -122,6 +124,63 @@ function VideoSourceRefPicker({ value, onChange, priorStepOptions, projectId }: 
   );
 }
 
+interface VideoMultiSourceRefPickerProps {
+  value: VideoSourceRef[];
+  onChange: (refs: VideoSourceRef[]) => void;
+  priorStepOptions: { value: string; label: string }[];
+  projectId?: string;
+}
+
+/** Same as VideoSourceRefPicker, but for the plural `sources` field — one clip per row, reorderable only by position, add/remove freely. A one-element list is functionally identical to the singular `source` field on the backend. */
+function VideoMultiSourceRefPicker({ value, onChange, priorStepOptions, projectId }: VideoMultiSourceRefPickerProps) {
+  const sources = value.length > 0 ? value : [DEFAULT_SOURCE_REF];
+
+  const updateAt = (index: number, ref: VideoSourceRef) => {
+    onChange(sources.map((s, i) => (i === index ? ref : s)));
+  };
+  const removeAt = (index: number) => {
+    onChange(sources.filter((_, i) => i !== index));
+  };
+  const add = () => onChange([...sources, DEFAULT_SOURCE_REF]);
+
+  return (
+    <Stack gap="xs" onClick={(e) => e.stopPropagation()}>
+      <Text size="xs" fw={500}>Source clips ({sources.length})</Text>
+      {sources.map((ref, index) => (
+        <Paper key={index} withBorder p="xs" radius="md">
+          <Group justify="space-between" align="flex-start" wrap="nowrap" mb={4}>
+            <Text size="xs" c="dimmed" fw={600}>Clip {index + 1}</Text>
+            <ActionIcon
+              size="xs"
+              color="red"
+              variant="subtle"
+              disabled={sources.length <= 1}
+              onClick={() => removeAt(index)}
+              aria-label={`Remove clip ${index + 1}`}
+            >
+              <IconTrash size={14} />
+            </ActionIcon>
+          </Group>
+          <VideoSourceRefPicker
+            value={ref}
+            onChange={(next) => updateAt(index, next)}
+            priorStepOptions={priorStepOptions}
+            projectId={projectId}
+          />
+        </Paper>
+      ))}
+      <Button
+        size="xs"
+        variant="light"
+        leftSection={<IconPlus size={14} />}
+        onClick={add}
+      >
+        Add source clip
+      </Button>
+    </Stack>
+  );
+}
+
 interface VideoAnalyzeStepConfigProps {
   config: VideoAnalyzeStepConfigValue;
   onChange: (config: VideoAnalyzeStepConfigValue) => void;
@@ -155,26 +214,42 @@ export function VideoAnalyzeStepConfig({
 
   const patch = (updates: Partial<VideoAnalyzeStepConfigValue>) => onChange({ ...config, ...updates });
 
+  // Multi-source mode is "on" whenever the step is currently saved with the plural `sources`
+  // field (even a one-element list) rather than the singular `source` — mirrors the backend's
+  // own two-representation record exactly, so toggling never silently drops the other field.
+  const isMultiSource = !config.source;
+
+  const toggleMultiSource = (multi: boolean) => {
+    if (multi) {
+      patch({ source: undefined, sources: config.source ? [config.source] : (config.sources ?? [DEFAULT_SOURCE_REF]) });
+    } else {
+      patch({ source: config.sources?.[0] ?? DEFAULT_SOURCE_REF, sources: null });
+    }
+  };
+
   return (
     <Stack gap="md" onClick={(e) => e.stopPropagation()}>
-      {config.source ? (
-        <VideoSourceRefPicker
-          value={config.source}
-          onChange={(source) => patch({ source })}
+      <Switch
+        label="Multiple source clips"
+        description="Analyze several clips as one step, cut together in Keep-span order."
+        checked={isMultiSource}
+        onChange={(e) => toggleMultiSource(e.currentTarget.checked)}
+      />
+
+      {isMultiSource ? (
+        <VideoMultiSourceRefPicker
+          value={config.sources ?? []}
+          onChange={(sources) => patch({ sources })}
           priorStepOptions={priorStepOptions}
           projectId={projectId}
         />
       ) : (
-        <Paper withBorder p="xs" radius="md">
-          <Text size="sm" fw={600}>
-            Multi-source step ({config.sources?.length ?? 0} clips)
-          </Text>
-          <Text size="xs" c="dimmed">
-            This step analyzes multiple source clips at once. Editing multiple sources isn&apos;t
-            supported in this builder yet — configure them via the API, or delete and re-add this
-            step with a single source to edit it here.
-          </Text>
-        </Paper>
+        <VideoSourceRefPicker
+          value={config.source ?? DEFAULT_SOURCE_REF}
+          onChange={(source) => patch({ source })}
+          priorStepOptions={priorStepOptions}
+          projectId={projectId}
+        />
       )}
 
       <Divider label="Silence detection" labelPosition="left" />
