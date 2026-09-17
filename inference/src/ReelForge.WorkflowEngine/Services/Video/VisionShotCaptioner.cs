@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.Extensions.AI;
 using ReelForge.Shared.Inference;
 using ReelForge.Shared.Workflows;
+using ReelForge.WorkflowEngine.Execution.StepExecutors;
 
 namespace ReelForge.WorkflowEngine.Services.Video;
 
@@ -82,6 +83,11 @@ public sealed class VisionShotCaptioner : IShotCaptioner
              - framing: a composition judgment (e.g. "centered, generous headroom", "subject cropped at frame edge")
              - technicalIssues: visible defects, e.g. "soft focus", "blown window", "visible banding",
                "rolling shutter" — an empty list when the frame is technically clean
+
+             Respond with STRICT JSON ONLY, matching the schema exactly: double-quoted keys and
+             double-quoted string values (never single quotes, never a Python dict literal), no
+             markdown code fences (no ```), and no explanatory text before or after the JSON
+             object — the entire response must be the JSON object and nothing else.
              """;
 
         ChatMessage message = new(
@@ -101,21 +107,23 @@ public sealed class VisionShotCaptioner : IShotCaptioner
         ChatResponse response = await client.GetResponseAsync(new[] { message }, options, ct).ConfigureAwait(false);
 
         string text = response.Text ?? string.Empty;
-        VideoShotCaption? parsed;
-        try
-        {
-            parsed = JsonSerializer.Deserialize<VideoShotCaption>(text, ResponseJsonOptions);
-        }
-        catch (JsonException ex)
-        {
-            throw new InvalidOperationException(
-                $"Vision captioning for shot '{request.ShotId}' returned non-JSON or unparseable output.", ex);
-        }
+        VideoShotCaption? parsed = TryParseCaption(text, out JsonException? parseError)
+            // Fallback 1: strip any markdown fence/leading-or-trailing prose around a balanced
+            // {...} object, then retry strict parsing on just that substring.
+            ?? (RobustJsonExtractor.ExtractJsonObject(text) is { } extracted
+                ? TryParseCaption(extracted, out parseError)
+                : null)
+            // Fallback 2: the local vision model returned Python-dict-style single-quoted JSON
+            // (observed live: '{'summary': ...}' instead of '{"summary": ...}') — canonicalize
+            // quoting on the extracted-or-raw text and retry once more.
+            ?? (RobustJsonExtractor.NormalizeQuotedStrings(RobustJsonExtractor.ExtractJsonObject(text) ?? text) is { } normalized
+                ? TryParseCaption(normalized, out parseError)
+                : null);
 
         if (parsed is null)
         {
             throw new InvalidOperationException(
-                $"Vision captioning for shot '{request.ShotId}' returned no parseable structured output.");
+                $"Vision captioning for shot '{request.ShotId}' returned non-JSON or unparseable output.", parseError);
         }
 
         parsed = ApplyCaps(parsed, maxCaptionChars);
@@ -133,6 +141,29 @@ public sealed class VisionShotCaptioner : IShotCaptioner
         }
 
         return parsed;
+    }
+
+    /// <summary>
+    /// Attempts a strict <see cref="JsonSerializer"/> parse of <paramref name="text"/> into a
+    /// <see cref="VideoShotCaption"/>. Returns null (with <paramref name="error"/> set) on a
+    /// <see cref="JsonException"/> rather than throwing, so <see cref="CaptionAsync"/> can chain
+    /// several best-effort repair attempts via <c>??</c> without try/catch at every call site.
+    /// A successful parse that legitimately yields <c>null</c> (e.g. the text was the JSON literal
+    /// <c>null</c>) is treated the same as a parse failure — <paramref name="error"/> is left null
+    /// in that case since there's nothing to report beyond "no object came back".
+    /// </summary>
+    private static VideoShotCaption? TryParseCaption(string text, out JsonException? error)
+    {
+        try
+        {
+            error = null;
+            return JsonSerializer.Deserialize<VideoShotCaption>(text, ResponseJsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            error = ex;
+            return null;
+        }
     }
 
     /// <summary>

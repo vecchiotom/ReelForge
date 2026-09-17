@@ -67,6 +67,9 @@ function getEventBadgeColor(eventType: string): string {
   if (eventType === 'step.started') {
     return 'cyan';
   }
+  if (eventType === 'step.progress') {
+    return 'blue';
+  }
   if (eventType === 'step.tool-called') {
     return 'indigo';
   }
@@ -82,6 +85,7 @@ function getEventTitle(event: ExecutionStreamEvent): string {
   if (event.type === 'execution.completed') return 'Workflow completed';
   if (event.type === 'execution.failed') return 'Workflow failed';
   if (event.type === 'step.started') return 'Step started';
+  if (event.type === 'step.progress') return getPayloadString(event.payload, 'stage', 'Stage') || 'Step progress';
   if (event.type === 'step.tool-called') return 'Tool call';
   if (event.type === 'step.reasoning') return 'Model reasoning';
   return 'Step completed';
@@ -92,6 +96,7 @@ function getEventIcon(eventType: ExecutionStreamEvent['type']) {
   if (eventType === 'execution.failed') return <IconX size={12} />;
   if (eventType === 'execution.running') return <IconActivity size={12} />;
   if (eventType === 'step.started') return <IconClock size={12} />;
+  if (eventType === 'step.progress') return <IconActivity size={12} />;
   if (eventType === 'step.tool-called') return <IconTool size={12} />;
   if (eventType === 'step.reasoning') return <IconBrain size={12} />;
   return <IconPlayerPlay size={12} />;
@@ -135,6 +140,11 @@ function getEventMetadata(event: ExecutionStreamEvent): string[] {
   if (event.type === 'step.reasoning') {
     const sequence = getPayloadNumber(event.payload, 'sequence', 'Sequence');
     if (sequence > 0) metadata.push(`Reasoning #${sequence}`);
+  }
+
+  if (event.type === 'step.progress') {
+    const percent = getPayloadNumber(event.payload, 'percentComplete', 'PercentComplete');
+    if (percent > 0) metadata.push(`${Math.round(percent)}%`);
   }
 
   return metadata;
@@ -199,6 +209,11 @@ function ExecutionEventCard({ event }: { event: ExecutionStreamEvent }) {
   );
 }
 
+interface StepProgressInfo {
+  stage: string;
+  percent: number | null;
+}
+
 function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; workflowId: string; executionId: string }> }) {
   const { id: projectId, workflowId, executionId } = use(params);
 
@@ -218,7 +233,6 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
     events,
     connectionState,
     lastError,
-    lastEventAt,
     metrics,
   } = useExecutionStream({
     projectId,
@@ -227,8 +241,29 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
     enabled: streamEnabled,
   });
 
+  // Latest live stage/percent per step, from 'step.progress' events — these are ephemeral
+  // (never persisted server-side, see WorkflowStepProgress's doc comment), so this map is the
+  // ONLY source for them; a REST resync of `execution` can never carry this information.
+  // `events` is newest-first (see useExecutionStream), so the first occurrence per stepId wins.
+  const latestProgressByStepId = useMemo(() => {
+    const map = new Map<string, StepProgressInfo>();
+    for (const event of events) {
+      if (event.type !== 'step.progress') continue;
+      const stepId = getPayloadString(event.payload, 'stepId', 'StepId');
+      if (!stepId || map.has(stepId)) continue;
+      const stage = getPayloadString(event.payload, 'stage', 'Stage');
+      const percent = getPayloadNumber(event.payload, 'percentComplete', 'PercentComplete');
+      map.set(stepId, { stage, percent: percent > 0 ? percent : null });
+    }
+    return map;
+  }, [events]);
+
   // Initialize flow visualization
-  const initializeFlow = useCallback((wf: WorkflowDefinition, exec: WorkflowExecution) => {
+  const initializeFlow = useCallback((
+    wf: WorkflowDefinition,
+    exec: WorkflowExecution,
+    progressByStepId: Map<string, StepProgressInfo> = new Map(),
+  ) => {
     const newNodes: Node[] = [];
     const newEdges: Edge[] = [];
 
@@ -236,6 +271,7 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
       const stepResult = exec.stepResults.find((r) => r.workflowStepId === step.id);
       const status = stepResult?.status || 'Pending';
       const stepName = step.label || `Step ${step.stepOrder}`;
+      const liveProgress = status === 'Running' ? progressByStepId.get(step.id) : undefined;
 
       const color =
         status === 'Completed' ? 'var(--mantine-color-green-6)'
@@ -260,6 +296,15 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
                 </Badge>
               </Group>
               <Text size="xs" fw={700} mb={6} lineClamp={2}>{stepName}</Text>
+              {liveProgress && (
+                <Group gap={4} mb={6} wrap="nowrap">
+                  <Loader size={10} />
+                  <Text size="xs" c="blue.4" lineClamp={1}>
+                    {liveProgress.stage}
+                    {liveProgress.percent != null ? ` (${Math.round(liveProgress.percent)}%)` : ''}
+                  </Text>
+                </Group>
+              )}
               {stepResult && (
                 <Group gap="xs" wrap="nowrap">
                   <Badge size="xs" variant="dot" color="indigo">
@@ -361,7 +406,6 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
         ]);
         setExecution(execData);
         setWorkflow(workflowData);
-        initializeFlow(workflowData, execData);
       } catch (error) {
         console.error('Failed to fetch execution:', error);
       } finally {
@@ -369,11 +413,19 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
       }
     };
     fetchData();
-  }, [projectId, workflowId, executionId, initializeFlow]);
+  }, [projectId, workflowId, executionId]);
 
-  // Refresh execution snapshot when new stream events arrive.
+  // 'step.progress' is ephemeral (never persisted server-side — see WorkflowStepProgress's doc
+  // comment) and fires far more often than a real DB change, so a REST resync only on OTHER event
+  // types; progress ticks repaint the diagram locally via latestProgressByStepId below instead.
+  const lastNonProgressEventAt = useMemo(
+    () => events.find((event) => event.type !== 'step.progress')?.timestamp ?? null,
+    [events],
+  );
+
+  // Refresh execution snapshot when a non-progress stream event arrives.
   useEffect(() => {
-    if (!workflow || !lastEventAt) {
+    if (!workflow || !lastNonProgressEventAt) {
       return;
     }
 
@@ -381,14 +433,22 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
       try {
         const data = await getExecution(projectId, executionId);
         setExecution(data);
-        initializeFlow(workflow, data);
       } catch (error) {
         console.error('Failed to sync execution from event stream:', error);
       }
     };
 
     void syncExecution();
-  }, [lastEventAt, projectId, executionId, workflow, initializeFlow]);
+  }, [lastNonProgressEventAt, projectId, executionId, workflow]);
+
+  // Single reactive repaint of the flow diagram — runs on the initial load, every REST resync
+  // above, AND every live progress tick (cheap: local state only, no network call).
+  useEffect(() => {
+    if (!workflow || !execution) {
+      return;
+    }
+    initializeFlow(workflow, execution, latestProgressByStepId);
+  }, [workflow, execution, latestProgressByStepId, initializeFlow]);
 
   useEffect(() => {
     if (!execution || !selectedStepResult) {
@@ -534,10 +594,10 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
                     onClick={async () => {
                       try {
                         await stopExecution(projectId, workflowId, executionId);
-                        // refresh execution data immediately using root endpoint
+                        // refresh execution data immediately using root endpoint; the reactive
+                        // repaint effect picks this up automatically
                         const data = await getExecution(projectId, executionId);
                         setExecution(data);
-                        initializeFlow(workflow, data);
                       } catch (err) {
                         console.error('stop failed', err);
                       }

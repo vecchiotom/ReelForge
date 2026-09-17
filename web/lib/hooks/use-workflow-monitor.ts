@@ -48,6 +48,7 @@ function isWorkflowEventType(value: string): value is WorkflowEventType {
     || value === 'execution.failed'
     || value === 'step.started'
     || value === 'step.completed'
+    || value === 'step.progress'
     || value === 'step.tool-called'
     || value === 'step.reasoning';
 }
@@ -147,6 +148,7 @@ export function useWorkflowMonitor() {
     source.addEventListener('execution.failed', upsertEvent('execution.failed'));
     source.addEventListener('step.started', upsertEvent('step.started'));
     source.addEventListener('step.completed', upsertEvent('step.completed'));
+    source.addEventListener('step.progress', upsertEvent('step.progress'));
     source.addEventListener('step.tool-called', upsertEvent('step.tool-called'));
     source.addEventListener('step.reasoning', upsertEvent('step.reasoning'));
     source.onerror = onError;

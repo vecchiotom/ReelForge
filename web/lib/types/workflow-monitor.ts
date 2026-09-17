@@ -4,6 +4,7 @@ export type WorkflowEventType =
   | 'execution.failed'
   | 'step.started'
   | 'step.completed'
+  | 'step.progress'
   | 'step.tool-called'
   | 'step.reasoning';
 

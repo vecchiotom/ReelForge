@@ -50,4 +50,93 @@ internal static class RobustJsonExtractor
 
         return null; // unbalanced — never seen depth return to 0
     }
+
+    /// <summary>
+    /// Best-effort repair for near-miss JSON that uses single quotes as string delimiters —
+    /// observed live from a local/open vision-language model that didn't honor a JSON-schema
+    /// response format and instead emitted Python-dict-style output, e.g.
+    /// <c>{'summary': 'a frame...'}</c>. Only ever meant to be tried AFTER a strict
+    /// <see cref="System.Text.Json.JsonSerializer"/> parse of the raw text has already failed —
+    /// never applied to output that already parses, since it is a lossy best-effort transform, not
+    /// a general JSON5/relaxed parser.
+    ///
+    /// <para>
+    /// Walks the text once, treating BOTH <c>'</c> and <c>"</c> as valid string delimiters
+    /// (whichever opens a given string) and re-emitting every string canonicalized to
+    /// double-quoted JSON: a bare <c>"</c> found inside a single-quoted string is escaped (it must
+    /// be, now that <c>"</c> is the outer delimiter), an escaped delimiter (<c>\'</c> inside a
+    /// single-quoted string, or <c>\"</c> inside a double-quoted one) becomes a bare character
+    /// inside the new double-quoted string except where that character is itself <c>"</c> (which
+    /// must stay escaped), and every other backslash escape (<c>\\</c>, <c>\n</c>, <c>\uXXXX</c>,
+    /// ...) is copied through verbatim since it's already valid JSON escape syntax. Structural
+    /// characters outside any string (braces, brackets, colons, commas, numbers, literals,
+    /// whitespace) are copied through unchanged.
+    /// </para>
+    /// </summary>
+    public static string? NormalizeQuotedStrings(string raw)
+    {
+        System.Text.StringBuilder sb = new(raw.Length + 16);
+        int i = 0;
+        while (i < raw.Length)
+        {
+            char c = raw[i];
+            if (c == '\'' || c == '"')
+            {
+                char quote = c;
+                i++;
+                sb.Append('"');
+                while (true)
+                {
+                    if (i >= raw.Length) return null; // unterminated string — give up
+
+                    char sc = raw[i];
+                    if (sc == '\\' && i + 1 < raw.Length)
+                    {
+                        char next = raw[i + 1];
+                        if (next == quote)
+                        {
+                            // The escaped delimiter itself — becomes a bare character in the
+                            // new double-quoted string, except a literal double-quote must stay
+                            // escaped (it's the new delimiter).
+                            sb.Append(next == '"' ? "\\\"" : next.ToString());
+                        }
+                        else
+                        {
+                            // Any other valid JSON escape (\\, \n, \t, \uXXXX, ...) — copy the
+                            // backslash AND the character through verbatim.
+                            sb.Append(sc).Append(next);
+                        }
+                        i += 2;
+                        continue;
+                    }
+
+                    if (sc == quote)
+                    {
+                        sb.Append('"');
+                        i++;
+                        break;
+                    }
+
+                    if (sc == '"')
+                    {
+                        // A bare double-quote inside a single-quoted string must be escaped now
+                        // that the canonicalized string is itself double-quoted.
+                        sb.Append("\\\"");
+                        i++;
+                        continue;
+                    }
+
+                    sb.Append(sc);
+                    i++;
+                }
+            }
+            else
+            {
+                sb.Append(c);
+                i++;
+            }
+        }
+
+        return sb.ToString();
+    }
 }

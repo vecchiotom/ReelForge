@@ -93,7 +93,12 @@ services:
       WHISPER__INFERENCE_DEVICE: cpu
       WHISPER__COMPUTE_TYPE: int8
     ports:
-      - "127.0.0.1:${WHISPER_PORT:-9002}:8000"
+      # Published on all interfaces (not loopback-only) so the docker-internal-hostname
+      # endpoint that the SSRF guard in InferenceProvidersController rejects has a working
+      # alternative: register the provider against this host's Tailscale IP instead. speaches
+      # has no auth (api_key unset), so this does put an unauthenticated ASR API on the
+      # Tailscale network — acceptable only because that network is already private/trusted.
+      - "${WHISPER_PORT:-9002}:8000"
     volumes:
       - whisper-hf-cache:/home/ubuntu/.cache/huggingface/hub
     networks:

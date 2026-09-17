@@ -7,6 +7,7 @@ export type ExecutionStreamConnectionState = 'connecting' | 'connected' | 'recon
 export type ExecutionStreamEventType =
   | 'step.started'
   | 'step.completed'
+  | 'step.progress'
   | 'step.tool-called'
   | 'step.reasoning'
   | 'execution.running'
@@ -31,6 +32,7 @@ interface IncomingExecutionEvent {
 const STREAM_EVENT_TYPES: ExecutionStreamEventType[] = [
   'step.started',
   'step.completed',
+  'step.progress',
   'step.tool-called',
   'step.reasoning',
   'execution.running',
