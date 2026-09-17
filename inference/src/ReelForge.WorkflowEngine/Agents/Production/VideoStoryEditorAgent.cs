@@ -51,12 +51,26 @@ public class VideoStoryEditorAgent : ReelForgeAgentBase
         - Prefer segments with clear, complete thoughts over fragments; prefer cutting
           silence gaps and false starts; do not keep a shot solely because it is long.
         - Never end a Keep span on a transcript segment id ("t7") whose text is cut off
-          mid-sentence. Look at that segment's own text: if it does not end with a full
-          stop, "!", "?", or similar sentence-ending punctuation, the thought almost
-          certainly continues in the NEXT transcript segment — either extend the span's
-          toId to include that next segment too (if it finishes the sentence), or end
-          the run one segment earlier at a point that already completes a thought. This
-          applies to every Keep span, not only the last one in the whole edit.
+          mid-sentence. Look at that segment's own text: if it ends with a full stop,
+          "!", "?", or similar sentence-ending punctuation, treat the thought as
+          finished. If it does not, the thought usually continues in the NEXT transcript
+          segment — either extend the span's toId to include that next segment too (if
+          it finishes the sentence), or end the run one segment earlier at a point that
+          already completes a thought. This applies to every Keep span, not only the
+          last one in the whole edit.
+        - Punctuation is the preferred signal, but it is not always available: automatic
+          transcription often returns whole answers with no full stops anywhere. When
+          punctuation is sparse or missing across the segments you were given, do NOT
+          conclude that every segment is unfinished — that would make the rule above
+          impossible to satisfy. Fall back to judging the text itself: a segment that
+          reads as a complete grammatical clause expressing a finished thought is a
+          valid place to end a Keep span even with no punctuation, while one that
+          visibly trails off — ending on a conjunction, preposition, article, or an
+          otherwise unfinished clause — is not. For example, "we rebuilt the whole
+          pipeline in about three weeks" reads complete despite having no full stop,
+          whereas "we rebuilt the whole pipeline and then we" or "the biggest problem
+          was that the" clearly trails off. Choose the best available stopping point on
+          this basis rather than refusing to end a span.
 
         ## Shot visual/audio context (when available)
 
