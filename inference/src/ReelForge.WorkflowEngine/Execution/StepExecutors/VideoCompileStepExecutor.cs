@@ -1092,6 +1092,42 @@ public class VideoCompileStepExecutor : IStepExecutor
     }
 
     /// <summary>
+    /// Leading words that, when capitalized, signal the START of a new clause/topic rather than the
+    /// continuation of the previous one. Deliberately a short, common-case list — a cheap lexical
+    /// signal, not a discourse parser: the point is to stop the purely-temporal proximity test in
+    /// <see cref="BuildSentenceCheck"/> from calling `"But one of the big things is…"`, 0.44s after
+    /// a segment that ended on a complete sentence, a "continuation" of that sentence.
+    /// </summary>
+    private static readonly HashSet<string> NewThoughtLeadingMarkers = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Actually", "Additionally", "Also", "Alright", "And", "Anyway", "Besides", "But",
+        "Finally", "First", "However", "Meanwhile", "Moreover", "Nevertheless", "Next",
+        "Now", "Okay", "Otherwise", "Plus", "So", "Then", "Therefore", "Well", "Yet"
+    };
+
+    /// <summary>Leading quote/paren/dash characters stripped before reading a segment's first word.</summary>
+    private static readonly char[] LeadingWrapperChars = ['"', '\'', '“', '‘', '(', '[', '-', '–', '—', '…', '.'];
+
+    /// <summary>
+    /// True when <paramref name="text"/> opens with a CAPITALIZED discourse/contrast marker from
+    /// <see cref="NewThoughtLeadingMarkers"/> — ASR output capitalizes what it segmented as a new
+    /// sentence, so "But …" reads as a new thought while a lowercase "but …" reads as a clause the
+    /// previous segment was still in the middle of.
+    /// </summary>
+    internal static bool StartsWithNewThoughtMarker(string? text)
+    {
+        string trimmed = (text ?? string.Empty).TrimStart().TrimStart(LeadingWrapperChars).TrimStart();
+        if (trimmed.Length == 0 || !char.IsUpper(trimmed[0]))
+            return false;
+
+        int end = 0;
+        while (end < trimmed.Length && char.IsLetter(trimmed[end]))
+            end++;
+
+        return NewThoughtLeadingMarkers.Contains(trimmed[..end]);
+    }
+
+    /// <summary>
     /// Deterministic evidence for <c>AgentType.VideoReviewAgent</c> (see docs/video-editing.md
     /// "review loop"): whether the LAST kept span's <c>ToId</c> resolves to a transcript segment
     /// whose own text reads as a complete sentence. This is a cheap, reliable, non-LLM check —
@@ -1121,14 +1157,21 @@ public class VideoCompileStepExecutor : IStepExecutor
         bool endsAtSentenceBoundary = EndsWithSentenceTerminalPunctuation(lastSegment.Text);
 
         // A near-contiguous following segment (in the FULL artifact, not merely the offered view)
-        // is a strong signal Whisper's own segmentation split what was really one sentence in two
-        // — evidence for the review agent, not itself a correction (the compile step never trusts
-        // an id the story editor was not actually offered/did not choose).
+        // is a signal Whisper's own segmentation split what was really one sentence in two —
+        // evidence for the review agent, not itself a correction (the compile step never trusts an
+        // id the story editor was not actually offered/did not choose).
+        //
+        // Timing proximity ALONE is not enough: two consecutive, unrelated sentences in continuous
+        // speech are also typically <1s apart, so the gap test on its own reported "continues" for
+        // an edit that had in fact stopped at a perfectly good point — feeding the review agent a
+        // false "ends mid-sentence" verdict. Both a tight gap AND a next segment that does not open
+        // with a new-thought discourse marker must now agree before this claims continuation.
         bool nextSegmentContinues = false;
         if (!endsAtSentenceBoundary && idx + 1 < segments.Count)
         {
             VideoAnalysisSegment next = segments[idx + 1];
-            nextSegmentContinues = next.StartSec - lastSegment.EndSec < 1.0;
+            bool nearContiguous = next.StartSec - lastSegment.EndSec < 1.0;
+            nextSegmentContinues = nearContiguous && !StartsWithNewThoughtMarker(next.Text);
         }
 
         result["applicable"] = true;

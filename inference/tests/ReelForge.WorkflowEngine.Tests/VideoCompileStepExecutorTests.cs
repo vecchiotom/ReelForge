@@ -211,6 +211,105 @@ public class VideoCompileStepExecutorTests
         sentenceCheck.GetProperty("nextSegmentContinues").GetBoolean().Should().BeTrue();
     }
 
+    [Theory]
+    [InlineData("But one of the big things is that you know, I don't really have a fear", true)]
+    [InlineData("So anyway, that's the story.", true)]
+    [InlineData("However, the cave is deeper than it looks.", true)]
+    [InlineData("Well, I wouldn't say that.", true)]
+    [InlineData("\"But that's the whole point,\" he said.", true)]
+    [InlineData("and so beautiful at the same time.", false)]      // lowercase -> mid-clause, not a new thought
+    [InlineData("but I kept going anyway.", false)]
+    [InlineData("Butter is not a discourse marker.", false)]       // prefix match must not fire
+    [InlineData("The cave goes on for miles.", false)]
+    [InlineData("", false)]
+    [InlineData("   ", false)]
+    public void StartsWithNewThoughtMarker_matches_expected(string text, bool expected)
+    {
+        VideoCompileStepExecutor.StartsWithNewThoughtMarker(text).Should().Be(expected);
+    }
+
+    [Fact]
+    public async Task SentenceCheck_does_not_claim_continuation_when_the_next_segment_opens_a_new_thought()
+    {
+        // The real-run regression: the last kept segment is a complete thought that ASR simply left
+        // without terminal punctuation, and the next segment starts 0.44s later on a NEW topic
+        // introduced by "But". A pure timing-gap test called that a continuation and contributed to
+        // a false "ends mid-sentence" verdict from VideoReviewAgent.
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            segments: new[] { ("t0", 1.0, 4.0), ("t1", 4.44, 6.0) },
+            segmentTexts: new[]
+            {
+                "It's an underground world that is so strange and so beautiful at the same time",
+                "But one of the big things is that you know, I don't really have a fear of a lot of different things"
+            },
+            offeredIds: new[] { "s0", "t0" });
+
+        string decisionJson = BuildDecisionJson(("s0", "t0", "keep"));
+        StepExecutionContext context = CreateContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        StepExecutionResult result = await CreateExecutor(workspace).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        JsonElement sentenceCheck = doc.RootElement.GetProperty("sentenceCheck");
+        sentenceCheck.GetProperty("applicable").GetBoolean().Should().BeTrue();
+        sentenceCheck.GetProperty("endsAtSentenceBoundary").GetBoolean().Should().BeFalse();
+        sentenceCheck.GetProperty("nextSegmentContinues").GetBoolean().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SentenceCheck_still_reports_continuation_for_a_genuine_split_sentence()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            segments: new[] { ("t0", 1.0, 4.0), ("t1", 4.2, 6.0) },
+            segmentTexts: new[]
+            {
+                "It's an underground world that is so strange",
+                "in ways I could never have imagined before going down there."
+            },
+            offeredIds: new[] { "s0", "t0" });
+
+        string decisionJson = BuildDecisionJson(("s0", "t0", "keep"));
+        StepExecutionContext context = CreateContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        StepExecutionResult result = await CreateExecutor(workspace).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        JsonElement sentenceCheck = doc.RootElement.GetProperty("sentenceCheck");
+        sentenceCheck.GetProperty("endsAtSentenceBoundary").GetBoolean().Should().BeFalse();
+        sentenceCheck.GetProperty("nextSegmentContinues").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task SentenceCheck_does_not_claim_continuation_across_a_long_timing_gap()
+    {
+        // Marker-independent: the next segment reads like a clean continuation, but it starts a
+        // full 5s later — the existing timing test alone still rules continuation out.
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 20.0) },
+            segments: new[] { ("t0", 1.0, 4.0), ("t1", 9.0, 12.0) },
+            segmentTexts: new[]
+            {
+                "It's an underground world that is so strange",
+                "in ways I could never have imagined before going down there."
+            },
+            offeredIds: new[] { "s0", "t0" });
+
+        string decisionJson = BuildDecisionJson(("s0", "t0", "keep"));
+        StepExecutionContext context = CreateContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        StepExecutionResult result = await CreateExecutor(workspace).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        JsonElement sentenceCheck = doc.RootElement.GetProperty("sentenceCheck");
+        sentenceCheck.GetProperty("endsAtSentenceBoundary").GetBoolean().Should().BeFalse();
+        sentenceCheck.GetProperty("nextSegmentContinues").GetBoolean().Should().BeFalse();
+    }
+
     // ---------------------------------------------------------------------
     // Unknown id rejection
     // ---------------------------------------------------------------------
