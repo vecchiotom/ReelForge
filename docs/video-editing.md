@@ -1,10 +1,12 @@
 # Video Editing
 
 Automatic derushing and editing of real, uploaded or rendered video files — silence and shot
-detection, optional ASR transcription, an LLM editorial decision, and a frame-accurate ffmpeg cut
-— implemented as two new deterministic workflow step types plus one new built-in agent. This
-document is the reference for that feature; for the surrounding workflow engine (step types,
-executors, agents in general) see `CLAUDE.md`.
+detection, optional ASR transcription, an LLM editorial decision, and a frame-accurate ffmpeg cut,
+extended with multi-clip cutting, motion graphics, and background music — implemented as two new
+deterministic workflow step types plus four new built-in LLM agents (`VideoStoryEditor`,
+`MotionGraphicsPlanner`, `VideoReviewAgent`, `MusicSupervisor`) and one deterministic placeholder
+agent (`VideoTransform`). This document is the reference for that feature; for the surrounding
+workflow engine (step types, executors, agents in general) see `CLAUDE.md`.
 
 ---
 
@@ -14,10 +16,12 @@ executors, agents in general) see `CLAUDE.md`.
 - [The id-anchored decision contract](#the-id-anchored-decision-contract)
 - [Where artifacts live](#where-artifacts-live)
 - [Config reference](#config-reference)
+- [Multiple source clips](#multiple-source-clips)
 - [Scene/visual analysis (Phase 1)](#scenevisual-analysis-phase-1)
 - [Vision captioning (Phase 2)](#vision-captioning-phase-2)
 - [Transcription (ASR)](#transcription-asr)
 - [Motion graphics (Phase 3)](#motion-graphics-phase-3)
+- [Background music](#background-music)
 - [Semantic visual dimensions (Phase 4)](#semantic-visual-dimensions-phase-4)
 - [Security: why ffmpeg is not in the sandbox](#security-why-ffmpeg-is-not-in-the-sandbox)
 - [Explicitly not built](#explicitly-not-built)
@@ -236,7 +240,8 @@ before chunking it — wasted compute at best, a very large in-memory string at 
 | Field | Default | Notes |
 |---|---|---|
 | `Version` | — | Config schema version |
-| `Source` | — | `VideoSourceRef` — see [Picking the source video](#picking-the-source-video) |
+| `Source` | — | `VideoSourceRef` — see [Picking the source video](#picking-the-source-video). Ignored when `Sources` is non-empty |
+| `Sources` | `null` | Multi-source addition — `IReadOnlyList<VideoSourceRef>`. When non-empty, the AUTHORITATIVE list of source clips analyzed into ONE merged artifact; `null`/empty (default) falls back to treating `[Source]` as a one-element list — see [Multiple source clips](#multiple-source-clips) |
 | `DetectSilence` | `true` | ffmpeg `silencedetect` |
 | `SilenceThresholdDb` | `-34.0` | |
 | `MinSilenceMs` | `350` | |
@@ -284,7 +289,10 @@ before chunking it — wasted compute at best, a very large in-memory string at 
 | `EmitOverlayPlacements` | `false` | Phase 3: derives deterministic overlay-placement candidates (`view.placements`) from each shot's Phase 1 region data — see [Motion graphics (Phase 3)](#motion-graphics-phase-3) |
 | `MaxPlacementsPerShot` | `2` | Top-N regions (by `Suitability`) offered per shot |
 | `MaxPlacements` | `40` | Hard cap on placements across the whole artifact; lowest-suitability candidates dropped first |
+| `MaxTimeSlicesPerRegion` | `3` | When a region's chosen time window is long enough to hold more than one distinct overlay moment, split it into up to this many non-overlapping, evenly-spaced sub-windows instead of offering every overlay the same window — see [Motion graphics (Phase 3)](#motion-graphics-phase-3) |
 | `MaxSharpnessShots` | `24` | Phase 4: step-wide ceiling on sharpness measurements when `DetectSharpness` is on — genuinely step-wide like `MaxCaptionedShots`, not per source. Costs one extra ffmpeg invocation per measured shot |
+| `OfferMusicTracks` | `false` | Enumerates every `audio/*` project file as an `m{n}` music-track candidate (`view.musicTracks`) for a downstream `AgentType.MusicSupervisor` step — project-level, not per-source. See [Background music](#background-music) |
+| `MaxMusicTracks` | `20` | Caps `view.musicTracks` |
 | `Expect` | `null` | Optional structural checks (`MinShots`, `MinTranscriptSegments`, `MaxSilenceRatio`, `MinShotsWithVisuals`) |
 
 ### `VideoCompileStepConfig`
@@ -312,9 +320,23 @@ before chunking it — wasted compute at best, a very large in-memory string at 
 | `OverlayShortMs` / `OverlayMediumMs` / `OverlayHoldMs` | `1500` / `3000` / `6000` | Milliseconds an overlay stays on screen, keyed by the model's `Duration` word (`Short`/`Medium`/`Hold`) |
 | `OverlayFadeMs` | `300` | Fade-in/fade-out duration at each end of an overlay's on-screen window |
 | `OverlayFontSizePct` | `5` | Percent of frame height; clamped `2..12` at execution time |
+| `OverlayBoxHeightPct` | `16` | Percent of FRAME height the drawn overlay box (drawbox/drawtext background, or the box a rendered-asset overlay is stretch-scaled into) occupies — a compact accent strip, not the named safe-zone band's own height. Clamped `6..40`, never exceeding the band's own height |
+| `OverlayBoxWidthPct` | `82` | Percent of the named band's own WIDTH the drawn overlay box occupies, centered. Clamped `30..100` |
 | `OverlayFontColor` | `"white"` | Allowlisted (`white`/`black`/`yellow`/`#RRGGBB`) — reaches ffmpeg's filter string, so validated like `VideoCodec` |
 | `OverlayBoxColor` | `"black@0.45"` | Allowlisted (`black@0.45`, `black@0.6`, `white@0.4`, `none`) |
 | `MaxOverlayTextChars` / `MaxOverlaySubtextChars` | `80` / `60` | Sanitized-text truncation budget (`OverlayTextSanitizer`) |
+| `MusicPlan` | `null` | Background music: `ExtractInputRef` (`Previous`/`Step` only) — which step's resolved `MusicPlanOutput` to apply. `null` = no plan looked up (deterministic `MusicTrackProjectFileId` path, or no music, is used instead). See [Background music](#background-music) |
+| `MusicTrackProjectFileId` | `null` | A specific `audio/*` project file to use as the music track — the deterministic path (no agent required), and also the fallback when `MusicPlan` is unresolvable/invalid or names an unoffered track id |
+| `EnableMusic` | `false` | Applies the resolved music track during the same encode. `false` (default) is byte-identical to the pre-music compile path. Requires `Mode = Reencode` and `AudioCodec != "copy"` |
+| `MusicDucking` | `SpeechEnvelope` | `Off` / `SpeechEnvelope` — `SpeechEnvelope` lifts the music during non-speech windows via a deterministic keyframed `volume` envelope; `Off` is a constant ducked bed throughout |
+| `MusicFitPolicy` | `LoopToFit` | `LoopToFit` (loops via `-stream_loop -1` to fill the whole edit, then trims to its exact length) / `PlayOnce` (plays once, trimmed to its own length if shorter than the edit) |
+| `MusicFadeInMs` / `MusicFadeOutMs` | `1500` / `2500` | Fade duration at the start/end of the music track's own play window |
+| `MusicBedQuietDb` / `MusicBedBalancedDb` / `MusicBedFeatureDb` | `-26` / `-20` / `-14` | Bed level (dBFS), keyed by the model's `Intensity` word (`Quiet`/`Balanced`/`Feature`). Clamped `[-40, -6]` |
+| `MusicDuckLightDb` / `MusicDuckNormalDb` / `MusicDuckHeavyDb` | `-6` / `-11` / `-18` | Attenuation (dB, below the bed) applied while dialogue is present, keyed by the model's `Ducking` word. Clamped `[-30, 0]` |
+| `MusicDuckRampMs` | `400` | Linear gain ramp (ms) INSIDE each lift window — the music is never above the ducked level exactly at a window boundary |
+| `MinMusicLiftWindowMs` | `1200` | Non-speech windows shorter than this (and shorter than twice the ramp) are never lifted at all |
+| `MaxMusicLiftWindows` | `12` | Caps the volume-envelope expression's length; excess windows dropped, longest first, then re-sorted chronologically |
+| `MusicLiftMergeMs` | `400` | Lift windows closer together than this are merged into one |
 | `Expect` | `null` | Optional structural checks (`MinOutputSeconds`, `MaxOutputSeconds`, `MinRetainedRatio` default `0.15`, `MaxRetainedRatio`) |
 
 ### The `video-derush-edit` template
@@ -337,6 +359,137 @@ A fourth opt-in template (`AutoCreateOnProject: false`), extending `video-derush
 `Previous`, since `Previous` relative to the compile step would resolve to the
 `MotionGraphicsPlanner` step's output, not the story editor's decision. Deserialization-tested the
 same way as `video-derush-edit`.
+
+### The `video-derush-edit-music` template
+
+A fifth opt-in template (`AutoCreateOnProject: false`), extending `video-derush-edit` with
+background music instead of graphics: `VideoAnalyze` (`Source: ProjectFile`,
+`OfferMusicTracks: true`) → `Agent(VideoStoryEditor)` → `Agent(MusicSupervisor)` → `VideoCompile`
+(`Decision: Step 2`, `AnalysisStepOrder: 1`, `EnableMusic: true`, `MusicPlan: Step 3`). Same
+explicit-`StepOrder` rationale as `video-derush-edit-graphics` above (`Previous` relative to the
+compile step would resolve to the `MusicSupervisor` step's own output, not the story editor's
+decision). See [Background music](#background-music). Deserialization-tested the same way as the
+other two templates.
+
+---
+
+## Multiple source clips
+
+`VideoAnalyzeStepConfig.Sources` (plural — `IReadOnlyList<VideoSourceRef>`) lets one `VideoAnalyze`
+step analyze several source clips (e.g. multiple takes, camera angles, or B-roll of the same scene)
+into ONE merged artifact, which a single `VideoStoryEditor` decision and a single `VideoCompile`
+step can then cut across. It is a strict superset of the original single-clip behavior: `Sources`
+null/empty (the default) is treated as a one-element `[Source]` list, so every existing
+persisted/template config — which only ever set the singular `Source` — keeps deserializing and
+behaving byte-identically. A one-element `Sources` list behaves identically to the equivalent
+single-`Source` config too; there is no separate "N=1" code path anywhere in this addition.
+
+### Analysis: independent per-clip passes, merged into one global id space
+
+`VideoAnalyzeStepExecutor` analyzes each clip independently via the exact same deterministic
+per-source pipeline it always ran (silence/shot detection, transcription, Phase 1/2/3/4 analysis),
+processed sequentially, never in parallel, one clip's local file at a time. The pre-decode
+guardrails (`MaxDurationSeconds`, `MaxInputBytes`) are enforced **per source clip**, not summed
+across all of them.
+
+Each clip's own ids restart at `s0`/`g0`/`t0`/`w0`/`p0`/`d0`. `VideoAnalyzeStepExecutor.OffsetId`
+then remaps every local id into ONE globally-unique id space via a running per-id-kind offset
+(assigned contiguously across every source file, in analysis order), and every shot/silence
+gap/segment/word/placement/duplicate-group is tagged with the `SourceIndex` of the clip it came
+from. The bounded view surfaces this as a `"src"` index on every offered item (e.g. `"src": 0`), so
+the `VideoStoryEditorAgent` prompt can tell the model which clip each id belongs to and instruct it
+to freely alternate between clips across successive `Keep` spans — picking whichever clip has the
+best material for each moment is the whole point of offering more than one. The one hard rule: a
+single `Keep` span's `FromId` and `ToId` must both come from the SAME clip, since a span is a
+contiguous run within one physical file, never a bridge across two files — cross-clip edits are
+expressed as a SEQUENCE of single-clip `Keep` spans instead.
+
+Per-source provenance (`VideoAnalysisProvenance`) is aggregated into one artifact-level record via
+`AggregateProvenance`: `applied`/`degraded` flags become `true` if ANY source applied/degraded that
+stage — an artifact-wide OR, not a per-source breakdown. Full per-source provenance detail is
+deliberately out of scope for this addition; a single source passes through unchanged (`Count == 1`
+short-circuits).
+
+`VideoAnalysisArtifact.Sources` records one `VideoAnalysisSourceInfo` per analyzed clip, in
+source-index order — the storage key `VideoCompileStepExecutor` must download to physically cut
+from that clip, and the per-clip `VideoAnalysisMedia` (duration/fps/dimensions) every clip-aware
+computation (frame quantization, padding clamps, graphics geometry) must use instead of a single
+artifact-wide `Media`. `null` only for a true legacy artifact produced before this field existed —
+the one case `VideoCompileStepExecutor` still re-derives the source storage key the old way, by
+walking the `VideoAnalyze` step's own config. Every artifact produced by the current executor
+populates `Sources` with at least one entry, even for a single source, so the top-level `Media` and
+`Sources[0].Media` always agree for that case.
+
+### Compile: which ids can pair, and how the cut is resolved
+
+`VideoCompileStepExecutor` resolves each `Keep` span's `FromId`/`ToId` to `[Start, End)` times plus
+the `SourceIndex` recorded against that id — never trusted from the model, since there is no source
+field on `VideoEditKeepSpan` for it to get wrong in the first place:
+
+- **`MIXED_SOURCE_SPAN`** — a single span whose `FromId` and `ToId` resolve to different
+  `SourceIndex` values fails immediately with this code, before any normalization runs.
+- **Ordering/overlap/coalescing** only ever compares a span against the immediately PRECEDING span
+  in list order; when that neighbor belongs to a DIFFERENT source clip, there is no shared timeline
+  to be "out of order" or "overlapping" on, so the check (and coalescing) is simply skipped at that
+  boundary. A single-source config's spans are always same-source neighbors, so this reduces to
+  exactly the original single-timeline behavior.
+- **Padding/clamping** clamps each span against ITS OWN source clip's duration (`GetSourceMedia`),
+  never a single artifact-wide duration.
+- **Frame-quantization** uses each span's OWN source clip's exact rational fps, never a single
+  artifact-wide fps.
+- **Retained ratio** (`Expect.MinRetainedRatio`) sums only the DISTINCT clips actually referenced by
+  the resolved cut list, not every clip the step merely analyzed — for a single source this sum has
+  exactly one term, so it is byte-identical to before this addition.
+- Only the DISTINCT source clips actually referenced by the resolved cut list are downloaded —
+  never every clip the `VideoAnalyze` step analyzed.
+- The "canonical" clip every multi-source encode normalizes toward (scale/pad/fps for video, sample
+  rate/channel layout for audio) and every graphics-geometry computation reads frame dimensions
+  from is deliberately the FIRST kept span's own source clip — a deterministic choice independent
+  of clip count or offered-id ordering.
+
+**`MULTI_SOURCE_REQUIRES_REENCODE`** — when the resolved cut list references more than one distinct
+source clip, `Mode = StreamCopy` is refused as a hard, pre-encode config error (the same discipline
+`GRAPHICS_REQUIRE_REENCODE` already established for a different `Reencode`-only combination):
+losslessly concatenating independently-encoded files has no correctness-preserving stream-copy
+equivalent, since ffmpeg's `concat` filter/demuxer both require matching codec parameters across
+inputs that separately-encoded source files are not guaranteed to share, and normalizing them first
+is itself a re-encode.
+
+### Why multi-source encoding is a separate method
+
+`EncodeReencodeMultiSourceAsync` is a deliberately separate method from the original
+`EncodeReencodeAsync` — which stays completely untouched, and is still used for every single-source
+compile, so a single-source (or single-clip-in-practice) compile's ffmpeg argv/behavior stays
+byte-identical to before this addition. It is not a generalization of the single-source method
+because ffmpeg's `select` filter always emits one input's own matched ranges in THAT INPUT'S OWN
+chronological order — it cannot express a `Keep`-span order that jumps between clips arbitrarily.
+Only the `concat` filter, fed one small pre-trimmed clip PER SPAN in the exact order they should
+play, can. Each span becomes its own `trim`/`atrim` branch off the correct ffmpeg input index for
+that span's own source clip, normalized to the canonical frame size/rate/audio format `concat`
+requires, then concatenated in `Keep` order.
+
+### Audio-less source clips
+
+Real B-roll/stock footage routinely ships with no audio stream at all. `VideoCompileStepExecutor`
+probes every distinct referenced source once (cheap) before encoding and threads the result through
+as a per-source `sourceHasAudioByIndex` map:
+
+- If NOT ONE referenced clip has an audio stream, the whole compiled output drops audio entirely —
+  there is no real dialogue anywhere to preserve, so adding an all-silent track would add nothing.
+  This mirrors the single-source path's own long-standing no-audio-at-all fallback exactly.
+- Otherwise (a mix of audio-having and audio-less clips), `concat`'s own stream-count contract
+  (every concatenated segment must carry the same `a=` count) is satisfied per span: a span whose
+  own source clip has audio gets its real `atrim` branch; a span whose source clip has no audio
+  instead gets a synthesized, matching-duration silence branch (ffmpeg's `anullsrc` source filter,
+  already natively 48kHz/stereo, so it needs no extra `-i` input or `aformat`). Every span with real
+  dialogue keeps its real dialogue — only the audio-less span(s) carry synthesized silence. The
+  step's output JSON records which resolved-span indices got synthesized silence
+  (`audio.syntheticSilenceSegmentCount`/`syntheticSilenceSegmentIndices`), so this is never a silent
+  surprise the way an unreported drop would be.
+- Whether the FINAL OUTPUT has any dialogue audio at all (`hasDialogueAudioInOutput` —
+  `isMultiSource ? anySourceHasAudio : sourceHasAudio`) also feeds [Background
+  music](#background-music)'s ducking decision: there is no point planning silence-gap ducking
+  windows against dialogue that will not exist in the output.
 
 ---
 
@@ -858,9 +1011,40 @@ doc comment on `MotionGraphicsOverlay.Kind` in `OutputSchemas.cs`. The
 in `DatabaseSeeder` are kept verbatim-identical, enforced by the second `[Fact]` in
 `VideoStoryEditorPromptConsistencyTests.cs`
 (`MotionGraphicsPlanner_fallback_prompt_matches_the_seeded_built_in_agent_prompt_verbatim`,
-mirroring the first fact's reflection approach for `VideoStoryEditorAgent`). Tool access is the same minimal
-read-only project context + `FailWorkflow` `VideoStoryEditor` gets — no sandbox tools, no
-write/render tools.
+mirroring the first fact's reflection approach for `VideoStoryEditorAgent`). Tool access is now the
+**same full sandbox+Remotion+render pipeline `AuthorAgent` gets, minus `WriteProjectFile`**
+(`AgentToolProvider`) — widened from the minimal read-only scope `VideoStoryEditor` gets, since this
+agent can optionally back an overlay with a real, rendered Remotion asset (see `RenderedAssetStorageKey`
+below) rather than only plain drawtext/drawbox text. This is the only other agent besides `AuthorAgent`
+granted `RenderVideoAndUploadToStorage`, and it is a conscious tradeoff: this agent's prompt includes
+analysis-view content derived from the source video itself (on-screen text the Phase 2 vision model
+read, ASR transcript text), so it is the first agent in this feature with code-execution tools whose
+prompt is not limited to user-selected project files. The sandbox's own containment (read-only rootfs,
+no network egress by default, no Docker-socket access — see [Security](#security-why-ffmpeg-is-not-in-the-sandbox))
+is what bounds the blast radius of a successful prompt injection here: worst case is sandbox-contained
+code execution, not host compromise. See `CLAUDE.md`'s "Agent Types (enum)" section for the same note.
+
+### Rendered-asset overlays
+
+An overlay can optionally carry `MotionGraphicsOverlay.RenderedAssetStorageKey` — the S3 storage key
+of a transparent-background motion-graphics asset the `MotionGraphicsPlanner` agent produced ITSELF,
+by actually calling `RenderVideoAndUploadToStorage` (a real tool call performing a real Remotion
+render and a real upload), rather than an id merely echoed back from a set the model was shown. Still
+not trusted blindly: `VideoCompileStepExecutor` validates the key matches the exact
+`projects/{projectId}/outputFiles/{executionId}/...` prefix `RenderVideoAndUploadToStorage` itself
+constructs for the CURRENT execution, before downloading or compositing anything at that key.
+
+When present, `OverlayAssetFilterBuilder` (`WorkflowEngine/Services/Video/OverlayAssetFilterBuilder.cs`)
+composites the asset via ffmpeg's `overlay` filter — added as an extra input, stretch-scaled to the
+same compact ACCENT box geometry `DrawtextFilterBuilder` computes for a text overlay at the same
+placement (`DrawtextFilterBuilder.ComputeAccentBoxPixels`, shared by both builders), and time-shifted
+with `setpts` so the asset's own frame 0 lands at the overlay's actual on-screen start time on the
+OUTPUT timeline. `eof_action=pass` means once the asset's content runs out the overlay simply stops
+contributing (reverts to the plain cut) rather than freezing on its last frame for a longer "Hold"
+window. `Text`/`Subtext` are ignored for an overlay that carries a rendered asset — an overlay is one
+or the other, never both; a workflow author combines a rendered graphic with separate caption text by
+authoring two overlays at different placements. Empty/absent (the default) leaves an overlay a plain
+text overlay exactly as before this field existed — additive, not a replacement.
 
 ### The source-to-output timeline mapping problem
 
@@ -995,10 +1179,219 @@ successfully — never fails an otherwise-successful encode over a missing font/
 
 ### Not built by Phase 3
 
-Only static text/box overlays with fade in/out — Phase 3 does NOT apply Ken-Burns zoompan (Phase
-1's `KenBurnsCandidate` remains identification-only), does NOT burn in subtitles, and does NOT do
-transitions between cuts. See [Explicitly not built](#explicitly-not-built) below, which is
-unchanged by this phase except for graphics moving out of "not built" and into this section.
+Text/box drawtext-drawbox overlays with fade in/out, OR a rendered Remotion asset overlay (see
+[Rendered-asset overlays](#rendered-asset-overlays) above) — Phase 3 does NOT apply Ken-Burns
+zoompan (Phase 1's `KenBurnsCandidate` remains identification-only), does NOT burn in subtitles, and
+does NOT do transitions between cuts. See [Explicitly not built](#explicitly-not-built) below, which
+is unchanged by this phase except for graphics moving out of "not built" and into this section.
+
+---
+
+## Background music
+
+An optional background-music bed, mixed under the dialogue during `VideoCompile`'s encode and
+ducked automatically during non-speech windows, planned by a fourth built-in agent that picks among
+uploaded tracks — the same structural shape [Motion graphics (Phase 3)](#motion-graphics-phase-3)
+established: a deterministic candidate list from `VideoAnalyze`, an agent that chooses among opaque
+offered ids plus a handful of enum words, and `VideoCompileStepExecutor` alone resolving those words
+to real ffmpeg behavior. **Off by default** (`VideoAnalyzeStepConfig.OfferMusicTracks = false`,
+`VideoCompileStepConfig.EnableMusic = false`) — `EnableMusic = false` leaves the compile path
+byte-identical to the pre-music behavior.
+
+### Why a deterministic volume envelope, not `sidechaincompress`
+
+`MusicMixPlanner`/`MusicMixFilterBuilder` duck the music bed via a **deterministic, keyframed
+`volume=eval=frame` envelope** computed from the analysis artifact's own silence gaps/transcript
+segments — never a runtime audio-level compressor (`sidechaincompress`). Two reasons this codebase
+deliberately does not use a sidechain compressor here:
+
+1. The analysis artifact already carries silence gaps (available with zero dependency on ASR) and
+   transcript segments — exactly the physically-grounded "speech has actually stopped" signal
+   `VideoCompileStepExecutor.ExtendSegmentEndTowardNextSilence` already trusts over ASR boundaries —
+   so there is no need to infer ducking windows from the waveform at encode time at all.
+2. A sidechain compressor's behavior depends on the actual waveform at encode time, so nothing could
+   assert an exact filter string for it, explain "the music was lifted in these 3 windows" in the
+   step's own output JSON, or guarantee sane behavior on a source whose dialogue track already has
+   music baked in. The deterministic envelope, by contrast, is something `MusicMixPlanner.PlanLiftWindows`
+   decides entirely in C# and `MusicMixFilterBuilder.BuildVolumeExpression` turns into an EXACT,
+   assertable ffmpeg filter string.
+
+### Candidate discovery (`VideoAnalyze`)
+
+When `OfferMusicTracks = true`, `VideoAnalyzeStepExecutor` enumerates every `audio/*` project file as
+an `m{n}` music-track candidate (`view.musicTracks`), capped by `MaxMusicTracks` (default 20). This
+is **project-level, not per-source** — unlike every other candidate list this feature offers, one
+candidate list regardless of how many source clips the step analyzed. Candidates are never
+ffprobed here — the fit/duration policy is resolved server-side at compile time regardless of a
+candidate's exact length, so probing every candidate here would only cost N downloads for a list the
+agent picks at most one item from. A `ListFilesAsync` failure degrades to zero candidates; this
+never fails the step. `view.musicTracks` is shown as ONE ATOMIC ARRAY, deliberately not gated on
+`VisualDetail` (music has nothing to do with visual detail) — it is dropped as a whole array, after
+detail has already degraded all the way to `None`, before the per-item drop loop ever runs, mirroring
+the discipline [Motion graphics (Phase 3)](#motion-graphics-phase-3) established for `view.placements`.
+"Offered" means exactly "the whole `musicTracks` array survived to the final view" —
+`VideoAnalysisArtifact.OfferedMusicIds` is empty whenever it was suppressed for budget.
+
+### `m{n}` id isolation
+
+Music-track ids (`m{n}`) are their own namespace, separate from shot/silence/segment ids
+(`s{n}`/`g{n}`/`t{n}`), placement ids (`p{n}`), and look-group ids (`k{n}`). `OfferedMusicIds` is its
+own separate list — a music-track id must never be validated against `OfferedIds`/
+`OfferedPlacementIds` and vice versa — and, like placement/look-group ids, is deliberately NOT
+resolvable by `VideoCompileStepExecutor.BuildIdTimeIndex`: a `Keep` span naming an `m{n}` id fails
+`UNKNOWN_ID` exactly like any other id that index does not contain.
+
+### `AgentType.MusicSupervisor` and `MusicPlanOutput`
+
+An ordinary `StepType.Agent` step, following the exact precedent `VideoStoryEditor`/
+`MotionGraphicsPlanner` set. Given the story editor's decision (or the same bounded view) plus
+`view.musicTracks`, it picks AT MOST ONE track plus a few coarse settings:
+
+```csharp
+public class MusicPlanOutput
+{
+    public string TrackId { get; set; } = "";      // must be in OfferedMusicIds; empty = no track suits the edit
+    public string Intensity { get; set; } = "";     // Quiet | Balanced | Feature — never a dB number
+    public string Ducking { get; set; } = "";       // Off | Light | Normal | Heavy — never a dB number
+    public string Fit { get; set; } = "";            // LoopToFit | PlayOnce
+    public string Reason { get; set; } = "";
+    public string PlanRationale { get; set; } = "";
+}
+```
+
+The same rushcut invariant extended again: every property is a plain string, so there is no
+numeric/time-bearing CLR type to even ban — enforced by `MusicPlanOutputInvariantTests`. The model's
+only contributions are an opaque `TrackId` drawn from the set it was actually offered plus the three
+enum-word choices; `VideoCompileStepExecutor` alone resolves those to dB levels/ffmpeg behavior. This
+agent is entirely optional: `VideoCompileStepConfig.MusicTrackProjectFileId`, set directly by the
+workflow author, delivers the whole capability (a fixed track, default settings) without this agent
+at all. Same minimal read-only project-context + `FailWorkflow` tool scope as `VideoStoryEditor` — no
+render/sandbox escape hatch the way `MotionGraphicsPlanner` has, since there is no media for this
+agent to produce itself.
+
+### Resolution: `ResolveMusicAsync`, soft-failure throughout
+
+`VideoCompileStepExecutor.ResolveMusicAsync` runs only when `EnableMusic = true`, and — like every
+other stage in this feature — never fails the compile, only degrades to "no music applied":
+
+| Situation | Outcome |
+|---|---|
+| `MusicPlan` configured but unresolvable, or not valid JSON | Dropped (`plan_unresolved` / `plan_invalid_json`); falls through to `MusicTrackProjectFileId` if set, else no music |
+| Plan's `TrackId` not in `OfferedMusicIds`, or names no known candidate | Dropped (`unknown_track_id`); same fallthrough |
+| Resolved project file not found in the project, or not an `audio/*` mime type | Dropped (`track_not_in_project` / `track_not_audio`); no music |
+| Track download or ffprobe fails, or reports zero duration/no audio stream | Dropped (`track_download_or_probe_failed`); no music |
+| This ffmpeg build's `amix` filter has no `normalize` option | `music.unavailable = true`; no music (the cut still succeeds) |
+
+The `amix` normalize-option probe (`IsAmixNormalizeAvailableAsync`) is cached for the process
+lifetime, mirroring `IsDrawtextAvailableAsync`'s pattern exactly — `normalize=0` is load-bearing, not
+cosmetic: without it `amix` silently halves every input's level, including the dialogue track, so a
+missing option must degrade ALL music rather than risk quietly reducing dialogue loudness.
+
+Resolution order for which track plays: `MusicPlan` (the agent's choice) first, then
+`MusicTrackProjectFileId` (the deterministic workflow-author-configured fallback) if the plan did not
+resolve to a usable track, else no music at all.
+
+### Enum words to ffmpeg behavior
+
+`Intensity`/`Ducking`/`Fit` are resolved entirely server-side, exactly mirroring how
+[Motion graphics](#motion-graphics-phase-3) resolves `Duration`/`Emphasis`:
+
+- **`Intensity`** (`Quiet`/`Balanced`/`Feature`) → bed level in dBFS via `MusicBedQuietDb`/
+  `MusicBedBalancedDb`/`MusicBedFeatureDb` (defaults `-26`/`-20`/`-14`), clamped `[-40, -6]`.
+- **`Ducking`** (`Off`/`Light`/`Normal`/`Heavy`) → attenuation below the bed while dialogue is
+  present, via `MusicDuckLightDb`/`MusicDuckNormalDb`/`MusicDuckHeavyDb` (defaults `-6`/`-11`/
+  `-18`), clamped `[-30, 0]`. `Off` (from either the model or `VideoCompileStepConfig.MusicDucking =
+  MusicDuckingMode.Off`) collapses lift-window planning entirely — a flat ducked bed throughout, no
+  trapezoid expression.
+- **`Fit`** (`LoopToFit`/`PlayOnce`) → `LoopToFit` adds `-stream_loop -1` to the music input and
+  trims to the edit's exact frame-quantized length; `PlayOnce` trims to the track's own length when
+  shorter than the edit, no loop.
+
+### `MusicMixPlanner`: where to lift the bed
+
+`MusicMixPlanner.PlanLiftWindows` (pure, no I/O, no ffmpeg — the `OverlayPlacementBuilder` precedent
+for this feature's other deterministic planning code) decides WHERE, on the compiled edit's own
+OUTPUT timeline, the bed should rise back toward its unducked level. Basis selection, in order — the
+first one with any data wins:
+
+1. **`silenceGaps`** (preferred) — the artifact's own detected silence spans, mapped through the same
+   `MapSourceWindowToOutput` helper [Motion graphics](#motion-graphics-phase-3) uses for placement
+   windows.
+2. **`speechComplement`** — else, the gaps BETWEEN transcript segments, computed per source clip.
+3. **`noSpeechDetected`** — else, a single lift window spanning the WHOLE output: there is no
+   dialogue anywhere in the kept edit, so the bed should not be needlessly ducked for the whole
+   video.
+
+Candidate windows are merged (closer together than `MusicLiftMergeMs`), dropped below `MinMusicLiftWindowMs`
+(and always below twice the gain ramp, so a lift too short to fully ramp never reads as pumping), and
+capped at `MaxMusicLiftWindows` (longest kept, re-sorted chronologically).
+
+`MusicMixFilterBuilder.BuildVolumeExpression` turns the plan into an exact `volume=eval=frame`
+expression: zero lift windows collapse to the bare ducked-gain constant; one window is a single
+trapezoid (0 outside `[start, end]`, ramping linearly to 1 across `MusicDuckRampMs` INSIDE each end of
+the window, so a lift is never above the ducked level exactly at a boundary); more than one window
+nests binary `max(...)` calls (ffmpeg's `eval` has no n-ary max). `BuildMixStage`'s final `amix` uses
+`normalize=0` (see above), `duration=first` (pins the mixed output's length to the DIALOGUE input, so
+a looped/infinite music input can never extend the file), and `dropout_transition=0` (avoids a gain
+re-ramp when the music branch ends before the dialogue does, for `PlayOnce` with a track shorter than
+the edit).
+
+### Skipped entirely when the output has no dialogue audio
+
+When the compiled output has no dialogue audio at all — a single audio-less source clip, or (in a
+[multi-source](#multiple-source-clips) compile) a mix where NOT ONE referenced clip has an audio
+stream — there is nothing to duck against. `VideoCompileStepExecutor` computes
+`hasDialogueAudioInOutput` (`isMultiSource ? anySourceHasAudio : sourceHasAudio`) once, after source
+download/probe, and threads it into `ResolveMusicAsync` as `hasDialogueAudio`. That flag folds into
+the SAME `duckingOff` switch that already collapses lift-window planning to a flat, undocked bed
+level (`duckingOff = configDuckingOff || !hasDialogueAudio`) — so silence-gap/speech-complement
+ducking windows are never planned against dialogue that will not exist in the output. `music.duckBasis`
+records `"no_dialogue_audio"` explicitly in this case (distinct from `"none"`, which means ducking was
+simply turned off by config/the model while dialogue audio does exist), and
+[`dialogueHeadroom`](#review-evidence-dialogueheadroom) reports `{"applicable": false, "reason":
+"no_dialogue_audio_in_output"}` instead of computing a headroom number against Phase 1 loudness data
+for audio that was dropped from the output entirely. The music bed itself is unaffected by this — a
+track can still be mixed in as the entire soundtrack of an otherwise-silent edit; only the
+speech-aware ducking behavior is skipped.
+
+### Review evidence: `dialogueHeadroom`
+
+`VideoCompileStepExecutor.BuildDialogueHeadroom` computes deterministic evidence for
+`AgentType.VideoReviewAgent`'s `StepType.ReviewLoop` step: the duration-weighted mean dialogue RMS
+across the KEPT spans only (from Phase 1's per-shot `VideoAnalysisShotAudio.RmsDbfs`) against the
+resolved ducked-music level — a hard, server-computed headroom number, not something a model
+estimates from audio it cannot hear:
+
+```jsonc
+{ "applicable": true, "meanDialogueRmsDbfs": -22.4, "duckedMusicDbfs": -31.0, "headroomDb": 8.6 }
+```
+
+`applicable: false` when no kept shot carries a Phase 1 audio descriptor (`AnalyzeAudioLevels` was
+off/degraded) or, per the previous section, when the output has no dialogue audio at all.
+
+### EDL / output JSON shape
+
+Present only when `EnableMusic = true` (byte-identical to the pre-music compile path otherwise):
+
+```jsonc
+{
+  "music": {
+    "enabled": true, "applied": true, "unavailable": false,
+    "source": "plan", "trackId": "m1", "trackName": "ambient-bed.mp3",
+    "intensity": "Balanced", "ducking": "Normal", "fit": "LoopToFit",
+    "bedDbfs": -20, "duckedDbfs": -31,
+    "trackDurationSec": 42.0, "outputDurationSec": 96.3, "loops": 3,
+    "playEndSec": 96.3, "fadeInSec": 1.5, "fadeOutSec": 2.5,
+    "duckBasis": "silenceGaps", "liftWindows": 4, "liftCoveragePct": 18.2, "speechCoveragePct": 71.4,
+    "dialogueHeadroom": { "applicable": true, "meanDialogueRmsDbfs": -22.4, "duckedMusicDbfs": -31.0, "headroomDb": 8.6 },
+    "dropped": []
+  }
+}
+```
+
+`source` is `"none"` / `"plan"` / `"config"` (which of `MusicPlan`/`MusicTrackProjectFileId`
+actually supplied the track); `dropped` is a list of `{reason, trackId}` entries recording every
+soft-failure the table above allows, empty when music applied cleanly.
 
 ---
 
@@ -1169,13 +1562,19 @@ one-class change later.
 ## Explicitly not built
 
 **Editing scope:** no reordering of kept spans (v1 requires strictly increasing, non-overlapping
-spans); no B-roll or asset insertion; no multicam; no picture-in-picture; no speed ramps; no
-transitions between cuts (hard cuts only).
+spans within one clip); no arbitrary unanalyzed asset/image insertion (cutting across several
+pre-declared, analyzed `Sources` clips — including B-roll — is supported, see
+[Multiple source clips](#multiple-source-clips), but inserting an image or a clip that was never
+fed in as a `Source` is not); no multicam (no automatic multi-angle sync/switching); no
+picture-in-picture; no speed ramps; no transitions between cuts (hard cuts only).
 
-**Post scope:** no colour grading / LUTs / filters / stabilization; no loudness normalization
-(`loudnorm` is measured and reported only, never applied); no music bed or ducking; no subtitle
-burn-in and no SRT/VTT export (the transcript exists, so this is the most obvious phase-2 add); no
-speaker diarization.
+**Post scope:** no colour grading / LUTs / filters / stabilization (Phase 4's D1-D3 color
+dimensions are measured/reported only, same as `loudnorm` below, never applied); no loudness
+normalization (`loudnorm` is measured and reported only, never applied); no subtitle burn-in and no
+SRT/VTT export (the transcript exists, so this is the most obvious phase-2 add); no speaker
+diarization. Background music IS built — see [Background music](#background-music) — but it is a
+deterministic bed/ducking mix only: no auto-composed score, no beat-matching to cuts, no per-section
+music cues.
 
 **Interchange:** no EDL/AAF/FCPXML/OTIO export. The internal EDL JSON is an audit artifact, not an
 interchange format.

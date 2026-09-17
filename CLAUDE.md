@@ -162,11 +162,11 @@ inference/
 │   │   └── appsettings.json
 │   │
 │   └── ReelForge.WorkflowEngine/                 # Service 2: Execution Engine
-│       ├── Agents/                               # All 13 workflow agents (11 original + VideoStoryEditor + MotionGraphicsPlanner)
+│       ├── Agents/                               # All 15 workflow agents (11 original + VideoStoryEditor + MotionGraphicsPlanner + VideoReviewAgent + MusicSupervisor)
 │       │   ├── Analysis/                         # 5 code analysis agents
 │       │   ├── Translation/                      # Remotion + Animation agents
-│       │   ├── Production/                       # Director, Scriptwriter, Author, VideoStoryEditor, MotionGraphicsPlanner
-│       │   ├── Quality/                          # ReviewAgent
+│       │   ├── Production/                       # Director, Scriptwriter, Author, VideoStoryEditor, MotionGraphicsPlanner, MusicSupervisor
+│       │   ├── Quality/                          # ReviewAgent, VideoReviewAgent
 │       │   └── Tools/                            # Shared AIFunction tools
 │       ├── Consumers/                            # MassTransit consumer
 │       ├── Execution/                            # Enhanced workflow executor
@@ -224,6 +224,7 @@ inference/
 | `WorkflowExecutionCompleted` | WorkflowEngine | (available for consumers) |
 | `WorkflowStepCompleted` | WorkflowEngine | (available for consumers) |
 | `WorkflowExecutionFailed` | WorkflowEngine | (available for consumers) |
+| `WorkflowStepProgress` | WorkflowEngine | Go API (relayed via `GET /api/v1/workflows/events` SSE as `step.progress`) — ephemeral UI progress signal (e.g. "Downloading source", "Encoding" with a percent) for a long-running step; never persisted to `WorkflowStepResult`, never authoritative — `WorkflowStepCompleted`/`WorkflowExecutionFailed` remain the only signal that a step is actually done |
 
 ### Inference Provider Endpoints (Inference API)
 
@@ -271,7 +272,7 @@ Production: `DirectorAgent`, `ScriptwriterAgent`, `AuthorAgent`
 Quality: `ReviewAgent`
 File Processing: `FileSummarizerAgent` (in Inference API only)
 Extract/Transform: `ExtractTransform` — built-in, non-LLM agent row seeded so `StepType.Extract` steps satisfy the non-nullable `WorkflowStep.AgentDefinitionId` FK; `SystemPrompt` is empty and `GeneratesOutput` is `false` since it is never sent to a model, only run as deterministic code by `ExtractStepExecutor`.
-Video editing: `VideoStoryEditor` — LLM agent, `OutputSchemaName = "VideoEditDecisionOutput"`; decides which shots/silence-gaps/transcript-spans to KEEP from a bounded, id-anchored view produced by a `VideoAnalyze` step. Structurally incapable of emitting a timestamp (guarded by a reflection test, `VideoEditDecisionOutputInvariantTests`) — see [`docs/video-editing.md`](docs/video-editing.md). Tool access is read-only project context + `FailWorkflow`; no sandbox tools, no write/render tools. `MotionGraphicsPlanner` — LLM agent (Phase 3), `OutputSchemaName = "MotionGraphicsPlanOutput"`; plans zero or more motion-graphics overlays (lower-thirds, titles, callouts) anchored only to opaque placement ids offered by a `VideoAnalyze` step's `view.placements`. Structurally incapable of emitting a timestamp OR a pixel coordinate (guarded by `MotionGraphicsPlanOutputInvariantTests`); identical minimal tool scope to `VideoStoryEditor`. `VideoTransform` — deterministic, non-LLM placeholder agent (identical role to `ExtractTransform`) seeded so `StepType.VideoAnalyze`/`VideoCompile` steps satisfy the same non-nullable FK; runs ffmpeg, never a model.
+Video editing: `VideoStoryEditor` — LLM agent, `OutputSchemaName = "VideoEditDecisionOutput"`; decides which shots/silence-gaps/transcript-spans to KEEP from a bounded, id-anchored view produced by a `VideoAnalyze` step. Structurally incapable of emitting a timestamp (guarded by a reflection test, `VideoEditDecisionOutputInvariantTests`) — see [`docs/video-editing.md`](docs/video-editing.md). Tool access is read-only project context + `FailWorkflow`; no sandbox tools, no write/render tools. `MotionGraphicsPlanner` — LLM agent (Phase 3), `OutputSchemaName = "MotionGraphicsPlanOutput"`; plans zero or more motion-graphics overlays (lower-thirds, titles, callouts) anchored only to opaque placement ids offered by a `VideoAnalyze` step's `view.placements`. Structurally incapable of emitting a timestamp OR a pixel coordinate (guarded by `MotionGraphicsPlanOutputInvariantTests`). Unlike `VideoStoryEditor`/`VideoReviewAgent`/`MusicSupervisor` below, this agent is now granted the **same full sandbox+Remotion+render tool set as `AuthorAgent`, minus `WriteProjectFile`** (`AgentToolProvider`), so it can optionally back an overlay with a real, designed/animated Remotion-rendered transparent asset (`MotionGraphicsOverlay.RenderedAssetStorageKey`) instead of only a plain drawtext/drawbox overlay — see [`docs/video-editing.md`](docs/video-editing.md) "Motion graphics (Phase 3)". **A conscious tradeoff, not an oversight:** this is the first agent in the video-editing feature whose prompt includes analysis-view content *derived from the source video itself* (on-screen text the Phase 2 vision model read, ASR transcript text) rather than only user-selected project files, and the first video-editing agent with code-execution tools — a prompt injection hidden in that media-derived content could in principle reach the sandbox. The sandbox's existing containment (read-only rootfs, no network egress by default, no Docker-socket access — see [`docs/video-editing.md`](docs/video-editing.md) "Security: why ffmpeg is not in the sandbox" and `docs/sandbox-service.md`) is what bounds the blast radius here: worst case is sandbox-contained code execution, not host compromise. Accepted deliberately for this one agent, the same way the ffmpeg-vs-sandbox placement decision above is — not a gap nobody noticed. `VideoReviewAgent` — LLM agent, `OutputSchemaName = "VideoReviewOutput"`; used by a `StepType.ReviewLoop` step in the video-editing templates to score a compiled edit against deterministic facts `VideoCompileStepExecutor` already computed (transcript sentence-boundary check, overlay frame coverage, `music.dialogueHeadroom` when background music is enabled) rather than judging code/lint quality like `ReviewAgent`. Same minimal read-only tool scope as `VideoStoryEditor`. `MusicSupervisor` — LLM agent, `OutputSchemaName = "MusicPlanOutput"`; picks at most one background-music track (an offered `m{n}` id drawn from a `VideoAnalyze` step's `OfferMusicTracks`-derived candidate list) plus enum-word `Intensity`/`Ducking`/`Fit` settings for the pipeline's optional background music — see [`docs/video-editing.md`](docs/video-editing.md) "Background music". Never emits a dB value, a level, or a timestamp; same minimal read-only tool scope as `VideoStoryEditor`. Entirely optional — the deterministic `VideoCompileStepConfig.MusicTrackProjectFileId` path delivers the whole capability without this agent. `VideoTransform` — deterministic, non-LLM placeholder agent (identical role to `ExtractTransform`) seeded so `StepType.VideoAnalyze`/`VideoCompile` steps satisfy the same non-nullable FK; runs ffmpeg, never a model.
 User-defined: `Custom`
 
 ### Default Workflow Pipeline
@@ -295,7 +296,14 @@ video-editing feature end to end: `VideoAnalyze` (`Source: PreviousStepOutput`) 
 `video-derush-edit-graphics` (`AutoCreateOnProject: false`) — extends that pipeline with Phase 3
 motion graphics: `VideoAnalyze` (`emitOverlayPlacements: true`) → `Agent(VideoStoryEditor)` →
 `Agent(MotionGraphicsPlanner)` → `VideoCompile` (`enableGraphics: true`, `graphicsPlan` pointing at
-the `MotionGraphicsPlanner` step). See [`docs/video-editing.md`](docs/video-editing.md).
+the `MotionGraphicsPlanner` step). A fifth, opt-in template — `video-derush-edit-music`
+(`AutoCreateOnProject: false`) — extends `video-derush-edit` with background music instead of
+graphics: `VideoAnalyze` (`offerMusicTracks: true`) → `Agent(VideoStoryEditor)` →
+`Agent(MusicSupervisor)` → `VideoCompile` (`enableMusic: true`, `musicPlan` pointing at the
+`MusicSupervisor` step). Each of `Decision`/`GraphicsPlan`/`MusicPlan` on the compile step
+references its source step explicitly by `StepOrder` rather than `Previous`, since `Previous`
+relative to the compile step would resolve to the `MotionGraphicsPlanner`/`MusicSupervisor` step's
+own output, not the story editor's decision. See [`docs/video-editing.md`](docs/video-editing.md).
 
 ### Video Editing (ffmpeg-based, `VideoAnalyze`/`VideoCompile` step types)
 
@@ -522,7 +530,8 @@ All services have Dockerfiles and are orchestrated via `docker-compose.yml` at t
 | `postgres` | `postgres:16-alpine` | 5432 (**loopback only**) | 5432 | Volume `pgdata`, healthcheck via `pg_isready` |
 | `minio` | `minio/minio:latest` | 9000/9001 (**loopback only**) | 9000/9001 | Volume `miniodata`, console on 9001 |
 | `minio-init` | `minio/mc:latest` | — | — | One-shot: creates the `reelforge` bucket, then exits |
-| `rabbitmq` | `rabbitmq:3-management-alpine` | 5672/15672 (**loopback only**) | 5672/15672 | Volume `rabbitmqdata`, management UI on 15672 |
+| `rabbitmq` | `rabbitmq:3-management-alpine` | 5672/15672 (**loopback only**) | 5672/15672 | Volume `rabbitmqdata`, management UI on 15672; `./rabbitmq/conf.d` mounted read-only at `/etc/rabbitmq/conf.d` (`loopback_users = none` so go-api/inference/workflow-engine can authenticate as `guest` over the compose network; `consumer_timeout = 7200000` so a long `VideoAnalyze`/`VideoCompile` step is never force-killed by RabbitMQ's own 30-minute default) |
+| `whisper` | `ghcr.io/speaches-ai/speaches:latest-cpu` | 127.0.0.1:`WHISPER_PORT` (default 9002) | 8000 | Local, OpenAI-Whisper-API-compatible ASR server (CPU inference, int8 compute) for `VideoAnalyze` transcription; volume `whisper-hf-cache` for downloaded model weights. Not auto-wired — register it as an `inference_providers` row (`Capability: Transcription`, `Kind: OpenAICompatible`, endpoint `http://whisper:8000`) via `/admin/inference-providers` to use it |
 
 ```bash
 docker compose up --build -d              # Start full stack
@@ -575,6 +584,7 @@ All configuration is driven by `.env` at the repo root (copy `.env.example` to `
 | `RABBITMQ_PASSWORD` | `guest` | RabbitMQ password |
 | `RABBITMQ_PORT` | `5672` | RabbitMQ AMQP port |
 | `RABBITMQ_MGMT_PORT` | `15672` | RabbitMQ management UI port |
+| `WHISPER_PORT` | `9002` | Host port for the local `whisper` ASR service (`ghcr.io/speaches-ai/speaches`), bound to loopback only. Not consumed by any service's config directly — register the container as a `Transcription`-capability `inference_providers` row to actually use it |
 | `WORKFLOW_MAX_CONCURRENCY` | `4` | Max parallel workflow executions |
 | `SANDBOX_API_TOKEN` | — | **Required.** Shared secret for the sandbox executor API (`Sandbox__ApiToken` on the WorkflowEngine). The sandbox service exits at startup if unset — it can start containers and holds the Docker socket, so it never runs unauthenticated |
 | `SANDBOX_NETWORK_EGRESS` | `false` | When `false`, the sandbox docker network is created `--internal`: sandboxed code has no route to the internet **or to the host gateway** (and therefore none of the host-published ports). Setting `true` re-enables runtime `npm install` via `POST /packages` and simultaneously gives untrusted code a network — see [`docs/sandbox-service.md`](docs/sandbox-service.md) |
