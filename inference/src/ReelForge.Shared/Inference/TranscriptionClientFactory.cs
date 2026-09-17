@@ -80,7 +80,12 @@ public sealed class TranscriptionClientFactory : ITranscriptionClientFactory
         string apiKey = string.IsNullOrWhiteSpace(provider.ApiKey) ? NoKeyPlaceholder : provider.ApiKey;
         HttpClient httpClient = new()
         {
-            BaseAddress = new Uri(provider.Endpoint),
+            // A BaseAddress with no trailing slash makes HttpClient's relative-URI combining
+            // REPLACE its last path segment instead of appending to it (e.g. "http://h/v1" +
+            // "audio/transcriptions" -> "http://h/audio/transcriptions", dropping "/v1" entirely) —
+            // force the trailing slash so PostAsync("audio/transcriptions", ...) below actually
+            // lands on ".../v1/audio/transcriptions".
+            BaseAddress = new Uri(provider.Endpoint.TrimEnd('/') + "/"),
             Timeout = TimeSpan.FromSeconds(provider.TimeoutSeconds)
         };
         if (apiKey != NoKeyPlaceholder)

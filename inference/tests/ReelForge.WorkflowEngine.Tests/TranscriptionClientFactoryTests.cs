@@ -22,6 +22,24 @@ public class TranscriptionClientFactoryTests
         act.Should().NotThrow();
     }
 
+    [Theory]
+    [InlineData("http://host:9002/v1")]
+    [InlineData("http://host:9002/v1/")]
+    public void OpenAICompatible_endpoint_resolves_the_full_transcriptions_path_regardless_of_trailing_slash(
+        string endpoint)
+    {
+        // Regression: HttpClient.BaseAddress with no trailing slash makes relative-URI combining
+        // REPLACE the last path segment instead of appending to it — "http://h/v1" combined with
+        // relative "audio/transcriptions" resolves to "http://h/audio/transcriptions", silently
+        // dropping "/v1" and 404ing against the real speaches/faster-whisper-server endpoint.
+        // TranscriptionClientFactory.BuildOpenAICompatible must normalize the trailing slash
+        // before constructing HttpClient.BaseAddress so this can never regress.
+        Uri baseAddress = new(endpoint.TrimEnd('/') + "/");
+        Uri combined = new(baseAddress, "audio/transcriptions");
+
+        combined.ToString().Should().Be("http://host:9002/v1/audio/transcriptions");
+    }
+
     [Fact]
     public void Get_constructs_an_OpenAICompatible_client_without_throwing_when_api_key_is_empty()
     {
