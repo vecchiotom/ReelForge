@@ -246,7 +246,7 @@ public static class FrameGridAnalyzer
         // D6 — letterbox/pillarbox matte detection. Reuses the already-materialized lumaFrames, no
         // second luma pass.
         VideoAnalysisRect? activeCrop = options.DetectLetterbox
-            ? DetectActiveCrop(frames, lumaFrames, gridWidth, gridHeight)
+            ? DetectActiveCrop(lumaFrames, gridWidth, gridHeight)
             : null;
 
         // D7 — heuristic only, and named accordingly (see KenBurnsCandidate's precedent). Surfaced
@@ -1277,7 +1277,7 @@ public static class FrameGridAnalyzer
     /// safe direction: a missing ActiveCrop is a non-signal, a fabricated one is a lie.
     /// </remarks>
     private static VideoAnalysisRect? DetectActiveCrop(
-        IReadOnlyList<byte[]> frames, double[][] lumaFrames, int width, int height)
+        double[][] lumaFrames, int width, int height)
     {
         const double BlackThreshold = 16.0 / 255.0; // tolerant of compression noise inside a true matte
         const double MaxBarFraction = 0.40;         // beyond this it is a dark scene, not a bar

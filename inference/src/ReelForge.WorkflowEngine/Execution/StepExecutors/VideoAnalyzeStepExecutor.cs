@@ -441,7 +441,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             // ----
             bool visionApplied = false, visionDegraded = false, visionPartial = false;
             string? visionProviderName = null;
-            int captionedShotCountTotal = 0, failedShotCountTotal = 0, persistedKeyframeCount = 0;
+            int captionedShotCountTotal = 0, failedShotCountTotal = 0, persistedKeyframeCount = 0, keyframesExtractedTotal = 0;
 
             if (config.Vision != VideoVisionMode.Off)
             {
@@ -520,6 +520,13 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                                         await _keyframeExtractor.ExtractKeyframeAsync(
                                             sourceVideoPath, keyframePath, atSec, config.KeyframeMaxWidth, visionCt);
                                     }
+
+                                    keyframesExtractedTotal++;
+                                    if (VideoAnalyzeProgressPlan.ShouldReportItem(keyframesExtractedTotal - 1, selectedShotIds.Count))
+                                        await ReportAsync(
+                                            context, progress, VideoAnalyzeProgressPlan.Stage.ExtractKeyframes,
+                                            $"Extracting keyframes ({keyframesExtractedTotal}/{selectedShotIds.Count})",
+                                            fraction: keyframesExtractedTotal / (double)selectedShotIds.Count);
 
                                     // Phase 4 (decision #1): prime the prompt with Phase 1's own
                                     // measured words for this shot — null when visual analysis
@@ -1138,7 +1145,6 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                                     continue;
 
                                 shots[idx] = shots[idx] with { Visual = shots[idx].Visual! with { Sharpness = sharp } };
-                                sharpnessBudget.Remaining--;
                                 sharpnessBudget.Measured++;
                             }
                             catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
@@ -1149,6 +1155,16 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                             {
                                 _logger.LogWarning(ex, "VideoAnalyze step {StepOrder} source {SourceIndex}: sharpness measurement failed for shot {ShotId}; leaving Sharpness null.",
                                     context.Step.StepOrder, sourceIndex, sharpnessTargets[k].Id);
+                            }
+                            finally
+                            {
+                                // Decrement on every ATTEMPT, not only on success — MeasureAsync
+                                // returns null on any ffmpeg failure/missing output/short read, and
+                                // leaving Remaining untouched in that case let one source burn
+                                // MaxSharpnessShots attempts with zero successful measurements while
+                                // the next source started with the budget still fully intact (the
+                                // same per-source-instead-of-step-wide bug MaxCaptionedShots had).
+                                sharpnessBudget.Remaining--;
                             }
                         }
                     }

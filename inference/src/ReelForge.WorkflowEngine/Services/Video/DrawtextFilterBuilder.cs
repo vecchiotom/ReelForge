@@ -196,24 +196,14 @@ public static class DrawtextFilterBuilder
         return Math.Max(12, (int)Math.Round(probedHeight * effectivePct / 100.0));
     }
 
-    internal static (int X, int Y, int W, int H) ComputeBoxPixels(VideoAnalysisRect rect, int probedWidth, int probedHeight)
-    {
-        int x = (int)Math.Round(rect.X * probedWidth);
-        int y = (int)Math.Round(rect.Y * probedHeight);
-        int w = (int)Math.Round(rect.W * probedWidth);
-        int h = (int)Math.Round(rect.H * probedHeight);
-        return (x, y, w, h);
-    }
-
     /// <summary>
     /// The actual on-screen box a motion-graphics overlay (drawbox/drawtext OR a stretch-scaled
-    /// rendered asset — both DrawtextFilterBuilder and OverlayAssetFilterBuilder call this, never
-    /// the raw <see cref="ComputeBoxPixels"/>) is drawn into. A named overlay-safe-zone band
-    /// (<c>rect</c> — see <c>OverlayPlacementBuilder</c>/<c>FrameGridAnalyzer</c>) is a SAFE ZONE
-    /// for placement, not a target size to fill: <c>LowerThird</c>/<c>UpperThird</c> are literally
-    /// the frame's outer third (full width, ~33% of frame height), and naively stretch-filling
-    /// that whole band — the behavior <see cref="ComputeBoxPixels"/> alone produces — is what made
-    /// a rendered overlay visibly "block the whole screen" in practice (root-caused against a real
+    /// rendered asset — both DrawtextFilterBuilder and OverlayAssetFilterBuilder call this) is
+    /// drawn into. A named overlay-safe-zone band (<c>rect</c> — see
+    /// <c>OverlayPlacementBuilder</c>/<c>FrameGridAnalyzer</c>) is a SAFE ZONE for placement, not a
+    /// target size to fill: <c>LowerThird</c>/<c>UpperThird</c> are literally the frame's outer
+    /// third (full width, ~33% of frame height), and naively stretch-filling that whole band is
+    /// what made a rendered overlay visibly "block the whole screen" in practice (root-caused against a real
     /// 1440x2558 output; see docs/video-editing.md "Motion graphics (Phase 3)"). This method instead
     /// computes a compact ACCENT box: capped to <paramref name="boxHeightPct"/> percent of the
     /// FULL FRAME height (never exceeding the named band's own height, so it still sits inside the

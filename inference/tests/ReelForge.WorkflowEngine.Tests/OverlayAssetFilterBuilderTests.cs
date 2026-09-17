@@ -12,7 +12,7 @@ namespace ReelForge.WorkflowEngine.Tests;
 /// rendered-asset motion-graphics overlays (see docs/video-editing.md "Motion graphics (Phase
 /// 3)"), the parallel path to <see cref="DrawtextFilterBuilder"/> for an overlay that carries a
 /// <c>RenderedAssetLocalPath</c> instead of plain text. Covers input-index mapping, geometry
-/// shared with the drawtext path via <see cref="DrawtextFilterBuilder.ComputeBoxPixels"/>,
+/// shared with the drawtext path via <see cref="DrawtextFilterBuilder.ComputeAccentBoxPixels"/>,
 /// culture-invariant number formatting, the scale+setpts time-shift, and label chaining.
 /// </summary>
 public class OverlayAssetFilterBuilderTests

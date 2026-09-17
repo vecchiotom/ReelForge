@@ -2106,4 +2106,77 @@ public class VideoAnalyzeStepExecutorTests
         percents.Should().BeInAscendingOrder("the monotonic clamp must prevent any reported percent from regressing");
         percents[^1].Should().Be(100, "the last stage (UploadArtifact) must reach 100%");
     }
+
+    [Fact]
+    public async Task ExtractKeyframes_stage_is_actually_reported_during_a_Vision_enabled_run()
+    {
+        // VideoAnalyzeProgressPlan.Stage.ExtractKeyframes is added to the enabled-stages list
+        // whenever Vision != Off, but keyframe extraction happens inline inside the captioning
+        // loop, which — before this fix — only ever reported Stage.CaptionShots. ExtractKeyframes
+        // therefore ate 5 weight units off the percentage denominator with zero corresponding
+        // progress events. Assert an actual report whose label names the keyframe-extraction work.
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out Mock<ITranscriptionClientFactory> transcriptionFactory,
+            out Mock<IInferenceProviderResolver> providerResolver,
+            configOverride: cfg => cfg with
+            {
+                DetectSilence = false,
+                Transcription = VideoTranscriptionMode.Off,
+                AnalyzeVisuals = true,
+                Vision = VideoVisionMode.Optional,
+                MinCaptionShotSeconds = 0.0
+            });
+
+        probe.Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MediaProbeResult(4, 30, 1, 32, 18, "h264", "aac", 48000));
+        var shots = new[] { (0.0, 1.0), (1.0, 2.0), (2.0, 3.0) };
+        shotDetector
+            .Setup(s => s.DetectShotsAsync(It.IsAny<string>(), It.IsAny<double>(), It.IsAny<double>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(shots);
+
+        var frameGridSampler = new Mock<IFrameGridSampler>();
+        frameGridSampler
+            .Setup(g => g.SampleAsync(It.IsAny<string>(), It.IsAny<VideoScratchSpace>(), It.IsAny<double>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<double>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(BuildSyntheticGrid(32, 18, frameCount: 8, fps: 2.0));
+
+        ResolvedInferenceProvider provider = new(
+            Guid.NewGuid(), "vision-test", InferenceProviderKind.OpenAICompatible, "http://localhost:9999", "vision-1", "", 30);
+        providerResolver
+            .Setup(r => r.ResolveVisionAsync(It.IsAny<Guid?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(provider);
+
+        var shotCaptioner = new Mock<IShotCaptioner>();
+        shotCaptioner
+            .Setup(c => c.CaptionAsync(It.IsAny<ResolvedInferenceProvider>(), It.IsAny<ShotCaptionRequest>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ResolvedInferenceProvider _, ShotCaptionRequest r, int _, CancellationToken _) => new VideoShotCaption(
+                r.ShotId, "a caption", [], "action", "setting", "mood", "Medium", "Eye level", [], [],
+                "Unknown", "flat", "neutral", "centered", []));
+
+        workspace
+            .Setup(w => w.UploadArtifactAsync(
+                It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+                It.IsAny<CancellationToken>(), It.IsAny<string>()))
+            .ReturnsAsync("projects/p/agentFiles/video-analysis/e/step-1-analysis.json");
+
+        VideoAnalyzeStepExecutor executor = CreateExecutor(
+            workspace, probe, silence, shotDetector, transcriptionFactory, providerResolver,
+            audioExtractor: null, frameGridSampler: frameGridSampler, keyframeExtractor: null, shotCaptioner: shotCaptioner);
+
+        var reported = new List<string>();
+        context.ProgressReporter = (stage, _, _) =>
+        {
+            reported.Add(stage);
+            return Task.CompletedTask;
+        };
+
+        StepExecutionResult result = await executor.ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        reported.Should().Contain(s => s.Contains("Extracting keyframes"),
+            "keyframe extraction must actually report Stage.ExtractKeyframes progress, not silently eat its weight");
+    }
 }

@@ -542,6 +542,61 @@ public class VideoMultiSourceTests
         sharpnessSampler.Invocations.Count(i => i.Method.Name == nameof(ISharpnessSampler.MeasureAsync)).Should().Be(8);
     }
 
+    [Fact]
+    public async Task MaxSharpnessShots_budget_is_consumed_on_every_attempt_even_when_measurement_fails()
+    {
+        // MeasureAsync returns null on every attempt (ffmpeg failure/missing output/short read).
+        // Before the fix, Remaining was only decremented on a SUCCESSFUL measurement, so a source
+        // that failed every attempt left the budget untouched and the next source started with it
+        // still fully intact — a 2-source step with budget 4 would make 4 calls PER source (8
+        // total) instead of 4 total. Each source here has far more shots than the budget so
+        // exhausting the budget (not running out of shots) is what stops the attempts.
+        Guid fileA = Guid.NewGuid(), fileB = Guid.NewGuid();
+        const string keyA = "projects/p/files/clipA.mp4", keyB = "projects/p/files/clipB.mp4";
+
+        var shotsA = Enumerable.Range(0, 10).Select(i => ((double)(i * 2), (double)(i * 2 + 2))).ToList();
+        var shotsB = Enumerable.Range(0, 10).Select(i => ((double)(i * 2), (double)(i * 2 + 2))).ToList();
+
+        (Mock<IProjectFileWorkspace> workspace, Mock<IMediaProbe> probe, Mock<ISilenceDetector> silence, Mock<IShotDetector> shotDetector) =
+            TwoSourceFixture(fileA, fileB, keyA, keyB, shotsA, shotsB);
+
+        var frameGridSampler = new Mock<IFrameGridSampler>();
+        frameGridSampler
+            .Setup(g => g.SampleAsync(It.IsAny<string>(), It.IsAny<VideoScratchSpace>(), It.IsAny<double>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<double>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new FrameGridResult(new byte[4 * 4 * 3 * 4], 4, 4, 1.0, 4));
+
+        var sharpnessSampler = new Mock<ISharpnessSampler>();
+        sharpnessSampler
+            .Setup(s => s.MeasureAsync(It.IsAny<string>(), It.IsAny<VideoScratchSpace>(), It.IsAny<string>(), It.IsAny<double>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((double?)null);
+
+        VideoAnalyzeStepConfig config = new(
+            Version: 1,
+            Source: new VideoSourceRef(VideoSourceKind.ProjectFile, ProjectFileId: fileA),
+            DetectSilence: false,
+            Transcription: VideoTranscriptionMode.Off,
+            AnalyzeVisuals: true,
+            AnalyzeAudioLevels: false,
+            DetectNearDuplicates: false,
+            DetectSharpness: true,
+            MaxSharpnessShots: 4,
+            Sources:
+            [
+                new VideoSourceRef(VideoSourceKind.ProjectFile, ProjectFileId: fileA),
+                new VideoSourceRef(VideoSourceKind.ProjectFile, ProjectFileId: fileB)
+            ]);
+
+        StepExecutionContext context = CreateAnalyzeContext(config);
+        VideoAnalyzeStepExecutor executor = CreateAnalyzeExecutor(
+            workspace, probe, silence, shotDetector, frameGridSampler: frameGridSampler, sharpnessSampler: sharpnessSampler);
+
+        StepExecutionResult result = await executor.ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        sharpnessSampler.Invocations.Count(i => i.Method.Name == nameof(ISharpnessSampler.MeasureAsync)).Should().Be(4,
+            because: "the budget must be consumed step-wide on every ATTEMPT, not only on a successful measurement");
+    }
+
     // ---------------------------------------------------------------------
     // VideoAnalyzeStepExecutor: per-source guardrail enforcement
     // ---------------------------------------------------------------------
