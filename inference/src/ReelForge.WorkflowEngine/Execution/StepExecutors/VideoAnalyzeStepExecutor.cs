@@ -1377,9 +1377,8 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
 
         if (chunks.Count <= 1)
         {
-            await using FileStream stream = new(fullWavPath, FileMode.Open, FileAccess.Read, FileShare.Read);
             TranscriptResult result = await TranscribeWithRetryAsync(
-                client, stream, "audio.wav", config.Language, config.WordTimestamps, ct);
+                client, fullWavPath, "audio.wav", config.Language, config.WordTimestamps, ct);
 
             // Single chunk covers [0, duration) — its "chunk-relative" timestamps already ARE
             // absolute, so no offset is applied (offset would be +0 anyway).
@@ -1402,9 +1401,8 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                 string chunkPath = scratch.GetPath($"{scratchFilePrefix}audio-chunk-{chunkIndex}.wav");
                 await _audioExtractor.ExtractWavRangeAsync(localVideoPath, chunkPath, chunkStartSec, chunkEndSec, ct);
 
-                await using FileStream chunkStream = new(chunkPath, FileMode.Open, FileAccess.Read, FileShare.Read);
                 TranscriptResult chunkResult = await TranscribeWithRetryAsync(
-                    client, chunkStream, $"chunk-{chunkIndex}.wav", config.Language, config.WordTimestamps, ct);
+                    client, chunkPath, $"chunk-{chunkIndex}.wav", config.Language, config.WordTimestamps, ct);
 
                 // THE offset step (plan §3/R10): every timestamp the ASR backend returned is
                 // relative to the start of THIS chunk's audio bytes. Absolute time in the
@@ -1429,18 +1427,22 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
     /// Small bounded retry around only the ASR network call (plan: "ASR's own network call ...
     /// should have its own small bounded retry internally" — distinct from, and instead of, the
     /// outer whole-step executor retry, which is intentionally disabled for this step type).
+    ///
+    /// Takes a file PATH, not an open stream: the transcription SDK's HTTP call owns and disposes
+    /// whatever stream it's handed once that call completes (success or failure), so a stream
+    /// reused across attempts throws ObjectDisposedException ("Cannot access a closed file") on
+    /// any retry after attempt 1 — masking the original transient error entirely. Opening a fresh
+    /// stream per attempt avoids that.
     /// </summary>
     private static async Task<TranscriptResult> TranscribeWithRetryAsync(
-        ITranscriptionClient client, FileStream wav, string fileName, string? language, bool wordTimestamps, CancellationToken ct)
+        ITranscriptionClient client, string wavPath, string fileName, string? language, bool wordTimestamps, CancellationToken ct)
     {
         Exception? last = null;
         for (int attempt = 1; attempt <= AsrMaxAttempts; attempt++)
         {
             try
             {
-                if (attempt > 1)
-                    wav.Position = 0;
-
+                await using FileStream wav = new(wavPath, FileMode.Open, FileAccess.Read, FileShare.Read);
                 return await client.TranscribeAsync(wav, fileName, language, wordTimestamps, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
