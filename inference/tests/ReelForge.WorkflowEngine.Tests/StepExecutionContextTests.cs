@@ -50,6 +50,37 @@ public class StepExecutionContextTests
         input.Should().Be("second-output");
     }
 
+    /// <summary>
+    /// Bug group A.1 regression: PreviousStepOnly must resolve to the entry with the GREATEST
+    /// StepOrder strictly less than this step's own StepOrder — not "the most recently appended
+    /// entry" (LastOrDefault over history in append order). Those two only coincide when history
+    /// is append-only; after a ReviewLoop loop-back re-executes an earlier step, a later,
+    /// higher-StepOrder entry (here the ReviewLoop step's own StepOrder-4 verdict from the PRIOR
+    /// iteration) can be appended BEFORE a lower-StepOrder entry that is actually "the step
+    /// immediately before me" (StepOrder 2's fresh re-run). Without the fix, the re-entered
+    /// StepOrder-3 step would be fed the review's own JSON output instead of step 2's.
+    /// </summary>
+    [Fact]
+    public void BuildAgentInput_previous_step_only_picks_the_greatest_lesser_StepOrder_not_the_last_appended_entry()
+    {
+        StepExecutionContext context = CreateContext(
+            step: CreateStep(agentType: AgentType.DependencyAnalyzer, mode: null, stepOrder: 3),
+            accumulatedOutput: "irrelevant",
+            history: new List<StepOutputHistoryEntry>
+            {
+                // A stale higher-StepOrder entry (from a PRIOR loop iteration) appended AFTER the
+                // real "previous step" entry, but which belongs to a step order >= this step's own
+                // — must never be picked as "the previous step" no matter its append position.
+                new StepOutputHistoryEntry(1, "Analyze", "first-output"),
+                new StepOutputHistoryEntry(4, "Review (stale, prior iteration)", "{\"score\":3}"),
+                new StepOutputHistoryEntry(2, "StoryEditor", "second-output")
+            });
+
+        string input = context.BuildAgentInput();
+
+        input.Should().Be("second-output");
+    }
+
     [Fact]
     public void BuildAgentInput_selected_prior_steps_includes_only_selected_in_order()
     {

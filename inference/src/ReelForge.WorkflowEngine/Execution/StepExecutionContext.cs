@@ -174,7 +174,18 @@ public class StepExecutionContext
 
     private string BuildPreviousStepInput()
     {
-        StepOutputHistoryEntry? latest = StepOutputHistory.LastOrDefault(h => !string.IsNullOrWhiteSpace(h.Output));
+        // "The previous step" means the entry with the greatest StepOrder strictly less than
+        // this step's own StepOrder — NOT "the most recently appended entry". Those two
+        // coincide as long as StepOutputHistory is append-only, but a ReviewLoop loop-back
+        // re-executes earlier steps, appending a second entry for a StepOrder that already
+        // exists in history; "most recently appended" would then resolve to whichever step
+        // last completed (which can be the ReviewLoop step's own JSON verdict), not the step
+        // immediately before this one. See WorkflowExecutorService's loop-back pruning for the
+        // complementary belt-and-braces fix.
+        StepOutputHistoryEntry? latest = StepOutputHistory
+            .Where(h => h.StepOrder < Step.StepOrder && !string.IsNullOrWhiteSpace(h.Output))
+            .OrderByDescending(h => h.StepOrder)
+            .FirstOrDefault();
         return latest is null ? "[\"Begin analysis of the project.\"]" : latest.Output;
     }
 

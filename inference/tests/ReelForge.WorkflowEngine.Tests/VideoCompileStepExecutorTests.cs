@@ -491,8 +491,9 @@ public class VideoCompileStepExecutorTests
         StepExecutionContext context = CreateContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
 
         IReadOnlyList<string>? capturedArgs = null;
+        JsonElement edl = default;
         StepExecutionResult result = await CreateExecutor(
-            workspace, ffmpegArgsCaptured: args => capturedArgs ??= args,
+            workspace, ffmpegArgsCaptured: args => capturedArgs ??= args, edlCaptured: e => edl = e,
             configureMediaProbe: mock => mock
                 .Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new MediaProbeResult(10, 30, 1, 1920, 1080, "h264", null, null)))
@@ -509,6 +510,39 @@ public class VideoCompileStepExecutorTests
         List<string> argsList = capturedArgs!.ToList();
         argsList.Should().NotContain("[aout]");
         argsList.Should().NotContain("-c:a");
+
+        // Bug group C.1: every OTHER degrade path in this feature (graphics.reason, music.dropped,
+        // meta.transcription.degraded) records itself in the EDL — a dropped audio stream must too,
+        // rather than leaving a silent-video deliverable an unreported silent surprise.
+        JsonElement audio = edl.GetProperty("audio");
+        audio.GetProperty("applied").GetBoolean().Should().BeFalse();
+        audio.GetProperty("reason").GetString().Should().Be("no_audio_stream_in_source");
+
+        using JsonDocument outputDoc = JsonDocument.Parse(result.Output);
+        JsonElement outputAudio = outputDoc.RootElement.GetProperty("audio");
+        outputAudio.GetProperty("applied").GetBoolean().Should().BeFalse();
+        outputAudio.GetProperty("reason").GetString().Should().Be("no_audio_stream_in_source");
+    }
+
+    [Fact]
+    public async Task Source_with_audio_records_audio_applied_true_with_no_reason_in_the_edl()
+    {
+        // The positive counterpart of the test above: a normal source with a real audio stream
+        // must report audio.applied=true (and no degrade reason) in both the EDL and outputSummary.
+        VideoAnalysisArtifact artifact = BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" });
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(workspace, edlCaptured: e => edl = e).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+
+        JsonElement audio = edl.GetProperty("audio");
+        audio.GetProperty("applied").GetBoolean().Should().BeTrue();
+
+        using JsonDocument outputDoc = JsonDocument.Parse(result.Output);
+        outputDoc.RootElement.GetProperty("audio").GetProperty("applied").GetBoolean().Should().BeTrue();
     }
 
     [Fact]
@@ -721,6 +755,102 @@ public class VideoCompileStepExecutorTests
 
         result.Status.Should().Be(StepStatus.Completed);
         result.OutputStorageKey.Should().NotBeNullOrWhiteSpace();
+    }
+
+    /// <summary>
+    /// Bug group A.2 regression: after a ReviewLoop loop-back re-executes the story editor step,
+    /// StepOutputHistory can hold two entries for the SAME StepOrder — the stale iteration-1
+    /// decision and the fresh iteration-2 one (belt-and-braces: WorkflowExecutorService now prunes
+    /// this on loop-back too, but this test constructs the pre-prune shape directly to prove
+    /// ResolveDecisionJson's own resolution is independently correct). An explicit
+    /// <c>Decision.From=Step</c>/StepOrder reference must resolve to the LATEST matching entry
+    /// (LastOrDefault), never the first one appended (FirstOrDefault) — otherwise every loop
+    /// iteration after the first would silently re-compile the stale first-iteration decision.
+    /// </summary>
+    [Fact]
+    public async Task Explicit_step_order_decision_reference_resolves_to_the_latest_entry_when_history_has_a_duplicate_StepOrder()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0), ("s1", 10.0, 20.0) },
+            offeredIds: new[] { "s0", "s1" });
+
+        string staleDecisionJson = BuildDecisionJson(("s0", "s0", "stale iteration 1 decision"));
+        string freshDecisionJson = BuildDecisionJson(("s0", "s1", "fresh iteration 2 decision"));
+
+        var workspace = new Mock<IProjectFileWorkspace>();
+        workspace
+            .Setup(w => w.DownloadStorageKeyToFileAsync(
+                It.IsAny<Guid>(), AnalysisKey, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<Guid, string, string, CancellationToken>((_, _, destPath, _) =>
+            {
+                File.WriteAllText(destPath, JsonSerializer.Serialize(artifact, ArtifactOptions()));
+                return Task.CompletedTask;
+            });
+        workspace
+            .Setup(w => w.DownloadStorageKeyToFileAsync(
+                It.IsAny<Guid>(), SourceVideoKey, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<Guid, string, string, CancellationToken>((_, _, destPath, _) =>
+            {
+                File.WriteAllBytes(destPath, new byte[] { 0x00, 0x01, 0x02 });
+                return Task.CompletedTask;
+            });
+
+        VideoCompileStepConfig config = new(
+            Version: 1,
+            Decision: new ExtractInputRef(ExtractInputSource.Step, StepOrder: 2),
+            AnalysisStepOrder: 1);
+
+        var step = new WorkflowStep
+        {
+            Id = Guid.NewGuid(),
+            StepOrder = 4,
+            StepType = StepType.VideoCompile,
+            VideoCompileConfigJson = JsonSerializer.Serialize(config, ConfigOptions())
+        };
+
+        VideoAnalyzeStepConfig analyzeConfig = new(
+            Version: 1,
+            Source: new VideoSourceRef(VideoSourceKind.PreviousStepOutput));
+        var analyzeStep = new WorkflowStep
+        {
+            Id = Guid.NewGuid(),
+            StepOrder = 1,
+            StepType = StepType.VideoAnalyze,
+            VideoAnalyzeConfigJson = JsonSerializer.Serialize(analyzeConfig, ConfigOptions())
+        };
+
+        // Simulates the exact post-loop-back shape WorkflowExecutorService's StepOutputHistory
+        // would hold WITHOUT its own A.3 prune fix: the stale iteration-1 StoryEditor output at
+        // StepOrder 2, appended BEFORE the fresh iteration-2 one.
+        List<StepOutputHistoryEntry> history =
+        [
+            new StepOutputHistoryEntry(0, "Render", "{}", OutputStorageKey: SourceVideoKey, ArtifactStorageKey: null),
+            new StepOutputHistoryEntry(1, "Analyze", "{}", OutputStorageKey: null, ArtifactStorageKey: AnalysisKey),
+            new StepOutputHistoryEntry(2, "StoryEditor", staleDecisionJson, OutputStorageKey: null, ArtifactStorageKey: null),
+            new StepOutputHistoryEntry(2, "StoryEditor", freshDecisionJson, OutputStorageKey: null, ArtifactStorageKey: null)
+        ];
+
+        StepExecutionContext context = new()
+        {
+            Execution = new WorkflowExecution { Id = Guid.NewGuid(), ProjectId = ProjectId },
+            Step = step,
+            AllSteps = [analyzeStep, step],
+            AccumulatedOutput = freshDecisionJson,
+            StepOutputHistory = history,
+            CurrentStepIndex = 3,
+            IterationCount = 1,
+            CorrelationId = "test",
+            CancellationToken = CancellationToken.None
+        };
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(workspace, edlCaptured: e => edl = e).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        // Stale decision keeps only s0 (0-10s); fresh decision keeps s0 through s1 (0-20s). Picking
+        // the stale entry would compile a 10s output instead of the fresh 20s one.
+        edl.GetProperty("totalOutputSeconds").GetDouble().Should().BeApproximately(20.0, 0.01,
+            "the FRESH (latest) decision must be resolved, not the stale first-appended one");
     }
 
     [Fact]
@@ -1759,8 +1889,9 @@ public class VideoCompileStepExecutorTests
         StepExecutionContext context = CreateMusicContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
 
         IReadOnlyList<string>? capturedArgs = null;
+        JsonElement edl = default;
         StepExecutionResult result = await CreateExecutor(
-            workspace, ffmpegArgsCaptured: args => capturedArgs ??= args,
+            workspace, ffmpegArgsCaptured: args => capturedArgs ??= args, edlCaptured: e => edl = e,
             configureMediaProbe: mock => mock
                 .Setup(p => p.ProbeAsync(It.Is<string>(path => !path.Contains("music")), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new MediaProbeResult(10, 30, 1, 1920, 1080, "h264", null, null)))
@@ -1779,6 +1910,19 @@ public class VideoCompileStepExecutorTests
         List<string> argsList = capturedArgs!.ToList();
         argsList.Should().Contain("[aout]", "there IS audio output overall — it just comes from music alone");
         argsList.Should().Contain("-c:a");
+
+        // Bug group C.2: with no dialogue audio in the final output at all, there is nothing to
+        // duck against — ResolveMusicAsync must skip lift-window planning (flat, undocked bed
+        // level) and must not report a dialogueHeadroom number describing dialogue that isn't
+        // there, rather than sitting the music at the ducked level through what were dialogue
+        // regions in the (dropped) source audio.
+        JsonElement music = edl.GetProperty("music");
+        music.GetProperty("duckBasis").GetString().Should().Be("no_dialogue_audio");
+        music.GetProperty("bedDbfs").GetInt32().Should().Be(music.GetProperty("duckedDbfs").GetInt32(),
+            "with nothing to duck against, the bed level must stay flat rather than sitting ducked");
+        JsonElement headroom = music.GetProperty("dialogueHeadroom");
+        headroom.GetProperty("applicable").GetBoolean().Should().BeFalse();
+        headroom.GetProperty("reason").GetString().Should().Be("no_dialogue_audio_in_output");
     }
 
     [Fact]

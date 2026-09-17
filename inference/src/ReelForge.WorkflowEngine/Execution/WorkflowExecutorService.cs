@@ -353,6 +353,20 @@ public class WorkflowExecutorService
                     stepOutputHistory.Add(new StepOutputHistoryEntry(
                         step.StepOrder, stepLabel, result.Output, result.OutputStorageKey, result.ArtifactStorageKey));
                 }
+                // Prune stale history on loop-back (belt-and-braces alongside the
+                // LastOrDefault/greatest-StepOrder fixes at each StepOutputHistory consumer): a
+                // ReviewLoop step rewinding execution re-executes every step from the loop
+                // target through (but not including) itself, which is about to append a second
+                // entry for each of those StepOrders. Drop the now-stale entries up front so
+                // history keeps its "each StepOrder appears at most once, always the freshest"
+                // invariant true for any future consumer, not just the ones already hardened to
+                // pick the latest match themselves.
+                if (result.NextStepIndex <= currentStepIndex)
+                {
+                    int loopTargetStepOrder = steps[result.NextStepIndex].StepOrder;
+                    stepOutputHistory.RemoveAll(h => h.StepOrder >= loopTargetStepOrder);
+                }
+
                 iterationCount = result.NewIterationCount;
                 currentStepIndex = result.NextStepIndex;
 

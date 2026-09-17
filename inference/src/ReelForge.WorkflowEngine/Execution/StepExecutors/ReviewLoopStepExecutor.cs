@@ -126,20 +126,38 @@ public class ReviewLoopStepExecutor : IStepExecutor
     {
         try
         {
-            using JsonDocument doc = JsonDocument.Parse(reviewOutput);
+            string json = RobustJsonExtractor.ExtractJsonObject(reviewOutput) ?? reviewOutput;
+            using JsonDocument doc = JsonDocument.Parse(json);
             if (doc.RootElement.TryGetProperty("score", out JsonElement scoreProp) &&
                 scoreProp.ValueKind == JsonValueKind.Number)
             {
-                return scoreProp.GetInt32();
+                return ReadScore(scoreProp);
             }
             if (doc.RootElement.TryGetProperty("overallScore", out JsonElement overallScoreProp) &&
                 overallScoreProp.ValueKind == JsonValueKind.Number)
             {
-                return overallScoreProp.GetInt32();
+                return ReadScore(overallScoreProp);
             }
         }
         catch (JsonException) { }
         return 0;
+    }
+
+    /// <summary>
+    /// Reads a review score as an int, tolerating a non-integer JSON number (e.g. <c>8.5</c> —
+    /// entirely plausible output for a "score 1-10" prompt). <see cref="JsonElement.GetInt32"/>
+    /// throws <see cref="FormatException"/> — NOT <see cref="JsonException"/> — for a non-integer
+    /// number, which the caller's <c>catch (JsonException)</c> does not cover, so an uncaught
+    /// exception would previously propagate out of this "never fails the loop" scoring helper.
+    /// Falls back to the rounded double value, then clamps to a sane 0-10 range.
+    /// </summary>
+    private static int ReadScore(JsonElement scoreProp)
+    {
+        int score = scoreProp.TryGetInt32(out int intValue)
+            ? intValue
+            : (int)Math.Round(scoreProp.GetDouble(), MidpointRounding.AwayFromZero);
+
+        return Math.Clamp(score, 0, 10);
     }
 
     /// <summary>
@@ -156,7 +174,8 @@ public class ReviewLoopStepExecutor : IStepExecutor
     {
         try
         {
-            using JsonDocument doc = JsonDocument.Parse(reviewOutput);
+            string json = RobustJsonExtractor.ExtractJsonObject(reviewOutput) ?? reviewOutput;
+            using JsonDocument doc = JsonDocument.Parse(json);
             JsonElement root = doc.RootElement;
             List<string> parts = new();
 

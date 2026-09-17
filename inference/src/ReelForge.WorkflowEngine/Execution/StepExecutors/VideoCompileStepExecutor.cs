@@ -467,6 +467,72 @@ public class VideoCompileStepExecutor : IStepExecutor
                     "Mode=StreamCopy requires AllowKeyframeSnapping=true (stream-copy cuts can only land on keyframes).");
             }
 
+            // ---- Resolve + download every DISTINCT source clip the resolved cut list actually
+            // references (never every clip the artifact merely analyzed — only the ones actually
+            // kept). Multi-source addition: when the artifact recorded its own per-source storage
+            // keys (VideoAnalysisArtifact.Sources — every artifact produced by the current
+            // VideoAnalyzeStepExecutor), those are used directly; a source index NOT found there
+            // (only possible for index 0, on a legacy pre-multi-source artifact) falls back to
+            // re-deriving it the original way, by walking the VideoAnalyze step's own config.
+            //
+            // Moved ahead of graphics/music/EDL resolution (this used to run right before
+            // encoding) so sourceHasAudioByIndex — and the hasDialogueAudioInOutput flag derived
+            // from it just below — is known before ResolveMusicAsync/BuildEdl run, letting both
+            // honestly reflect whether the final output actually has any dialogue audio to duck
+            // against or report (see bug-group-C fixes below). One behavior change from the
+            // reorder: a SOURCE_UNRESOLVED failure below no longer carries an edlStorageKey — the
+            // EDL is written after this succeeds now, so there is nothing yet to point at. ----
+
+            var localPathBySource = new Dictionary<int, string>();
+            var sourceHasAudioByIndex = new Dictionary<int, bool>();
+            foreach (int idx in usedSourceIndices)
+            {
+                string? key = GetRecordedSourceStorageKey(artifact, idx);
+                if (key is null)
+                {
+                    if (idx != 0)
+                    {
+                        return Failure(
+                            context, sw, "SOURCE_UNRESOLVED",
+                            $"Source index {idx} has no recorded storage key in the analysis artifact.");
+                    }
+
+                    (string? legacyKey, string? sourceError) = await ResolveSourceStorageKeyAsync(context, config);
+                    if (legacyKey is null)
+                        return Failure(context, sw, "SOURCE_UNRESOLVED", sourceError ?? "Could not resolve the source video to cut.");
+
+                    key = legacyKey;
+                }
+
+                await context.ReportProgressAsync(
+                    usedSourceIndices.Count > 1 ? $"Downloading source {idx} ({localPathBySource.Count + 1}/{usedSourceIndices.Count})" : "Downloading source");
+
+                string localPath = scratch.GetPath(
+                    $"source-{idx}" + Path.GetExtension(key) switch { "" => ".mp4", var e => e });
+                await _workspace.DownloadStorageKeyToFileAsync(context.Execution.ProjectId, key, localPath, context.CancellationToken);
+                localPathBySource[idx] = localPath;
+
+                // Real stock/B-roll footage routinely ships with no audio stream at all — probing
+                // here (once per distinct source, cheap) is what lets the encode methods below
+                // build a video-only filtergraph instead of crashing ffmpeg on a "[N:a]" that
+                // matches no streams. Mirrors the exact ProbeAsync/AudioCodec-null pattern already
+                // used for the background-music track in ResolveMusicAsync.
+                MediaProbeResult sourceProbe = await _mediaProbe.ProbeAsync(localPath, context.CancellationToken);
+                sourceHasAudioByIndex[idx] = sourceProbe.AudioCodec is not null;
+            }
+
+            // Whether the FINAL OUTPUT will have any dialogue audio at all: single-source drops
+            // audio only when that one clip lacks it; multi-source currently drops ALL audio the
+            // moment ANY referenced clip lacks it (see EncodeReencodeMultiSourceAsync's
+            // allSourcesHaveAudio gating — a documented, lower-priority follow-up would synthesize
+            // silence per-segment instead). Threaded into ResolveMusicAsync (skip ducking/lift-
+            // window computation against dialogue that will not exist in the output) and the new
+            // "audio" EDL/outputSummary block below (report the degrade instead of leaving it
+            // silent).
+            bool allSourcesHaveAudio = usedSourceIndices.All(i => sourceHasAudioByIndex[i]);
+            bool sourceHasAudio = sourceHasAudioByIndex[usedSourceIndices[0]];
+            bool hasDialogueAudioInOutput = isMultiSource ? allSourcesHaveAudio : sourceHasAudio;
+
             // ---- Phase 3 (motion graphics): resolve & validate the plan, purely soft-failure.
             // Only even attempted when EnableGraphics=true — when false (the default), nothing
             // below this point differs from the pre-Phase-3 compile path at all, which is the
@@ -493,66 +559,32 @@ public class VideoCompileStepExecutor : IStepExecutor
             {
                 await context.ReportProgressAsync("Resolving background music");
                 (resolvedMusic, musicNode) = await ResolveMusicAsync(
-                    context, config, artifact, resolvedSpans, scratch, context.CancellationToken);
+                    context, config, artifact, resolvedSpans, scratch, hasDialogueAudioInOutput, context.CancellationToken);
             }
+
+            // ---- Audio degrade report (bug group C): every OTHER degrade path in this feature
+            // (graphics.reason, music.dropped, meta.transcription.degraded) records itself in the
+            // EDL/outputSummary — this one previously didn't, so a silent-video deliverable could
+            // be a silent surprise. Always present (unlike graphics/music, which are conditional on
+            // EnableGraphics/EnableMusic), since audio isn't opt-in the way those phases are. ----
+
+            var audioNode = new JsonObject
+            {
+                ["applied"] = hasDialogueAudioInOutput,
+                ["reason"] = hasDialogueAudioInOutput ? null : JsonValue.Create("no_audio_stream_in_source")
+            };
 
             // ---- Write the EDL audit artifact ----
 
             await context.ReportProgressAsync("Writing edit decision list");
             string edlLocalPath = scratch.GetPath("edl.json");
             JsonObject edl = BuildEdl(
-                config, analysisArtifactKey, resolvedSpans, retainedRatio, totalOutputSeconds, droppedOverCap, crf, graphicsNode, musicNode);
+                config, analysisArtifactKey, resolvedSpans, retainedRatio, totalOutputSeconds, droppedOverCap, crf, graphicsNode, musicNode, audioNode);
             await File.WriteAllTextAsync(edlLocalPath, edl.ToJsonString(EnvelopeJsonOptions), context.CancellationToken);
 
             string edlFileName = $"video-analysis/{context.Execution.Id:D}/step-{step.StepOrder}-edl.json";
             string edlStorageKey = await _workspace.UploadArtifactAsync(
                 context.Execution.ProjectId, edlLocalPath, edlFileName, "application/json", context.CancellationToken);
-
-            // ---- Resolve + download every DISTINCT source clip the resolved cut list actually
-            // references (never every clip the artifact merely analyzed — only the ones actually
-            // kept). Multi-source addition: when the artifact recorded its own per-source storage
-            // keys (VideoAnalysisArtifact.Sources — every artifact produced by the current
-            // VideoAnalyzeStepExecutor), those are used directly; a source index NOT found there
-            // (only possible for index 0, on a legacy pre-multi-source artifact) falls back to
-            // re-deriving it the original way, by walking the VideoAnalyze step's own config. ----
-
-            var localPathBySource = new Dictionary<int, string>();
-            var sourceHasAudioByIndex = new Dictionary<int, bool>();
-            foreach (int idx in usedSourceIndices)
-            {
-                string? key = GetRecordedSourceStorageKey(artifact, idx);
-                if (key is null)
-                {
-                    if (idx != 0)
-                    {
-                        return Failure(
-                            context, sw, "SOURCE_UNRESOLVED",
-                            $"Source index {idx} has no recorded storage key in the analysis artifact.", edlStorageKey);
-                    }
-
-                    (string? legacyKey, string? sourceError) = await ResolveSourceStorageKeyAsync(context, config);
-                    if (legacyKey is null)
-                        return Failure(context, sw, "SOURCE_UNRESOLVED", sourceError ?? "Could not resolve the source video to cut.", edlStorageKey);
-
-                    key = legacyKey;
-                }
-
-                await context.ReportProgressAsync(
-                    usedSourceIndices.Count > 1 ? $"Downloading source {idx} ({localPathBySource.Count + 1}/{usedSourceIndices.Count})" : "Downloading source");
-
-                string localPath = scratch.GetPath(
-                    $"source-{idx}" + Path.GetExtension(key) switch { "" => ".mp4", var e => e });
-                await _workspace.DownloadStorageKeyToFileAsync(context.Execution.ProjectId, key, localPath, context.CancellationToken);
-                localPathBySource[idx] = localPath;
-
-                // Real stock/B-roll footage routinely ships with no audio stream at all — probing
-                // here (once per distinct source, cheap) is what lets the encode methods below
-                // build a video-only filtergraph instead of crashing ffmpeg on a "[N:a]" that
-                // matches no streams. Mirrors the exact ProbeAsync/AudioCodec-null pattern already
-                // used for the background-music track in ResolveMusicAsync.
-                MediaProbeResult sourceProbe = await _mediaProbe.ProbeAsync(localPath, context.CancellationToken);
-                sourceHasAudioByIndex[idx] = sourceProbe.AudioCodec is not null;
-            }
 
             string encodedLocalPath = scratch.GetPath(outputFileName);
             TimeSpan timeout = TimeSpan.FromSeconds(_options.CompileTimeoutSeconds);
@@ -562,7 +594,6 @@ public class VideoCompileStepExecutor : IStepExecutor
             if (isMultiSource)
             {
                 // Guaranteed Mode=Reencode by the MULTI_SOURCE_REQUIRES_REENCODE check above.
-                bool allSourcesHaveAudio = usedSourceIndices.All(i => sourceHasAudioByIndex[i]);
                 encodeResult = await EncodeReencodeMultiSourceAsync(
                     scratch, localPathBySource, encodedLocalPath, resolvedSpans, config.VideoCodec, config.AudioCodec, config.Preset, crf,
                     canonicalMedia, timeout, context.CancellationToken,
@@ -577,7 +608,6 @@ public class VideoCompileStepExecutor : IStepExecutor
                 // single-clip-in-practice) compile's ffmpeg argv/behavior stays byte-identical to
                 // before this addition.
                 string localVideoPath = localPathBySource[usedSourceIndices[0]];
-                bool sourceHasAudio = sourceHasAudioByIndex[usedSourceIndices[0]];
                 encodeResult = config.Mode == VideoCompileMode.Reencode
                     ? await EncodeReencodeAsync(
                         scratch, localVideoPath, encodedLocalPath, resolvedSpans, config.VideoCodec, config.AudioCodec, config.Preset, crf,
@@ -633,6 +663,8 @@ public class VideoCompileStepExecutor : IStepExecutor
 
             if (musicNode is not null)
                 outputSummary["music"] = JsonNode.Parse(musicNode.ToJsonString(EnvelopeJsonOptions));
+
+            outputSummary["audio"] = JsonNode.Parse(audioNode.ToJsonString(EnvelopeJsonOptions));
 
             return new StepExecutionResult
             {
@@ -698,8 +730,13 @@ public class VideoCompileStepExecutor : IStepExecutor
                 : (result.ArtifactStorageKey, null);
         }
 
+        // LastOrDefault, not FirstOrDefault: after a ReviewLoop loop-back re-executes an earlier
+        // step, StepOutputHistory can (absent the executor's own pruning, kept here as
+        // belt-and-braces) hold two entries for the same StepOrder — the stale first-iteration
+        // one and the fresh one. An explicit step-order reference must always resolve to that
+        // step's MOST RECENT output.
         StepOutputHistoryEntry? entry = context.StepOutputHistory
-            .FirstOrDefault(h => h.StepOrder == config.AnalysisStepOrder);
+            .LastOrDefault(h => h.StepOrder == config.AnalysisStepOrder);
 
         return entry is null || string.IsNullOrWhiteSpace(entry.ArtifactStorageKey)
             ? (null, $"Step {config.AnalysisStepOrder} in this execution did not produce an ArtifactStorageKey.")
@@ -721,8 +758,12 @@ public class VideoCompileStepExecutor : IStepExecutor
         {
             ExtractInputSource.Previous => context.StepOutputHistory
                 .LastOrDefault(h => !string.IsNullOrWhiteSpace(h.Output))?.Output,
+            // LastOrDefault, not FirstOrDefault — see the identical rationale on
+            // ResolveAnalysisArtifactKeyAsync's StepOutputHistory lookup above: a loop-back can
+            // leave a stale duplicate StepOrder entry in history, and an explicit step-order
+            // reference must resolve to the freshest one.
             ExtractInputSource.Step => decisionRef.StepOrder.HasValue
-                ? context.StepOutputHistory.FirstOrDefault(h => h.StepOrder == decisionRef.StepOrder.Value)?.Output
+                ? context.StepOutputHistory.LastOrDefault(h => h.StepOrder == decisionRef.StepOrder.Value)?.Output
                 : null,
             _ => null
         };
@@ -738,51 +779,18 @@ public class VideoCompileStepExecutor : IStepExecutor
         // A bare JsonSerializer.Deserialize<T> over the whole string chokes on that trailing
         // content even though the JSON itself is perfectly valid, so extract just the balanced
         // {...} object first and ignore everything outside it.
+        // Hoisted to RobustJsonExtractor so ReviewLoopStepExecutor can apply the same hardening
+        // to AgentType.VideoReviewAgent's output — see that class's doc comment for the full
+        // rationale. Kept as an internal alias here so this call site (and any external test
+        // referencing VideoCompileStepExecutor.ExtractJsonObject) is unaffected.
         string? extracted = ExtractJsonObject(content);
         return extracted is null
             ? (null, $"{label} input did not contain a recognizable JSON object.")
             : (extracted, null);
     }
 
-    /// <summary>
-    /// Finds the first <c>{</c> in <paramref name="raw"/> and returns the substring through its
-    /// matching balanced <c>}</c> (brace depth tracked with string-literal/escape awareness, so a
-    /// <c>{</c>/<c>}</c> inside a quoted JSON string value never miscounts), discarding anything
-    /// before or after. Returns null if no balanced object is found. Pure string scanning — no
-    /// dependency on the JSON actually being well-formed beyond bracket balance, since the real
-    /// validation happens at <see cref="JsonSerializer.Deserialize{T}(string, JsonSerializerOptions?)"/>
-    /// right after this.
-    /// </summary>
-    internal static string? ExtractJsonObject(string raw)
-    {
-        int start = raw.IndexOf('{');
-        if (start < 0) return null;
-
-        int depth = 0;
-        bool inString = false;
-        bool escape = false;
-        for (int i = start; i < raw.Length; i++)
-        {
-            char c = raw[i];
-            if (inString)
-            {
-                if (escape) escape = false;
-                else if (c == '\\') escape = true;
-                else if (c == '"') inString = false;
-                continue;
-            }
-
-            if (c == '"') { inString = true; continue; }
-            if (c == '{') depth++;
-            else if (c == '}')
-            {
-                depth--;
-                if (depth == 0) return raw.Substring(start, i - start + 1);
-            }
-        }
-
-        return null; // unbalanced — never seen depth return to 0
-    }
+    /// <inheritdoc cref="RobustJsonExtractor.ExtractJsonObject"/>
+    internal static string? ExtractJsonObject(string raw) => RobustJsonExtractor.ExtractJsonObject(raw);
 
     /// <summary>
     /// The source video is whatever the referenced VideoAnalyze step actually analyzed —
@@ -1503,6 +1511,7 @@ public class VideoCompileStepExecutor : IStepExecutor
         VideoAnalysisArtifact artifact,
         IReadOnlyList<ResolvedSpan> resolvedSpans,
         VideoScratchSpace scratch,
+        bool hasDialogueAudio,
         CancellationToken ct)
     {
         var music = new JsonObject { ["enabled"] = true, ["applied"] = false, ["unavailable"] = false };
@@ -1641,7 +1650,16 @@ public class VideoCompileStepExecutor : IStepExecutor
         string ducking = duckingWord is "Off" or "Light" or "Normal" or "Heavy" ? duckingWord : "Normal";
         string fit = fitWord is "LoopToFit" or "PlayOnce" ? fitWord : config.MusicFitPolicy.ToString();
 
-        bool duckingOff = config.MusicDucking == MusicDuckingMode.Off || ducking == "Off";
+        bool configDuckingOff = config.MusicDucking == MusicDuckingMode.Off || ducking == "Off";
+
+        // Bug group C.2: when the final output has no dialogue audio at all (single-source
+        // audio-less, or multi-source with audio dropped across the whole output — see
+        // hasDialogueAudio, threaded in from the caller's sourceHasAudio/allSourcesHaveAudio
+        // flags), there is nothing to duck against. Fold that into the same duckingOff switch
+        // that already collapses lift-window planning to a flat, undocked bed level, rather than
+        // planning ducking windows from dialogue silence/segments that will not exist in the
+        // output.
+        bool duckingOff = configDuckingOff || !hasDialogueAudio;
 
         int bedDb = Math.Clamp(intensity switch
         {
@@ -1719,7 +1737,12 @@ public class VideoCompileStepExecutor : IStepExecutor
             FadeOutSec: fadeOutSec,
             LiftWindows: liftPlan.Windows);
 
-        JsonObject headroom = BuildDialogueHeadroom(artifact, resolvedSpans, bedDb, duckAttenDb, duckingOff);
+        // Bug group C.2: a headroom number describes dialogue that isn't there when the output has
+        // no dialogue audio — report {"applicable": false} with the actual reason instead of
+        // computing one against Phase 1 loudness data from audio that got dropped.
+        JsonObject headroom = hasDialogueAudio
+            ? BuildDialogueHeadroom(artifact, resolvedSpans, bedDb, duckAttenDb, duckingOff)
+            : new JsonObject { ["applicable"] = false, ["reason"] = "no_dialogue_audio_in_output" };
 
         music["applied"] = true;
         music["source"] = source;
@@ -1736,7 +1759,7 @@ public class VideoCompileStepExecutor : IStepExecutor
         music["playEndSec"] = Math.Round(playEndSec, 2);
         music["fadeInSec"] = Math.Round(fadeInSec, 2);
         music["fadeOutSec"] = Math.Round(fadeOutSec, 2);
-        music["duckBasis"] = duckingOff ? "none" : liftPlan.Basis;
+        music["duckBasis"] = !hasDialogueAudio ? "no_dialogue_audio" : (duckingOff ? "none" : liftPlan.Basis);
         music["liftWindows"] = liftPlan.Windows.Count;
         music["liftCoveragePct"] = liftPlan.LiftCoveragePct;
         music["speechCoveragePct"] = liftPlan.SpeechCoveragePct;
@@ -2531,7 +2554,8 @@ public class VideoCompileStepExecutor : IStepExecutor
         int droppedOverCap,
         int crf,
         JsonObject? graphics = null,
-        JsonObject? music = null)
+        JsonObject? music = null,
+        JsonObject? audio = null)
     {
         var segmentsArray = new JsonArray();
         for (int i = 0; i < spans.Count; i++)
@@ -2581,6 +2605,11 @@ public class VideoCompileStepExecutor : IStepExecutor
         // Background music: same discipline — only present when EnableMusic=true.
         if (music is not null)
             edl["music"] = music;
+
+        // Bug group C: unlike graphics/music, always present — audio isn't opt-in the way those
+        // phases are, so a dropped audio stream is never silently unreported.
+        if (audio is not null)
+            edl["audio"] = audio;
 
         return edl;
     }
