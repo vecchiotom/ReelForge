@@ -75,7 +75,9 @@ export const VideoAnalyzeNode = memo(({ data }: { data: VideoAnalyzeNodeData }) 
                   ANALYZE VIDEO
                 </Badge>
                 <Badge size="sm" variant="outline" color="blue">
-                  {config.source.kind}
+                  {config.source
+                    ? config.source.kind
+                    : `${config.sources?.length ?? 0} sources`}
                 </Badge>
                 <Badge size="sm" variant="outline" color="gray">
                   ASR: {config.transcription}

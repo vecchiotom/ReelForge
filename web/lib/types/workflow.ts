@@ -217,7 +217,8 @@ export type VideoCaptionSelection = 'PerDuplicateGroup' | 'LongestShots' | 'Even
 
 export interface VideoAnalyzeStepConfig {
   version: number;
-  source: VideoSourceRef;
+  /** Absent when `sources` (plural) is used instead — the backend record allows either. */
+  source?: VideoSourceRef;
   /** Multi-source analysis. A one-element list behaves identically to a single `source`. Optional — omitted for the (still overwhelmingly common) single-source case. */
   sources?: VideoSourceRef[] | null;
   // -- silence detection --

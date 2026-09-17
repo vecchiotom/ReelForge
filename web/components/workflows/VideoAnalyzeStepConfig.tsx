@@ -157,12 +157,25 @@ export function VideoAnalyzeStepConfig({
 
   return (
     <Stack gap="md" onClick={(e) => e.stopPropagation()}>
-      <VideoSourceRefPicker
-        value={config.source}
-        onChange={(source) => patch({ source })}
-        priorStepOptions={priorStepOptions}
-        projectId={projectId}
-      />
+      {config.source ? (
+        <VideoSourceRefPicker
+          value={config.source}
+          onChange={(source) => patch({ source })}
+          priorStepOptions={priorStepOptions}
+          projectId={projectId}
+        />
+      ) : (
+        <Paper withBorder p="xs" radius="md">
+          <Text size="sm" fw={600}>
+            Multi-source step ({config.sources?.length ?? 0} clips)
+          </Text>
+          <Text size="xs" c="dimmed">
+            This step analyzes multiple source clips at once. Editing multiple sources isn&apos;t
+            supported in this builder yet — configure them via the API, or delete and re-add this
+            step with a single source to edit it here.
+          </Text>
+        </Paper>
+      )}
 
       <Divider label="Silence detection" labelPosition="left" />
       <Group grow align="flex-end">
