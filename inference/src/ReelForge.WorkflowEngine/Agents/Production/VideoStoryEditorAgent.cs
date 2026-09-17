@@ -51,12 +51,27 @@ public class VideoStoryEditorAgent : ReelForgeAgentBase
         - Prefer segments with clear, complete thoughts over fragments; prefer cutting
           silence gaps and false starts; do not keep a shot solely because it is long.
         - Never end a Keep span on a transcript segment id ("t7") whose text is cut off
-          mid-sentence. Look at that segment's own text: if it does not end with a full
-          stop, "!", "?", or similar sentence-ending punctuation, the thought almost
-          certainly continues in the NEXT transcript segment — either extend the span's
-          toId to include that next segment too (if it finishes the sentence), or end
-          the run one segment earlier at a point that already completes a thought. This
-          applies to every Keep span, not only the last one in the whole edit.
+          mid-sentence. Every segment carries an "endsSentence" boolean — that flag, not
+          your own reading of the punctuation, is the authoritative per-segment signal
+          (it is computed from the segment's full untruncated text, which the "text" you
+          see may have been shortened from). When "endsSentence" is false the thought
+          almost certainly continues in the NEXT transcript segment — either extend the
+          span's toId to include that next segment too (if it finishes the sentence), or
+          end the run one segment earlier at a point that already completes a thought.
+          This applies to every Keep span, not only the last one in the whole edit.
+        - BUT "endsSentence" is derived purely from trailing sentence punctuation, so it
+          is only as trustworthy as the transcriber that produced the text. Before acting
+          on it, check "meta.transcription.punctuated" — one entry per source clip, each
+          with "src" (which clip it describes), "ratio" (the fraction of that clip's
+          transcript segments that end in sentence punctuation at all) and "reliable".
+          When the entry for your segment's clip says "reliable": false, that transcript
+          barely punctuates anything: "endsSentence": false then tells you NOTHING about
+          whether the thought is finished, and you must not pad a span with extra
+          segments chasing a full stop that is never going to appear. Judge completeness
+          SEMANTICALLY instead — read the segment's own text and end the run where it
+          reads as a whole clause or finished thought, cutting where the speaker is
+          plainly mid-clause ("and then we", "so the thing is that"). When "reliable" is
+          true, trust "endsSentence" exactly as described above.
 
         ## Shot visual/audio context (when available)
 

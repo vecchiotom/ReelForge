@@ -528,8 +528,213 @@ public class VideoAnalyzeStepExecutorTests
     }
 
     // =======================================================================
+    // Transcript punctuation reliability (meta.transcription.punctuated) and the per-segment
+    // "endsSentence" flag. Both exist because trailing punctuation is the ONLY sentence-boundary
+    // signal an ASR transcript carries, and a transcriber that barely punctuates (observed in
+    // production at 12%) would otherwise make every segment look like a mid-sentence fragment to
+    // the story editor and to the review agent's rubric.
+    // =======================================================================
+
+    [Fact]
+    public async Task A_barely_punctuated_source_reports_a_low_unreliable_punctuated_ratio_in_meta()
+    {
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out Mock<ITranscriptionClientFactory> transcriptionFactory,
+            out Mock<IInferenceProviderResolver> providerResolver,
+            configOverride: cfg => cfg with
+            {
+                Transcription = VideoTranscriptionMode.Required,
+                DetectSilence = false,
+                DetectShots = false,
+                MaxOutputChars = 24000,
+                MaxViewSegments = 100
+            });
+
+        SetupBasicProbeAndDetectors(probe, silence, shotDetector);
+
+        // 1 of 5 segments ends in terminal punctuation -> ratio 0.2, below the 0.5 reliability
+        // threshold: the shape of the real production transcript that motivated this signal.
+        SetupSingleChunkTranscription(transcriptionFactory, providerResolver,
+            ("so the thing is that we", 0.0, 2.0),
+            ("and then we tried", 2.0, 4.0),
+            ("it worked out.", 4.0, 6.0),
+            ("which meant", 6.0, 8.0),
+            ("a lot for the team", 8.0, 10.0));
+
+        StepExecutionResult result = await CreateExecutor(
+            workspace, probe, silence, shotDetector, transcriptionFactory, providerResolver).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+
+        JsonElement punctuated = doc.RootElement
+            .GetProperty("meta").GetProperty("transcription").GetProperty("punctuated");
+
+        punctuated.GetArrayLength().Should().Be(1, "exactly one source clip produced transcript segments");
+        punctuated[0].GetProperty("src").GetInt32().Should().Be(0);
+        punctuated[0].GetProperty("segments").GetInt32().Should().Be(5);
+        punctuated[0].GetProperty("punctuatedSegments").GetInt32().Should().Be(1);
+        punctuated[0].GetProperty("ratio").GetDouble().Should().BeApproximately(0.2, 1e-9);
+        punctuated[0].GetProperty("reliable").GetBoolean().Should()
+            .BeFalse("0.2 is far below the threshold at which trailing punctuation means anything");
+    }
+
+    [Fact]
+    public async Task A_well_punctuated_source_reports_a_reliable_punctuated_ratio_in_meta()
+    {
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out Mock<ITranscriptionClientFactory> transcriptionFactory,
+            out Mock<IInferenceProviderResolver> providerResolver,
+            configOverride: cfg => cfg with
+            {
+                Transcription = VideoTranscriptionMode.Required,
+                DetectSilence = false,
+                DetectShots = false,
+                MaxOutputChars = 24000,
+                MaxViewSegments = 100
+            });
+
+        SetupBasicProbeAndDetectors(probe, silence, shotDetector);
+
+        // 3 of 4 -> 0.75, at or above the threshold.
+        SetupSingleChunkTranscription(transcriptionFactory, providerResolver,
+            ("We shipped it last week.", 0.0, 2.0),
+            ("The team was thrilled!", 2.0, 4.0),
+            ("and then", 4.0, 6.0),
+            ("everything changed?", 6.0, 8.0));
+
+        StepExecutionResult result = await CreateExecutor(
+            workspace, probe, silence, shotDetector, transcriptionFactory, providerResolver).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+
+        JsonElement punctuated = doc.RootElement
+            .GetProperty("meta").GetProperty("transcription").GetProperty("punctuated");
+
+        punctuated[0].GetProperty("segments").GetInt32().Should().Be(4);
+        punctuated[0].GetProperty("punctuatedSegments").GetInt32().Should().Be(3);
+        punctuated[0].GetProperty("ratio").GetDouble().Should().BeApproximately(0.75, 1e-9);
+        punctuated[0].GetProperty("reliable").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Each_view_segment_carries_an_endsSentence_flag_derived_from_its_own_text()
+    {
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out Mock<ITranscriptionClientFactory> transcriptionFactory,
+            out Mock<IInferenceProviderResolver> providerResolver,
+            configOverride: cfg => cfg with
+            {
+                Transcription = VideoTranscriptionMode.Required,
+                DetectSilence = false,
+                DetectShots = false,
+                MaxOutputChars = 24000,
+                MaxViewSegments = 100
+            });
+
+        SetupBasicProbeAndDetectors(probe, silence, shotDetector);
+
+        SetupSingleChunkTranscription(transcriptionFactory, providerResolver,
+            ("A finished thought.", 0.0, 2.0),
+            ("this one keeps going", 2.0, 4.0),
+            ("Shouting works too!", 4.0, 6.0),
+            ("He said \"stop.\"", 6.0, 8.0),
+            ("and trails off", 8.0, 10.0));
+
+        StepExecutionResult result = await CreateExecutor(
+            workspace, probe, silence, shotDetector, transcriptionFactory, providerResolver).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+
+        JsonElement viewSegments = doc.RootElement.GetProperty("view").GetProperty("segments");
+        viewSegments.GetArrayLength().Should().Be(5);
+
+        // Keyed by text rather than array position, so this asserts the flag/text pairing itself
+        // and never depends on the offered-item ordering.
+        Dictionary<string, bool> flagByText = viewSegments.EnumerateArray()
+            .ToDictionary(
+                s => s.GetProperty("text").GetString()!,
+                s => s.GetProperty("endsSentence").GetBoolean());
+
+        flagByText["A finished thought."].Should().BeTrue();
+        flagByText["this one keeps going"].Should().BeFalse();
+        flagByText["Shouting works too!"].Should().BeTrue();
+        flagByText["He said \"stop.\""].Should().BeTrue("a closing quote after the full stop still ends the sentence");
+        flagByText["and trails off"].Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Transcription_off_reports_an_empty_punctuated_list_rather_than_a_zero_ratio()
+    {
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out _, out _,
+            configOverride: cfg => cfg with { Transcription = VideoTranscriptionMode.Off });
+
+        SetupBasicProbeAndDetectors(probe, silence, shotDetector);
+
+        StepExecutionResult result = await CreateExecutor(workspace, probe, silence, shotDetector, out _, out _)
+            .ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+
+        doc.RootElement.GetProperty("meta").GetProperty("transcription")
+            .GetProperty("punctuated").GetArrayLength().Should()
+            .Be(0, "no transcript means \"unknown\", never \"0% punctuated\"");
+    }
+
+    // =======================================================================
     // Test infrastructure
     // =======================================================================
+
+    /// <summary>
+    /// Wires a transcription provider + client that returns every supplied segment in ONE chunk
+    /// (the default MaxAsrChunkBytes dwarfs the fake wav the default audio extractor writes).
+    /// </summary>
+    private static void SetupSingleChunkTranscription(
+        Mock<ITranscriptionClientFactory> transcriptionFactory,
+        Mock<IInferenceProviderResolver> providerResolver,
+        params (string Text, double StartSec, double EndSec)[] segments)
+    {
+        ResolvedTranscriptionProvider provider = new(
+            ProviderId: Guid.NewGuid(), Name: "whisper-local", Kind: InferenceProviderKind.OpenAICompatible,
+            Endpoint: "http://localhost:9999", ModelName: "whisper-1", ApiKey: "", TimeoutSeconds: 30);
+        providerResolver
+            .Setup(r => r.ResolveTranscriptionAsync(It.IsAny<Guid?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(provider);
+
+        var transcriptionClient = new Mock<ITranscriptionClient>();
+        transcriptionClient
+            .Setup(c => c.TranscribeAsync(
+                It.IsAny<Stream>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new TranscriptResult(
+                string.Join(" ", segments.Select(s => s.Text)),
+                segments.Select(s => new TranscriptSegment(s.Text, s.StartSec, s.EndSec)).ToArray(),
+                Array.Empty<TranscriptWord>(),
+                "en"));
+
+        transcriptionFactory
+            .Setup(f => f.Get(It.IsAny<ResolvedTranscriptionProvider>()))
+            .Returns(transcriptionClient.Object);
+    }
 
     private static void SetupBasicProbeAndDetectors(
         Mock<IMediaProbe> probe, Mock<ISilenceDetector> silence, Mock<IShotDetector> shotDetector)

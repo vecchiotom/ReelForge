@@ -209,6 +209,67 @@ public class VideoCompileStepExecutorTests
         sentenceCheck.GetProperty("nextSegmentContinues").GetBoolean().Should().BeTrue();
     }
 
+    [Fact]
+    public async Task SentenceCheck_marks_the_punctuation_signal_unreliable_on_a_barely_punctuated_source()
+    {
+        // 1 of 5 segments punctuated (ratio 0.2) — the review agent must NOT hard-cap the score
+        // at 4 for "ends mid-sentence" here, because the transcript itself carries no boundary
+        // information to judge that on.
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            segments: new[] { ("t0", 1.0, 2.0), ("t1", 2.0, 3.0), ("t2", 3.0, 4.0), ("t3", 4.0, 5.0), ("t4", 5.0, 6.0) },
+            segmentTexts: new[]
+            {
+                "so the thing is that we", "and then we tried", "it worked out.", "which meant", "a lot for the team"
+            },
+            offeredIds: new[] { "s0", "t0", "t1", "t2", "t3" });
+
+        string decisionJson = BuildDecisionJson(("s0", "t3", "keep"));
+        StepExecutionContext context = CreateContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        StepExecutionResult result = await CreateExecutor(workspace).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        JsonElement sentenceCheck = doc.RootElement.GetProperty("sentenceCheck");
+
+        sentenceCheck.GetProperty("applicable").GetBoolean().Should().BeTrue();
+        sentenceCheck.GetProperty("endsAtSentenceBoundary").GetBoolean().Should().BeFalse();
+        sentenceCheck.GetProperty("src").GetInt32().Should().Be(0);
+        sentenceCheck.GetProperty("punctuationSampleSize").GetInt32().Should().Be(5);
+        sentenceCheck.GetProperty("punctuationRatio").GetDouble().Should().BeApproximately(0.2, 1e-9);
+        sentenceCheck.GetProperty("punctuationReliable").GetBoolean().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SentenceCheck_marks_the_punctuation_signal_reliable_on_a_well_punctuated_source()
+    {
+        // 3 of 4 punctuated (0.75): the mid-sentence finding IS trustworthy here, so the review
+        // agent's hard cap stays in force.
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            segments: new[] { ("t0", 1.0, 2.0), ("t1", 2.0, 3.0), ("t2", 3.0, 4.0), ("t3", 4.0, 5.0) },
+            segmentTexts: new[]
+            {
+                "We shipped it last week.", "The team was thrilled!", "and then", "everything changed?"
+            },
+            offeredIds: new[] { "s0", "t0", "t1", "t2" });
+
+        string decisionJson = BuildDecisionJson(("s0", "t2", "keep"));
+        StepExecutionContext context = CreateContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        StepExecutionResult result = await CreateExecutor(workspace).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        JsonElement sentenceCheck = doc.RootElement.GetProperty("sentenceCheck");
+
+        sentenceCheck.GetProperty("endsAtSentenceBoundary").GetBoolean().Should()
+            .BeFalse("\"and then\" is a genuine mid-sentence ending");
+        sentenceCheck.GetProperty("punctuationRatio").GetDouble().Should().BeApproximately(0.75, 1e-9);
+        sentenceCheck.GetProperty("punctuationReliable").GetBoolean().Should().BeTrue();
+    }
+
     // ---------------------------------------------------------------------
     // Unknown id rejection
     // ---------------------------------------------------------------------

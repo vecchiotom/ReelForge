@@ -1630,9 +1630,21 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
 
         bool lookUniform = artifact.Provenance.LookUniform;
 
+        // Sentence-boundary facts are derived from the artifact's FULL segment texts, never from
+        // the (possibly MaxSegmentTextChars-truncated) copies in `viewSegments` — see
+        // TranscriptPunctuation. Computed once here and threaded through every BuildView attempt
+        // of the degrade/drop loop below rather than recomputed per attempt.
+        HashSet<string> endsSentenceIds = artifact.Segments
+            .Where(s => TranscriptPunctuation.EndsSentence(s.Text))
+            .Select(s => s.Id)
+            .ToHashSet(StringComparer.Ordinal);
+
+        IReadOnlyDictionary<int, TranscriptPunctuation.Stats> punctuationBySource =
+            TranscriptPunctuation.SummarizeBySource(artifact.Segments);
+
         foreach (VideoVisualDetail detail in levelsToTry)
         {
-            view = BuildView(artifact, offered, detail, config, isMultiSource, lookUniform);
+            view = BuildView(artifact, offered, detail, config, isMultiSource, lookUniform, endsSentenceIds);
             serialized = view.ToJsonString(EnvelopeJsonOptions);
             detailApplied = detail;
             if (serialized.Length <= maxOutputChars)
@@ -1648,7 +1660,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         bool musicTracksSuppressed = false;
         if (serialized.Length > maxOutputChars && artifact.MusicCandidates is { Count: > 0 })
         {
-            JsonObject suppressedView = BuildView(artifact, offered, detailApplied, config, isMultiSource, lookUniform, suppressMusicTracks: true);
+            JsonObject suppressedView = BuildView(artifact, offered, detailApplied, config, isMultiSource, lookUniform, endsSentenceIds, suppressMusicTracks: true);
             string suppressedSerialized = suppressedView.ToJsonString(EnvelopeJsonOptions);
             if (suppressedSerialized.Length < serialized.Length)
             {
@@ -1665,7 +1677,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         while (serialized.Length > maxOutputChars && offered.Count > 0)
         {
             offered.RemoveAt(offered.Count - 1);
-            view = BuildView(artifact, offered, detailApplied, config, isMultiSource, lookUniform, suppressMusicTracks: musicTracksSuppressed);
+            view = BuildView(artifact, offered, detailApplied, config, isMultiSource, lookUniform, endsSentenceIds, suppressMusicTracks: musicTracksSuppressed);
             serialized = view.ToJsonString(EnvelopeJsonOptions);
         }
 
@@ -1704,7 +1716,13 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                 ["mode"] = config.Transcription.ToString(),
                 ["applied"] = transcriptionApplied,
                 ["provider"] = transcriptionProviderName,
-                ["degraded"] = transcriptionDegraded
+                ["degraded"] = transcriptionDegraded,
+                // How much the per-segment "endsSentence" flag can be TRUSTED, per source clip —
+                // one entry per source that produced transcript segments, empty when there is no
+                // transcript at all. See TranscriptPunctuation: some ASR deployments punctuate
+                // only a small minority of segments, and on such a source a missing full stop
+                // says nothing about whether a thought is complete.
+                ["punctuated"] = PunctuationNode(punctuationBySource)
             },
             ["visual"] = new JsonObject
             {
@@ -1752,14 +1770,14 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
 
     private static JsonObject BuildView(
         VideoAnalysisArtifact artifact, List<OfferedItem> items, VideoVisualDetail detail, VideoAnalyzeStepConfig config, bool isMultiSource,
-        bool lookUniform, bool suppressMusicTracks = false)
+        bool lookUniform, IReadOnlySet<string> endsSentenceIds, bool suppressMusicTracks = false)
     {
         var view = new JsonObject
         {
             ["media"] = MediaNode(artifact.Media),
             ["shots"] = ToArray(items.Where(i => i.Kind == "shot").Select(i => ShotNode(i.Shot!, detail, config.StillMotionThreshold, isMultiSource, lookUniform))),
             ["silences"] = ToArray(items.Where(i => i.Kind == "silence").Select(i => SilenceNode(i.Silence!, isMultiSource))),
-            ["segments"] = ToArray(items.Where(i => i.Kind == "segment").Select(i => SegmentNode(i.Segment!, isMultiSource)))
+            ["segments"] = ToArray(items.Where(i => i.Kind == "segment").Select(i => SegmentNode(i.Segment!, isMultiSource, endsSentenceIds)))
         };
 
         // Multi-source addition — one entry per analyzed clip, so the story-editor agent knows how
@@ -2122,6 +2140,26 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             return (JsonNode)node;
         }).ToArray());
 
+    /// <summary>
+    /// <c>meta.transcription.punctuated</c> — one entry per source clip that produced transcript
+    /// segments, in source-index order: <c>{src, segments, punctuatedSegments, ratio, reliable}</c>.
+    /// Always an array (never a scalar) regardless of source count, so a consumer never has to
+    /// branch on single- vs multi-source to read it; the "src" key is present in every entry for
+    /// the same reason, even though a single-source view's segment nodes carry no "src".
+    /// </summary>
+    private static JsonArray PunctuationNode(IReadOnlyDictionary<int, TranscriptPunctuation.Stats> bySource) =>
+        new(bySource
+            .OrderBy(kv => kv.Key)
+            .Select(kv => (JsonNode)new JsonObject
+            {
+                ["src"] = kv.Key,
+                ["segments"] = kv.Value.SegmentCount,
+                ["punctuatedSegments"] = kv.Value.PunctuatedCount,
+                ["ratio"] = kv.Value.Ratio is { } ratio ? (JsonNode)TranscriptPunctuation.Round(ratio) : null,
+                ["reliable"] = kv.Value.Reliable
+            })
+            .ToArray());
+
     private static JsonObject SilenceNode(VideoAnalysisSilenceSpan s, bool isMultiSource)
     {
         var node = new JsonObject
@@ -2137,7 +2175,14 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         return node;
     }
 
-    private static JsonObject SegmentNode(VideoAnalysisSegment s, bool isMultiSource)
+    /// <summary>
+    /// <paramref name="endsSentenceIds"/> carries the per-segment sentence-boundary flag computed
+    /// from the FULL artifact text (see <see cref="TranscriptPunctuation"/>) — deliberately not
+    /// recomputed from <paramref name="s"/>.Text here, because the copies reaching this method have
+    /// already been truncated to <c>MaxSegmentTextChars</c> and truncation can chop off the very
+    /// full stop the flag is about.
+    /// </summary>
+    private static JsonObject SegmentNode(VideoAnalysisSegment s, bool isMultiSource, IReadOnlySet<string> endsSentenceIds)
     {
         var node = new JsonObject
         {
@@ -2145,7 +2190,8 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             ["shot"] = s.Shot,
             ["startSec"] = s.StartSec,
             ["endSec"] = s.EndSec,
-            ["text"] = s.Text
+            ["text"] = s.Text,
+            ["endsSentence"] = endsSentenceIds.Contains(s.Id)
         };
         if (isMultiSource)
             node["src"] = s.SourceIndex;
