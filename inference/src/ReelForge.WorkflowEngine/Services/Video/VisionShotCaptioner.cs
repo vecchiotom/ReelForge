@@ -122,8 +122,13 @@ public sealed class VisionShotCaptioner : IShotCaptioner
 
         if (parsed is null)
         {
+            string preview = text.Length > 500 ? text[..500] + "…" : text;
+            _logger.LogWarning(
+                "Vision captioning for shot {ShotId}: all parse attempts failed. Raw response ({Length} chars): {Preview}",
+                request.ShotId, text.Length, preview);
             throw new InvalidOperationException(
-                $"Vision captioning for shot '{request.ShotId}' returned non-JSON or unparseable output.", parseError);
+                $"Vision captioning for shot '{request.ShotId}' returned non-JSON or unparseable output. Raw response ({text.Length} chars): {preview}",
+                parseError);
         }
 
         parsed = ApplyCaps(parsed, maxCaptionChars);
