@@ -87,7 +87,12 @@ public sealed class VisionShotCaptioner : IShotCaptioner
              Respond with STRICT JSON ONLY, matching the schema exactly: double-quoted keys and
              double-quoted string values (never single quotes, never a Python dict literal), no
              markdown code fences (no ```), and no explanatory text before or after the JSON
-             object — the entire response must be the JSON object and nothing else.
+             object — the entire response must be the JSON object and nothing else. Do NOT think
+             out loud, reason step by step, draft an answer and revise it, or narrate what you are
+             about to write ("let me build it", "the fields given are", or similar) anywhere in
+             your response, including before the opening brace — none of that is part of the
+             schema and it will break parsing. Start your response with "{" and end it with "}":
+             nothing comes before the first character or after the last one.
              """;
 
         ChatMessage message = new(
@@ -101,7 +106,11 @@ public sealed class VisionShotCaptioner : IShotCaptioner
         ChatOptions options = new()
         {
             ResponseFormat = ChatResponseFormat.ForJsonSchema<VideoShotCaption>(),
-            MaxOutputTokens = 700
+            // Headroom for a reasoning-capable model's chain-of-thought tokens (observed live:
+            // some responses were truncated well short of the schema's actual content because the
+            // model spent part of the budget "thinking" before or during the JSON) — 700 was tuned
+            // for a plain non-reasoning completion and isn't enough once any reasoning leaks in.
+            MaxOutputTokens = 2000
         };
 
         ChatResponse response = await client.GetResponseAsync(new[] { message }, options, ct).ConfigureAwait(false);
