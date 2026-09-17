@@ -968,6 +968,33 @@ text}` (plus `src` in a multi-source run) — a 2dp-rounded source-timeline wind
 suitability score, and a `"Light"`/`"Dark"` text-color hint, never a rect (geometry is resolved
 server-side only, at compile time, from the full artifact).
 
+When the `MotionGraphicsPlanner` step runs with `agentInputContextMode: FullWorkflow` (the only
+mode that gives it the story editor's decision at all), each placement also gets an `inEdit: bool`
+— whether that candidate's own moment survives the cut, computed by
+`MotionGraphicsPlacementAnnotator` at prompt-assembly time in `AgentStepExecutor` (display-only:
+nothing is filtered, an `inEdit: false` candidate stays fully choosable) by resolving the kept
+spans through the exact same `VideoCompileStepExecutor.MapSourceWindowToOutput` that later drops
+an overlay with reason `cut_away` — so the planner sees the survival verdict BEFORE it picks,
+instead of discovering it only after the fact at compile time. Absent entirely under
+`PreviousStepOnly`/other context modes, since there's no decision yet to check against.
+
+**Sentence-boundary and punctuation-reliability signals.** Every `view.segments` transcript
+segment also carries `endsSentence: bool` — whether that segment's own text (its full,
+untruncated form, not the `MaxSegmentTextChars`-shortened copy the view shows) ends in terminal
+sentence punctuation. This is the authoritative signal `AgentType.VideoStoryEditor` is told to use
+instead of eyeballing the `text` field itself for a mid-sentence cut. But punctuation output is
+only as trustworthy as the ASR backend that produced it — real deployments have been observed
+transcribing some clips with almost no terminal punctuation at all even though every answer is a
+complete thought — so `meta.transcription.punctuated` carries one entry per source clip,
+`{src, segments, punctuatedSegments, ratio, reliable}` (`reliable` is `ratio >= 0.5`), and the
+prompt is told to fall back to judging sentence-completeness semantically from the segment text
+whenever the relevant source's entry says `reliable: false`. The same `ratio`/`reliable` pair
+(recomputed for the specific source the compile step's `sentenceCheck` is about, not the whole
+run) is surfaced to `AgentType.VideoReviewAgent` too, whose otherwise-hard "ends mid-sentence"
+score cap is downgraded to a soft, non-blocking observation when that source's signal is
+unreliable — a punctuation-starved ASR result must not by itself force a low score on an
+otherwise-good edit.
+
 `startSec`/`endSec` are **input to** the planner, not output from it, and that distinction is the
 whole no-timestamp rule: `MotionGraphicsPlanOutput` still has no time-bearing property whatsoever
 (`MotionGraphicsPlanOutputInvariantTests`), and `VideoCompileStepExecutor` still resolves an
@@ -1090,12 +1117,17 @@ Both walk `spans` accumulating output-timeline duration as they go. `MapSourceTo
 `null` when the second falls inside a cut gap (no corresponding output frame exists).
 `MapSourceWindowToOutput` intersects a window with the kept spans and returns the output-timeline
 window for the FIRST kept portion it overlaps (a single on-screen overlay cannot span a gap in the
-output video) — `null` if the window never overlaps any kept span at all. A placement's actual
-on-screen source window is `[placement.StartSec, min(placement.StartSec + durationMs/1000,
-shot.EndSec)]` — anchored at the placement's start, extended by the model's chosen `Duration`, and
-clamped to the OWNING SHOT's own bounds (looked up via `placement.ShotId` against the full
-artifact's `Shots`, not merely the placement's own already-narrow window) so a `Hold` duration
-cannot overlay past where the shot itself ends.
+output video) — `null` if the window never overlaps any kept span at all. Resolving a placement's
+on-screen window intersects FIRST, truncates SECOND: the full candidate window
+`[placement.StartSec, shot.EndSec]` (clamped to the OWNING SHOT's own bounds — looked up via
+`placement.ShotId` against the full artifact's `Shots`, not merely the placement's own
+already-narrow window) is mapped through `MapSourceWindowToOutput` to find where it survives the
+cut, and only THEN is the model's chosen `Duration` applied, from wherever that surviving
+intersection begins. Truncating to `durationMs` before intersecting (the original, buggy order)
+silently dropped overlays whose full window overlapped a kept span by many seconds but whose first
+`durationMs` alone did not — verified live: a placement with real window `[0, 29.83]` and a kept
+span `[4.8, 51.4]` was tested only against `[0, 3.0]` (entirely cut) and wrongly dropped as
+`cut_away`.
 
 ### Text sanitization and the `textfile=`/`expansion=none` discipline
 

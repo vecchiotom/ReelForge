@@ -1,5 +1,7 @@
 using System.ClientModel;
 using System.Collections.Concurrent;
+using System.Net.Http.Headers;
+using System.Text.Json;
 using Azure.AI.OpenAI;
 using OpenAI;
 using OpenAI.Audio;
@@ -58,20 +60,35 @@ public sealed class TranscriptionClientFactory : ITranscriptionClientFactory
         return new OpenAiAudioTranscriptionClient(audioClient);
     }
 
+    /// <summary>
+    /// OpenAI-compatible backends go through a raw multipart POST instead of the OpenAI SDK's
+    /// typed <see cref="AudioTranscriptionOptions"/> so a <c>vad_filter=false</c> form field can be
+    /// sent — the SDK has no property for it. This is specifically to work around a real deployed
+    /// bug: speaches (the reference "OpenAI-compatible" self-hosted ASR server this app is
+    /// documented to use — see CLAUDE.md's <c>whisper</c> service) defaults faster-whisper's VAD
+    /// filter ON via a private, environment-variable-immune Pydantic field
+    /// (<c>_unstable_vad_filter</c>), and that default was verified live to make segmentation
+    /// wildly unstable — the SAME audio, differing by inaudible resampler noise, produced
+    /// terminal-sentence-punctuation rates from 11% to 63% depending on VAD, because VAD changes
+    /// faster-whisper's internal seek/window alignment, not just which audio it drops. Turning it
+    /// off (an OpenAI Whisper API default) collapsed that instability without any latency or
+    /// accuracy cost in side-by-side testing. Azure OpenAI deployments do not exhibit this bug and
+    /// keep going through the SDK unchanged below.
+    /// </summary>
     private static ITranscriptionClient BuildOpenAICompatible(ResolvedTranscriptionProvider provider)
     {
         string apiKey = string.IsNullOrWhiteSpace(provider.ApiKey) ? NoKeyPlaceholder : provider.ApiKey;
-
-        OpenAIClientOptions options = new()
+        HttpClient httpClient = new()
         {
-            Endpoint = new Uri(provider.Endpoint),
-            NetworkTimeout = TimeSpan.FromSeconds(provider.TimeoutSeconds)
+            BaseAddress = new Uri(provider.Endpoint),
+            Timeout = TimeSpan.FromSeconds(provider.TimeoutSeconds)
         };
+        if (apiKey != NoKeyPlaceholder)
+        {
+            httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+        }
 
-        OpenAIClient client = new(new ApiKeyCredential(apiKey), options);
-
-        AudioClient audioClient = client.GetAudioClient(provider.ModelName);
-        return new OpenAiAudioTranscriptionClient(audioClient);
+        return new RawHttpAudioTranscriptionClient(httpClient, provider.ModelName);
     }
 
     /// <summary>
@@ -121,6 +138,93 @@ public sealed class TranscriptionClientFactory : ITranscriptionClientFactory
                 .ToList();
 
             return new TranscriptResult(transcription.Text, segments, words, transcription.Language);
+        }
+    }
+
+    /// <summary>
+    /// Raw multipart <c>/audio/transcriptions</c> client for OpenAI-compatible backends — see
+    /// <see cref="BuildOpenAICompatible"/>'s remarks for why this bypasses the OpenAI SDK entirely
+    /// rather than merely wrapping <see cref="AudioClient"/>: the SDK does not expose a
+    /// <c>vad_filter</c> option and this is the one field that actually needs sending.
+    /// </summary>
+    private sealed class RawHttpAudioTranscriptionClient : ITranscriptionClient
+    {
+        private readonly HttpClient _httpClient;
+        private readonly string _modelName;
+
+        public RawHttpAudioTranscriptionClient(HttpClient httpClient, string modelName)
+        {
+            _httpClient = httpClient;
+            _modelName = modelName;
+        }
+
+        public async Task<TranscriptResult> TranscribeAsync(
+            Stream wav,
+            string fileName,
+            string? language,
+            bool wordTimestamps,
+            CancellationToken ct)
+        {
+            using MultipartFormDataContent form = new();
+
+            StreamContent fileContent = new(wav);
+            fileContent.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
+            form.Add(fileContent, "file", fileName);
+            form.Add(new StringContent(_modelName), "model");
+            form.Add(new StringContent("verbose_json"), "response_format");
+            form.Add(new StringContent("false"), "vad_filter");
+            form.Add(new StringContent("segment"), "timestamp_granularities[]");
+            if (wordTimestamps)
+            {
+                form.Add(new StringContent("word"), "timestamp_granularities[]");
+            }
+            if (!string.IsNullOrWhiteSpace(language))
+            {
+                form.Add(new StringContent(language), "language");
+            }
+
+            using HttpResponseMessage response =
+                await _httpClient.PostAsync("audio/transcriptions", form, ct).ConfigureAwait(false);
+            string body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new HttpRequestException(
+                    $"Transcription request failed with {(int)response.StatusCode} {response.StatusCode}: {body}");
+            }
+
+            using JsonDocument doc = JsonDocument.Parse(body);
+            JsonElement root = doc.RootElement;
+
+            string text = root.TryGetProperty("text", out JsonElement textEl) ? textEl.GetString() ?? "" : "";
+            string? responseLanguage =
+                root.TryGetProperty("language", out JsonElement langEl) ? langEl.GetString() : null;
+
+            List<TranscriptSegment> segments = new();
+            if (root.TryGetProperty("segments", out JsonElement segmentsEl) && segmentsEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (JsonElement seg in segmentsEl.EnumerateArray())
+                {
+                    segments.Add(new TranscriptSegment(
+                        seg.GetProperty("text").GetString() ?? "",
+                        seg.GetProperty("start").GetDouble(),
+                        seg.GetProperty("end").GetDouble()));
+                }
+            }
+
+            List<TranscriptWord> words = new();
+            if (root.TryGetProperty("words", out JsonElement wordsEl) && wordsEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (JsonElement w in wordsEl.EnumerateArray())
+                {
+                    words.Add(new TranscriptWord(
+                        w.GetProperty("word").GetString() ?? "",
+                        w.GetProperty("start").GetDouble(),
+                        w.GetProperty("end").GetDouble()));
+                }
+            }
+
+            return new TranscriptResult(text, segments, words, responseLanguage);
         }
     }
 }
