@@ -1445,6 +1445,70 @@ public class VideoCompileStepExecutorTests
     }
 
     [Fact]
+    public async Task Rendered_asset_overlay_with_unrecognized_extension_falls_back_to_webm_for_the_local_scratch_path()
+    {
+        // RenderedAssetStorageKey is model-authored (see MotionGraphicsOverlay.RenderedAssetStorageKey's
+        // doc comment); the prefix check stops it escaping this execution's own outputFiles prefix,
+        // but the extension itself was previously trusted verbatim via a bare Path.GetExtension for
+        // the LOCAL scratch file path. It must instead be allowlisted to what
+        // RenderVideoAndUploadToStorage's own recipe actually produces (.webm/.mp4/.mov) and fall
+        // back to .webm for anything else — an in-prefix, otherwise well-formed key with a
+        // surprising extension here.
+        var placement = new VideoAnalysisPlacement(
+            "p0", "s0", "LowerThird", new VideoAnalysisRect(0.1, 0.8, 0.6, 0.15),
+            "ShotMiddle", 4.0, 6.0, 0.8, "Light");
+
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" },
+            placements: new[] { placement });
+
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        string assetKey = $"projects/{ProjectId}/outputFiles/{GraphicsExecutionId:D}/overlay.exe";
+        string graphicsPlanJson = JsonSerializer.Serialize(new
+        {
+            overlays = new[]
+            {
+                new { placementId = "p0", kind = "LowerThird", text = "", subtext = "", duration = "Short", emphasis = "Normal", renderedAssetStorageKey = assetKey, reason = "designed graphic" }
+            },
+            planRationale = "test"
+        });
+
+        StepExecutionContext context = CreateGraphicsContext(
+            artifact, decisionJson, graphicsPlanJson, out Mock<IProjectFileWorkspace> workspace);
+
+        workspace
+            .Setup(w => w.DownloadStorageKeyToFileAsync(It.IsAny<Guid>(), assetKey, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<Guid, string, string, CancellationToken>((_, _, destPath, _) =>
+            {
+                File.WriteAllBytes(destPath, new byte[] { 0x00, 0x01, 0x02 });
+                return Task.CompletedTask;
+            });
+
+        JsonElement edl = default;
+        List<string>? capturedArgs = null;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, edlCaptured: e => edl = e, ffmpegArgsCaptured: a => capturedArgs = a.ToList())
+            .ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        edl.GetProperty("graphics").GetProperty("applied").GetBoolean().Should().BeTrue(
+            "an unrecognized asset extension degrades only the local file naming, never the overlay itself");
+
+        capturedArgs.Should().NotBeNull();
+        List<int> inputPositions = capturedArgs!
+            .Select((a, i) => (a, i))
+            .Where(t => t.a == "-i")
+            .Select(t => t.i + 1)
+            .ToList();
+        string? localAssetInputPath = inputPositions.Select(i => capturedArgs[i]).FirstOrDefault(p => p.Contains("gfx-asset-"));
+
+        localAssetInputPath.Should().NotBeNull();
+        Path.GetExtension(localAssetInputPath).Should().Be(
+            ".webm", "an extension outside the allowlist (.webm/.mp4/.mov) must fall back to .webm rather than being trusted verbatim");
+    }
+
+    [Fact]
     public async Task Rendered_asset_overlay_outside_the_execution_output_prefix_is_dropped_without_downloading_it()
     {
         var placement = new VideoAnalysisPlacement(

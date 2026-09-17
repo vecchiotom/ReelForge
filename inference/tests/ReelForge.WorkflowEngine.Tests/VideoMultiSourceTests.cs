@@ -938,14 +938,14 @@ public class VideoMultiSourceTests
     }
 
     [Fact]
-    public async Task Multi_source_compile_where_one_clip_has_no_audio_drops_audio_from_the_whole_output()
+    public async Task Multi_source_compile_where_one_clip_has_no_audio_synthesizes_silence_for_that_segment_only()
     {
         // concat's own "a=" stream count must be uniform across every concatenated segment, so a
-        // mix of audio-having and audio-less source clips can't produce a per-segment audio
-        // branch for only some of them. The correct, safe degrade is to drop audio for the WHOLE
-        // compiled output — exactly mirroring the single-source path's own per-clip behavior —
-        // rather than crashing ffmpeg on the audio-less clip's "[N:a]" (the pre-fix bug) or
-        // fabricating silence to paper over the gap.
+        // mix of audio-having and audio-less source clips can't simply omit the audio-less one's
+        // own branch. The fix: synthesize a matching-duration anullsrc silence branch for the
+        // audio-less segment while the audio-having segment keeps its real atrim branch — turning
+        // "the whole video goes mute because one clip has no audio" into "only that segment is
+        // silent". Source 0 (clip A) has real audio; source 1 (clip B) has none.
         VideoAnalysisArtifact artifact = BuildTwoSourceArtifact(out string keyA, out string keyB);
         string decisionJson = BuildDecisionJson(("s0", "s0", "from clip A"), ("s1", "s1", "from clip B"));
 
@@ -977,12 +977,67 @@ public class VideoMultiSourceTests
 
         filterComplex.Should().Contain("[0:v]trim=", "source 0's video still concatenates normally");
         filterComplex.Should().Contain("[1:v]trim=", "source 1's video still concatenates normally");
-        filterComplex.Should().NotContain("[0:a]atrim=", "audio is dropped for the whole output, not just the audio-less clip");
+        filterComplex.Should().Contain("[0:a]atrim=", "source 0 has real audio and must keep its real atrim branch");
+        filterComplex.Should().NotContain("[1:a]atrim=", "source 1 has no audio stream to atrim from");
+        filterComplex.Should().Contain("anullsrc=r=48000:cl=stereo:d=", "source 1's segment gets synthesized silence instead");
+        filterComplex.Should().Contain("concat=n=2:v=1:a=1", "audio is still present for the whole output — only one segment's own audio is synthetic");
+
+        capturedArgs.Should().Contain("[aout]");
+        capturedArgs.Should().Contain("-c:a");
+
+        // The EDL/outputSummary audio block must honestly report that not every segment kept its
+        // own original sound (see the "audio" node in VideoCompileStepExecutor.ExecuteAsync).
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        JsonElement audio = doc.RootElement.GetProperty("audio");
+        audio.GetProperty("applied").GetBoolean().Should().BeTrue();
+        audio.GetProperty("syntheticSilenceSegmentCount").GetInt32().Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Multi_source_compile_where_no_clip_has_audio_drops_audio_from_the_whole_output()
+    {
+        // Degenerate case: NOT ONE referenced source has an audio stream, so there is nothing real
+        // to preserve anywhere — the whole output drops audio exactly as it did before per-segment
+        // synthesis existed, rather than concatenating an all-synthetic silent track.
+        VideoAnalysisArtifact artifact = BuildTwoSourceArtifact(out string keyA, out string keyB);
+        string decisionJson = BuildDecisionJson(("s0", "s0", "from clip A"), ("s1", "s1", "from clip B"));
+
+        List<string>? capturedArgs = null;
+        string? capturedFilterComplex = null;
+        StepExecutionContext context = CreateCompileContext(artifact, decisionJson, keyA, keyB, out Mock<IProjectFileWorkspace> workspace);
+        VideoCompileStepExecutor executor = CreateCompileExecutor(
+            workspace,
+            args =>
+            {
+                capturedArgs = args.ToList();
+                int idx = capturedArgs.IndexOf("-filter_complex_script");
+                if (idx >= 0) capturedFilterComplex = File.ReadAllText(capturedArgs[idx + 1]);
+            },
+            configureMediaProbe: mock => mock
+                .Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new MediaProbeResult(10, 30, 1, 1920, 1080, "h264", null, null)));
+
+        StepExecutionResult result = await executor.ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        capturedArgs.Should().NotBeNull();
+        capturedFilterComplex.Should().NotBeNull();
+        string filterComplex = capturedFilterComplex!;
+
+        filterComplex.Should().Contain("[0:v]trim=", "source 0's video still concatenates normally");
+        filterComplex.Should().Contain("[1:v]trim=", "source 1's video still concatenates normally");
+        filterComplex.Should().NotContain("[0:a]atrim=");
         filterComplex.Should().NotContain("[1:a]atrim=");
+        filterComplex.Should().NotContain("anullsrc=", "no source has any audio, so there is nothing to synthesize silence to match");
         filterComplex.Should().Contain("concat=n=2:v=1:a=0", "the concat filter itself must declare zero audio streams");
 
         capturedArgs.Should().NotContain("[aout]");
         capturedArgs.Should().NotContain("-c:a");
+
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        JsonElement audio = doc.RootElement.GetProperty("audio");
+        audio.GetProperty("applied").GetBoolean().Should().BeFalse();
+        audio.GetProperty("reason").GetString().Should().Be("no_audio_stream_in_source");
     }
 
     [Fact]

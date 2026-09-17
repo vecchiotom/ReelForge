@@ -69,6 +69,17 @@ public class VideoCompileStepExecutor : IStepExecutor
     private static readonly HashSet<string> AllowedOverlayBoxColors =
         new(StringComparer.OrdinalIgnoreCase) { "black@0.45", "black@0.6", "white@0.4", "none" };
 
+    // Phase 3 (motion graphics) rendered-asset overlays: RenderedAssetStorageKey is a
+    // model-authored string (see MotionGraphicsOverlay.RenderedAssetStorageKey's doc comment), and
+    // its extension is used to build a local scratch file path. The prefix check on the key itself
+    // (expectedAssetKeyPrefix, in ResolveGraphicsAsync) and VideoScratchSpace.GetPath's own
+    // containment check already stop this from escaping scratch space, but the extension is
+    // otherwise trusted verbatim — allowlisted here to the formats RenderVideoAndUploadToStorage's
+    // own documented recipe actually produces, same allowlist discipline as the codec/preset/color
+    // sets above, rather than trusting whatever Path.GetExtension happens to return.
+    private static readonly HashSet<string> AllowedRenderedAssetExtensions =
+        new(StringComparer.OrdinalIgnoreCase) { ".webm", ".mp4", ".mov" };
+
     /// <summary>Process-lifetime cache of whether the ffmpeg build on PATH has the drawtext filter (needs libfreetype) — probed once, never per-step.</summary>
     private static bool? _drawtextAvailableCache;
 
@@ -522,16 +533,31 @@ public class VideoCompileStepExecutor : IStepExecutor
             }
 
             // Whether the FINAL OUTPUT will have any dialogue audio at all: single-source drops
-            // audio only when that one clip lacks it; multi-source currently drops ALL audio the
-            // moment ANY referenced clip lacks it (see EncodeReencodeMultiSourceAsync's
-            // allSourcesHaveAudio gating — a documented, lower-priority follow-up would synthesize
-            // silence per-segment instead). Threaded into ResolveMusicAsync (skip ducking/lift-
-            // window computation against dialogue that will not exist in the output) and the new
-            // "audio" EDL/outputSummary block below (report the degrade instead of leaving it
-            // silent).
-            bool allSourcesHaveAudio = usedSourceIndices.All(i => sourceHasAudioByIndex[i]);
+            // audio only when that one clip lacks it; multi-source now keeps real dialogue for
+            // every span whose OWN source has it and synthesizes matching-duration silence
+            // (anullsrc) only for the span(s) whose source doesn't — see
+            // EncodeReencodeMultiSourceAsync. Audio is dropped for the WHOLE output only in the
+            // degenerate case where NOT ONE referenced clip has an audio stream at all (nothing
+            // real to preserve, so there is no point adding an all-silent track). Threaded into
+            // ResolveMusicAsync (skip ducking/lift-window computation against dialogue that will
+            // not exist in the output) and the new "audio" EDL/outputSummary block below (report
+            // the degrade instead of leaving it silent).
+            bool anySourceHasAudio = usedSourceIndices.Any(i => sourceHasAudioByIndex[i]);
             bool sourceHasAudio = sourceHasAudioByIndex[usedSourceIndices[0]];
-            bool hasDialogueAudioInOutput = isMultiSource ? allSourcesHaveAudio : sourceHasAudio;
+            bool hasDialogueAudioInOutput = isMultiSource ? anySourceHasAudio : sourceHasAudio;
+
+            // Multi-source addition: which resolved spans will actually carry synthesized silence
+            // instead of their own source's real audio — computed purely for honest EDL reporting
+            // (see the "audio" node below), never fed back into the encode filtergraph decision
+            // itself (EncodeReencodeMultiSourceAsync re-derives this per span from
+            // sourceHasAudioByIndex directly).
+            List<int> syntheticSilenceSegmentIndices = isMultiSource && anySourceHasAudio
+                ? resolvedSpans
+                    .Select((s, i) => (s, i))
+                    .Where(t => !sourceHasAudioByIndex[t.s.SourceIndex])
+                    .Select(t => t.i)
+                    .ToList()
+                : [];
 
             // ---- Phase 3 (motion graphics): resolve & validate the plan, purely soft-failure.
             // Only even attempted when EnableGraphics=true — when false (the default), nothing
@@ -574,6 +600,19 @@ public class VideoCompileStepExecutor : IStepExecutor
                 ["reason"] = hasDialogueAudioInOutput ? null : JsonValue.Create("no_audio_stream_in_source")
             };
 
+            if (syntheticSilenceSegmentIndices.Count > 0)
+            {
+                // Mixed multi-source case: "applied: true" alone would wrongly imply every segment
+                // kept its own original sound — some instead carry synthesized silence (see
+                // EncodeReencodeMultiSourceAsync) because their own source clip never had an audio
+                // stream to begin with. Surfaced explicitly, mirroring how graphics/music already
+                // report partial/degraded application (graphics.droppedOverlays, music.dropped)
+                // rather than collapsing to a single boolean.
+                audioNode["syntheticSilenceSegmentCount"] = syntheticSilenceSegmentIndices.Count;
+                audioNode["syntheticSilenceSegmentIndices"] =
+                    new JsonArray(syntheticSilenceSegmentIndices.Select(i => (JsonNode)JsonValue.Create(i)).ToArray());
+            }
+
             // ---- Write the EDL audit artifact ----
 
             await context.ReportProgressAsync("Writing edit decision list");
@@ -599,7 +638,7 @@ public class VideoCompileStepExecutor : IStepExecutor
                     canonicalMedia, timeout, context.CancellationToken,
                     overlays: resolvedOverlays, graphicsConfig: resolvedOverlays.Count > 0 ? config : null,
                     progressContext: context, totalOutputSeconds: totalOutputSeconds,
-                    music: resolvedMusic, allSourcesHaveAudio: allSourcesHaveAudio);
+                    music: resolvedMusic, sourceHasAudioByIndex: sourceHasAudioByIndex);
             }
             else
             {
@@ -1421,7 +1460,8 @@ public class VideoCompileStepExecutor : IStepExecutor
                     continue;
                 }
 
-                string assetExtension = Path.GetExtension(overlay.RenderedAssetStorageKey) switch { "" => ".webm", var e => e };
+                string rawAssetExtension = Path.GetExtension(overlay.RenderedAssetStorageKey);
+                string assetExtension = AllowedRenderedAssetExtensions.Contains(rawAssetExtension) ? rawAssetExtension : ".webm";
                 string localAssetPath = scratch.GetPath($"gfx-asset-{Guid.NewGuid():N}{assetExtension}");
                 try
                 {
@@ -1653,8 +1693,8 @@ public class VideoCompileStepExecutor : IStepExecutor
         bool configDuckingOff = config.MusicDucking == MusicDuckingMode.Off || ducking == "Off";
 
         // Bug group C.2: when the final output has no dialogue audio at all (single-source
-        // audio-less, or multi-source with audio dropped across the whole output — see
-        // hasDialogueAudio, threaded in from the caller's sourceHasAudio/allSourcesHaveAudio
+        // audio-less, or multi-source where NOT ONE referenced clip has audio — see
+        // hasDialogueAudio, threaded in from the caller's sourceHasAudio/anySourceHasAudio
         // flags), there is nothing to duck against. Fold that into the same duckingOff switch
         // that already collapses lift-window planning to a flat, undocked bed level, rather than
         // planning ducking windows from dialogue silence/segments that will not exist in the
@@ -2141,7 +2181,10 @@ public class VideoCompileStepExecutor : IStepExecutor
     /// for that span's own source clip, normalized to one canonical frame size/rate/audio format
     /// (<paramref name="canonicalMedia"/> — the first kept span's own clip, see
     /// <c>ExecuteAsync</c>) since <c>concat</c> requires every concatenated stream to share
-    /// identical parameters, then concatenated in Keep order.
+    /// identical parameters, then concatenated in Keep order. Per-segment audio: a span whose own
+    /// source clip lacks an audio stream gets a synthesized matching-duration silence branch
+    /// (<c>anullsrc</c>) instead of dropping audio for the whole output — see
+    /// <paramref name="sourceHasAudioByIndex"/>.
     /// </summary>
     private async Task<VideoToolResult> EncodeReencodeMultiSourceAsync(
         VideoScratchSpace scratch,
@@ -2160,7 +2203,7 @@ public class VideoCompileStepExecutor : IStepExecutor
         StepExecutionContext? progressContext = null,
         double totalOutputSeconds = 0,
         ResolvedMusic? music = null,
-        bool allSourcesHaveAudio = true)
+        IReadOnlyDictionary<int, bool>? sourceHasAudioByIndex = null)
     {
         // Deterministic ffmpeg -i order: sorted distinct source indices actually referenced. Input
         // 0 is not necessarily "the" primary source here (that's canonicalMedia's own index,
@@ -2169,6 +2212,19 @@ public class VideoCompileStepExecutor : IStepExecutor
         Dictionary<int, int> ffmpegInputIndexBySource = orderedSourceIndices
             .Select((sourceIdx, inputIdx) => (sourceIdx, inputIdx))
             .ToDictionary(t => t.sourceIdx, t => t.inputIdx);
+
+        // A missing entry (only possible when the caller omits the map entirely) is treated as
+        // "has audio" — the pre-existing, safer default this parameter itself used to be.
+        bool SourceHasAudio(int sourceIndex) =>
+            sourceHasAudioByIndex is null || !sourceHasAudioByIndex.TryGetValue(sourceIndex, out bool has) || has;
+
+        // Degenerate case only: NOT ONE referenced source has an audio stream at all, so there is
+        // no real dialogue anywhere to preserve — dropping audio for the whole output (exactly the
+        // pre-existing behavior) is simpler and just as correct as concatenating an all-silent
+        // track would be. Any OTHER mix (at least one source with audio, at least one without)
+        // instead synthesizes silence per audio-less span below, keeping every audio-having span's
+        // real dialogue intact.
+        bool anySourceHasAudio = orderedSourceIndices.Any(SourceHasAudio);
 
         // libx264/libx265 require even dimensions; clamp the canonical target defensively even
         // though a real ffprobe'd width/height is virtually always already even.
@@ -2198,19 +2254,33 @@ public class VideoCompileStepExecutor : IStepExecutor
                 $"scale={cw}:{ch}:force_original_aspect_ratio=decrease,pad={cw}:{ch}:(ow-iw)/2:(oh-ih)/2:color=black," +
                 $"setsar=1,fps={cfpsNum}/{cfpsDen}[v{i}]");
 
-            // allSourcesHaveAudio=false: at least one referenced clip has no audio stream at all
-            // (real B-roll routinely ships video-only), which would make "[N:a]" fail ffmpeg
-            // outright for that input. concat's own "a=" stream count must be uniform across every
-            // concatenated segment, so mixing audio-having and audio-less segments in one concat
-            // isn't an option here — the simplest correct behavior is to drop audio for the WHOLE
-            // compiled output whenever any one source lacks it, exactly mirroring the single-source
-            // path's per-clip fallback rather than attempting to synthesize matching silence.
-            if (allSourcesHaveAudio)
+            // concat's own "a=" stream count must be uniform across every concatenated segment, so
+            // an audio-less span (real B-roll routinely ships video-only, which would otherwise
+            // make "[N:a]" fail ffmpeg outright for that input) cannot simply omit its own audio
+            // branch while its neighbors keep theirs. Per-segment fix: a span whose OWN source has
+            // no audio stream instead gets a synthesized, matching-duration silence branch —
+            // anullsrc is a SOURCE filter (needs no `-i`/input stream of its own, so none of the
+            // asset-overlay/music input-index bookkeeping elsewhere in this method is affected),
+            // its `d=` option makes it self-terminating (no atrim needed on top), and it already
+            // natively produces 48kHz/stereo output — the same format every real atrim branch below
+            // is normalized to — so no extra aformat is needed either way. This only ever runs when
+            // at least one referenced source DOES have audio (anySourceHasAudio); when none does,
+            // the whole output drops audio instead (see anySourceHasAudio above), exactly mirroring
+            // the single-source path's own no-audio-at-all fallback.
+            if (anySourceHasAudio)
             {
-                filterParts.Add(
-                    $"[{ffInputIdx}:a]atrim=start={ss}:end={ee},asetpts=PTS-STARTPTS," +
-                    "aformat=sample_rates=48000:channel_layouts=stereo" +
-                    $"[a{i}]");
+                if (SourceHasAudio(span.SourceIndex))
+                {
+                    filterParts.Add(
+                        $"[{ffInputIdx}:a]atrim=start={ss}:end={ee},asetpts=PTS-STARTPTS," +
+                        "aformat=sample_rates=48000:channel_layouts=stereo" +
+                        $"[a{i}]");
+                }
+                else
+                {
+                    double spanDurationSec = Math.Max(0.0, span.SnappedEnd - span.SnappedStart);
+                    filterParts.Add($"anullsrc=r=48000:cl=stereo:d={FfmpegArgvFormat.Number(spanDurationSec)}[a{i}]");
+                }
 
                 concatInputLabels.Append($"[v{i}][a{i}]");
             }
@@ -2234,8 +2304,8 @@ public class VideoCompileStepExecutor : IStepExecutor
         // dialogue side — every per-span atrim branch above already ends in
         // aformat=sample_rates=48000:channel_layouts=stereo, so the concat output already matches
         // the music branch's own format by construction.
-        string? audioConcatLabel = allSourcesHaveAudio ? (music is not null ? "[adial]" : "[aout]") : null;
-        filterParts.Add(allSourcesHaveAudio
+        string? audioConcatLabel = anySourceHasAudio ? (music is not null ? "[adial]" : "[aout]") : null;
+        filterParts.Add(anySourceHasAudio
             ? $"{concatInputLabels}concat=n={spans.Count}:v=1:a=1{videoConcatLabel}{audioConcatLabel}"
             : $"{concatInputLabels}concat=n={spans.Count}:v=1:a=0{videoConcatLabel}");
 
@@ -2291,7 +2361,7 @@ public class VideoCompileStepExecutor : IStepExecutor
             // offset here being orderedSourceIndices.Count (not the single-source path's fixed
             // "+1", since multiple sources may be present).
             int musicInputIndex = orderedSourceIndices.Count + assetOverlays.Count;
-            if (allSourcesHaveAudio)
+            if (anySourceHasAudio)
             {
                 filterParts.Add(MusicMixFilterBuilder.BuildMusicBranch(musicInputIndex, music));
                 filterParts.Add(MusicMixFilterBuilder.BuildMixStage(audioConcatLabel!));
@@ -2304,7 +2374,7 @@ public class VideoCompileStepExecutor : IStepExecutor
             }
         }
 
-        bool hasAudioOutput = allSourcesHaveAudio || music is not null;
+        bool hasAudioOutput = anySourceHasAudio || music is not null;
         string filterComplex = string.Join(";", filterParts);
 
         Action<string>? progressLineHandler = progressContext is not null && totalOutputSeconds > 0
