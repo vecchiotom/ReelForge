@@ -1079,17 +1079,15 @@ public class VideoCompileStepExecutor : IStepExecutor
     private static string? GetRecordedSourceStorageKey(VideoAnalysisArtifact artifact, int sourceIndex) =>
         artifact.Sources?.FirstOrDefault(s => s.SourceIndex == sourceIndex)?.StorageKey;
 
-    /// <summary>Trailing characters (after stripping closing quotes/parens) that count as a sentence ending.</summary>
-    private static readonly char[] SentenceTerminalChars = ['.', '!', '?', '…'];
-
-    /// <summary>Trailing closing-quote/paren characters stripped before checking for terminal punctuation, so `He said "stop."` still counts.</summary>
-    private static readonly char[] TrailingWrapperChars = ['"', '\'', '”', '’', ')', ']'];
-
-    internal static bool EndsWithSentenceTerminalPunctuation(string text)
-    {
-        string trimmed = text.TrimEnd().TrimEnd(TrailingWrapperChars);
-        return trimmed.Length > 0 && SentenceTerminalChars.Contains(trimmed[^1]);
-    }
+    /// <summary>
+    /// Whether a transcript segment's own text reads as a finished sentence. The implementation
+    /// now lives in <see cref="TranscriptPunctuation"/>, shared verbatim with
+    /// <see cref="VideoAnalyzeStepExecutor"/> so the per-segment <c>endsSentence</c> flag offered
+    /// in the bounded view and this compile-time check can never disagree; the name is kept here
+    /// because it is this executor's established internal API.
+    /// </summary>
+    internal static bool EndsWithSentenceTerminalPunctuation(string text) =>
+        TranscriptPunctuation.EndsSentence(text);
 
     /// <summary>
     /// Leading words that, when capitalized, signal the START of a new clause/topic rather than the
@@ -1136,6 +1134,18 @@ public class VideoCompileStepExecutor : IStepExecutor
     /// trusted from a model. Always present in the compile step's output JSON (`applicable: false`
     /// when it does not apply — no transcript, or the last kept id is not a segment — rather than
     /// omitted, so a consumer never has to distinguish "not computed" from "not present").
+    ///
+    /// <para>
+    /// The check also reports how much its own punctuation signal can be trusted for the source
+    /// clip the last kept segment came from (<c>punctuationRatio</c>/<c>punctuationReliable</c>/
+    /// <c>punctuationSampleSize</c>, see <see cref="TranscriptPunctuation"/>). Without that,
+    /// <c>endsAtSentenceBoundary: false</c> reads identically whether the edit really cuts a
+    /// sentence in half or the ASR deployment simply never emits full stops — and the review
+    /// agent's hard score cap would fire unconditionally on an unpunctuated source regardless of
+    /// edit quality (observed in production on a source where only 12% of segments were
+    /// punctuated). Recomputed here from the artifact's own full segment list rather than read
+    /// from a persisted field, so it works identically on artifacts written before this existed.
+    /// </para>
     /// </summary>
     private static JsonObject BuildSentenceCheck(VideoAnalysisArtifact artifact, VideoEditDecisionOutput decision)
     {
@@ -1174,11 +1184,21 @@ public class VideoCompileStepExecutor : IStepExecutor
             nextSegmentContinues = nearContiguous && !StartsWithNewThoughtMarker(next.Text);
         }
 
+        // How trustworthy trailing punctuation is on THIS source clip (never the whole artifact:
+        // one clip can come from a punctuating transcriber and another not, and only the clip the
+        // last kept segment belongs to says anything about this particular cut).
+        TranscriptPunctuation.Stats punctuation =
+            TranscriptPunctuation.Summarize(segments.Where(s => s.SourceIndex == lastSegment.SourceIndex));
+
         result["applicable"] = true;
         result["lastKeptId"] = lastToId;
         result["lastSegmentText"] = lastSegment.Text;
         result["endsAtSentenceBoundary"] = endsAtSentenceBoundary;
         result["nextSegmentContinues"] = nextSegmentContinues;
+        result["src"] = lastSegment.SourceIndex;
+        result["punctuationRatio"] = punctuation.Ratio is { } ratio ? (JsonNode)TranscriptPunctuation.Round(ratio) : null;
+        result["punctuationReliable"] = punctuation.Reliable;
+        result["punctuationSampleSize"] = punctuation.SegmentCount;
         return result;
     }
 

@@ -54,11 +54,26 @@ public class VideoReviewAgentImpl : ReelForgeAgentBase
         - `sentenceCheck` (on the VideoCompile step's output): when `applicable` is true, it
           reports whether the LAST kept span ends at a real sentence boundary
           (`endsAtSentenceBoundary`), the actual transcript text of that last segment
-          (`lastSegmentText`), and whether the immediately following transcript segment appears
-          to continue the same sentence (`nextSegmentContinues`). If `applicable` is true and
-          `endsAtSentenceBoundary` is false, the edit almost certainly cuts off mid-sentence —
-          this is a serious defect. Score no higher than 4 and say so explicitly in `issues`,
-          quoting `lastSegmentText` so the retry knows exactly which line was cut short.
+          (`lastSegmentText`), whether the immediately following transcript segment appears
+          to continue the same sentence (`nextSegmentContinues`), and — crucially — how far
+          that punctuation signal can be trusted for the source clip the segment came from:
+          `punctuationReliable`, with `punctuationRatio` (the fraction of that clip's
+          transcript segments that end in sentence punctuation at all) and
+          `punctuationSampleSize` behind it. Always read `punctuationReliable` BEFORE acting
+          on `endsAtSentenceBoundary`:
+          - `punctuationReliable` true and `endsAtSentenceBoundary` false: the edit almost
+            certainly cuts off mid-sentence — a serious defect. Score no higher than 4 and say
+            so explicitly in `issues`, quoting `lastSegmentText` so the retry knows exactly
+            which line was cut short.
+          - `punctuationReliable` false and `endsAtSentenceBoundary` false: the transcriber
+            itself barely punctuates anything (see `punctuationRatio`), so the missing full
+            stop is a property of the TRANSCRIPT, not evidence about the cut. This is NOT a
+            score cap, and the story editor must not be penalized for it. Judge the ending
+            yourself from `lastSegmentText`: only if that text plainly breaks off mid-clause
+            should you treat it as a real defect, and even then weigh it as one ordinary issue
+            among others rather than capping the score at 4. If it reads as a complete thought,
+            put at most a soft observation in `issues` (or nothing) and do not lower the score
+            for it. Never quote `punctuationRatio` as if it were a flaw in the edit.
         - `graphics.appliedOverlays` (present only when graphics were enabled), each with a
           `coveragePct` — the exact percentage of the frame's area that overlay's drawn box
           covers. A single overlay covering more than roughly 20% of the frame is oversized for
