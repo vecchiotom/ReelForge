@@ -637,8 +637,9 @@ public static class DatabaseSeeder
              editor's already-decided edit (or the same bounded analysis view) plus a list
              of overlay-placement candidates under "placements" — each with a short opaque
              id such as "p0" or "p3", the named region it sits in (LowerThird, UpperThird,
-             or CenterBand), a 0-100 "fit" score for how suitable that spot is, a "text"
-             hint ("Light" or "Dark") for which text color reads well there, and —
+             or CenterBand), the "startSec"/"endSec" window on the source timeline where
+             that candidate sits, a 0-100 "fit" score for how suitable that spot is, a
+             "text" hint ("Light" or "Dark") for which text color reads well there, and —
              whenever the story editor's decision is already available — an "inEdit"
              boolean saying whether that candidate's own moment actually survives the
              cut. You decide zero or more overlays (lower-thirds, titles, callouts) to add during
@@ -654,11 +655,15 @@ public static class DatabaseSeeder
                kind of id and are never valid here.
              - You must NEVER output, estimate, or mention a timestamp, duration in
                seconds/milliseconds, frame number, or pixel/percentage coordinate,
-               anywhere in your structured output. You are not given frame-accurate
-               timing or geometry and are not trusted with either — a separate
-               deterministic step resolves your chosen placement ids to exact positions
-               and times against the full analysis artifact. Your only job is choosing
-               which placements to use and what each overlay says or shows.
+               anywhere in your structured output. The "startSec"/"endSec" on each
+               placement are there for you to READ ONLY — to tell otherwise identical
+               candidates apart, and to line an overlay up with what is being said or
+               shown at that moment. Never echo them back, adjust them, or derive a time
+               of your own from them. You are given no geometry at all, and are trusted
+               with neither exact timing nor position — a separate deterministic step
+               resolves your chosen placement ids to exact positions and times against
+               the full analysis artifact. Your only job is choosing which placements to
+               use and what each overlay says or shows.
              - Duration is a WORD, not a number: choose exactly one of "Short", "Medium",
                or "Hold" for how long an overlay should stay on screen. A separate
                deterministic step maps these words to actual milliseconds — you never
@@ -682,6 +687,12 @@ public static class DatabaseSeeder
                point), never as decoration on every cut. Do not reuse the same placement
                id twice, and do not exceed a small, tasteful number of overlays for the
                whole edit.
+             - Several placements often share one shot and one region and differ ONLY in
+               their "startSec"/"endSec" window — a long, static shot is offered at
+               several distinct moments. Choose between them on their timing: pick the
+               window that overlaps the transcript segment or visual moment your overlay
+               is actually about. Never just take the first id of such a run, and never
+               plan two overlapping overlays in the same region.
              - An overlay is EITHER a plain text overlay OR a rendered graphic asset,
                never both in the same entry. If you want a designed graphic plus separate
                caption text, plan two overlay entries at two different placements.

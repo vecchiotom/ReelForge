@@ -2101,11 +2101,34 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         }).ToArray());
 
     /// <summary>
-    /// Phase 3's <c>view.placements</c> — deliberately small/budget-friendly (no rect, no time
-    /// window, no anchor kind): a downstream motion-graphics planner only needs "which candidate
-    /// ids exist, how good is each, is it a light- or dark-text region", never the geometry or
-    /// timing that <c>VideoCompileStepExecutor</c> alone resolves from the full artifact.
+    /// Phase 3's <c>view.placements</c> — deliberately small/budget-friendly (no rect, no anchor
+    /// kind): a downstream motion-graphics planner only needs "which candidate ids exist, WHEN
+    /// each one sits on the source timeline, how good is each, is it a light- or dark-text
+    /// region", never the geometry that <c>VideoCompileStepExecutor</c> alone resolves from the
+    /// full artifact.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>startSec</c>/<c>endSec</c> (named to match <see cref="SegmentNode"/>'s existing
+    /// transcript-segment convention, and rounded like every other Phase 1+ number in this view)
+    /// are NOT a loosening of the no-timestamp rule: that rule governs model OUTPUT only —
+    /// <c>MotionGraphicsPlanOutput</c> still has no time-bearing property at all, and
+    /// <c>VideoCompileStepExecutor</c> still resolves an overlay's real window from the full
+    /// artifact's unrounded <see cref="VideoAnalysisPlacement.StartSec"/>/<c>EndSec</c>, never
+    /// from anything shown here. Transcript segments already expose the same two fields as input
+    /// to <c>VideoStoryEditor</c>.
+    /// </para>
+    /// <para>
+    /// Without them the view was genuinely undecidable: <c>MaxTimeSlicesPerRegion</c> splits one
+    /// long shot's region into several candidate sub-windows, so several placements on a single
+    /// static shot (a talking head, say) serialized byte-identically except for their id — the
+    /// planner had literally no information on which to pick one over another and defaulted to
+    /// the first of each identical run. The time window is the only thing that distinguishes
+    /// them, and it is also what lets the planner match an overlay to the transcript segment
+    /// (same <c>startSec</c>/<c>endSec</c> units, same source timeline) whose content it is
+    /// supposed to support.
+    /// </para>
+    /// </remarks>
     private static JsonArray PlacementsNode(IReadOnlyList<VideoAnalysisPlacement> placements, bool isMultiSource) =>
         new(placements.Select(p =>
         {
@@ -2114,6 +2137,8 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                 ["id"] = p.Id,
                 ["shotId"] = p.ShotId,
                 ["region"] = p.Region,
+                ["startSec"] = Round2(p.StartSec),
+                ["endSec"] = Round2(p.EndSec),
                 ["fit"] = Score(p.Suitability),
                 ["text"] = p.TextColor
             };
