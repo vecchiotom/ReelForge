@@ -2,6 +2,7 @@
 
 import { AppShell as MantineAppShell, Burger, Group, Title } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
+import { InstallPrompt } from './InstallPrompt';
 import { NavLinks } from './NavLinks';
 import { UserMenu } from './UserMenu';
 
@@ -20,7 +21,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" />
             <Title order={3} c="violet">ReelForge</Title>
           </Group>
-          <UserMenu />
+          <Group gap="sm">
+            <InstallPrompt />
+            <UserMenu />
+          </Group>
         </Group>
       </MantineAppShell.Header>
 
