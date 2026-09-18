@@ -98,6 +98,28 @@ public class EditRoomStepExecutorTests
         });
     }
 
+    /// <summary>
+    /// A bounded view whose shots carry the <c>"src"</c> source-clip index a multi-source
+    /// <c>VideoAnalyze</c> step emits on every offered item — the exact shape
+    /// <c>VideoAnalyzeStepExecutor.ShotNode</c> produces when more than one clip was analyzed.
+    /// </summary>
+    private static string BuildMultiSourceViewJson(params (string Id, int Src)[] shotIdsWithSources)
+    {
+        var shots = shotIdsWithSources.Select((s, i) => new
+        {
+            id = s.Id,
+            startSec = i * 2.0,
+            endSec = i * 2.0 + 2.0,
+            durationSec = 2.0,
+            src = s.Src
+        });
+        return JsonSerializer.Serialize(new
+        {
+            view = new { shots, silences = Array.Empty<object>(), segments = Array.Empty<object>() },
+            meta = new { offeredIdCount = shotIdsWithSources.Length, sourceCount = shotIdsWithSources.Select(s => s.Src).Distinct().Count() }
+        });
+    }
+
     private static string ErrorCode(StepExecutionResult result)
     {
         using JsonDocument doc = JsonDocument.Parse(result.Output);
@@ -329,6 +351,143 @@ public class EditRoomStepExecutorTests
         turnList[1].GetProperty("turnIndex").GetInt32().Should().Be(1);
         turnList[1].GetProperty("speaker").GetString().Should().Be("Director");
         turnList[1].GetProperty("speakerRole").GetString().Should().Be("director");
+    }
+
+    [Fact]
+    public void Room_charter_prompt_carries_the_multi_source_single_clip_span_rule()
+    {
+        // The solo VideoStoryEditor prompt has carried a "Multiple source clips" section since
+        // multi-source support shipped; the room charter every seat (and the director's
+        // room-participant turns) runs under must state the same hard rule, or the room can
+        // converge on a cross-clip span the compile step then rejects as MIXED_SOURCE_SPAN.
+        EditRoomStepExecutor.RoomCharterPrompt.Should().Contain("\"src\"",
+            "seats must be told what the src index on every offered id means");
+        EditRoomStepExecutor.RoomCharterPrompt.Should().Contain("SAME clip",
+            "the one hard multi-source rule — a single kept run never bridges two clips — must be stated");
+    }
+
+    [Fact]
+    public async Task Solo_fallback_drops_a_Keep_span_bridging_two_source_clips()
+    {
+        EditRoomStepExecutor executor = CreateExecutor(
+            out Mock<IAgentChatClientProvider> chatClients, out _, out Mock<IAgentRegistry> agentRegistry, out _);
+
+        chatClients
+            .Setup(c => c.GetAsync(It.IsAny<AgentType>(), It.IsAny<Guid?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("no chat-capable provider configured"));
+
+        // s0/s1 belong to clip 0, s2/s3 to clip 1. "s1 → s2" bridges the two physical files — the
+        // exact shape VideoCompileStepExecutor rejects hard as MIXED_SOURCE_SPAN. The room-level
+        // validation must drop it (degrade, not fail) while keeping the two valid single-clip spans.
+        string decisionJson = JsonSerializer.Serialize(new
+        {
+            keep = new[]
+            {
+                new { fromId = "s0", toId = "s1", reason = "clip 0 material" },
+                new { fromId = "s1", toId = "s2", reason = "bridges clips (invalid)" },
+                new { fromId = "s2", toId = "s3", reason = "clip 1 material" }
+            },
+            editRationale = "solo fallback",
+            suggestedTitle = "Cross-clip Edit"
+        });
+
+        var soloAgent = new Mock<IReelForgeAgent>();
+        soloAgent
+            .Setup(a => a.RunAsync(It.IsAny<string>(), It.IsAny<Guid?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentRunResult { Output = decisionJson, Success = true });
+        agentRegistry.Setup(r => r.GetByType(AgentType.VideoStoryEditor, null)).Returns(soloAgent.Object);
+
+        string config = JsonSerializer.Serialize(
+            new EditRoomStepConfig(View: new ExtractInputRef(ExtractInputSource.Previous)), ConfigOptions);
+        string viewJson = BuildMultiSourceViewJson(("s0", 0), ("s1", 0), ("s2", 1), ("s3", 1));
+        StepExecutionContext context = CreateContext(config, history: [new StepOutputHistoryEntry(1, "Analyze", viewJson)]);
+
+        StepExecutionResult result = await executor.ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        List<JsonElement> keep = doc.RootElement.GetProperty("keep").EnumerateArray().ToList();
+        keep.Should().HaveCount(2, "the cross-clip span must be dropped, the two single-clip spans kept");
+        keep[0].GetProperty("fromId").GetString().Should().Be("s0");
+        keep[0].GetProperty("toId").GetString().Should().Be("s1");
+        keep[1].GetProperty("fromId").GetString().Should().Be("s2");
+        keep[1].GetProperty("toId").GetString().Should().Be("s3");
+
+        JsonElement room = doc.RootElement.GetProperty("room");
+        room.GetProperty("droppedSpanCount").GetInt32().Should().Be(1);
+        room.GetProperty("droppedMixedSourceSpanCount").GetInt32().Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Synthesis_retries_with_mixed_source_feedback_then_accepts_the_corrected_decision()
+    {
+        EditRoomStepExecutor executor = CreateExecutor(
+            out Mock<IAgentChatClientProvider> chatClients, out _, out Mock<IAgentRegistry> agentRegistry, out _);
+
+        // A real (canned) room run over a multi-source view — both seats and the director speak.
+        chatClients
+            .Setup(c => c.GetAsync(It.IsAny<AgentType>(), It.IsAny<Guid?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new FakeChatClient("Keep s0 from the first clip and s2 from the second."));
+
+        string mixedDecisionJson = JsonSerializer.Serialize(new
+        {
+            keep = new[] { new { fromId = "s0", toId = "s2", reason = "bridges clips (invalid)" } },
+            editRationale = "first synthesis attempt",
+            suggestedTitle = "Bad Bridge"
+        });
+        string correctedDecisionJson = JsonSerializer.Serialize(new
+        {
+            keep = new[]
+            {
+                new { fromId = "s0", toId = "s1", reason = "clip 0 run" },
+                new { fromId = "s2", toId = "s2", reason = "clip 1 run" }
+            },
+            editRationale = "corrected synthesis attempt",
+            suggestedTitle = "Cross-clip Sequence"
+        });
+
+        var capturedPrompts = new List<string>();
+        var directorAgent = new Mock<IReelForgeAgent>();
+        directorAgent
+            .SetupSequence(a => a.RunAsync(Moq.Capture.In(capturedPrompts), It.IsAny<Guid?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentRunResult { Output = mixedDecisionJson, Success = true })
+            .ReturnsAsync(new AgentRunResult { Output = correctedDecisionJson, Success = true });
+        agentRegistry
+            .Setup(r => r.GetByType(AgentType.VideoEditDirector, null))
+            .Returns(directorAgent.Object);
+
+        var config = new EditRoomStepConfig(
+            View: new ExtractInputRef(ExtractInputSource.Previous),
+            Seats: [new EditRoomSeat("Seat0", "first")],
+            Rounds: 1,
+            MaxTurns: 2,
+            Termination: EditRoomTerminationMode.FixedTurns,
+            RoomTimeoutSeconds: 20,
+            PersistTranscript: false,
+            MaxSynthesisAttempts: 2);
+        string configJson = JsonSerializer.Serialize(config, ConfigOptions);
+        string viewJson = BuildMultiSourceViewJson(("s0", 0), ("s1", 0), ("s2", 1));
+        StepExecutionContext context = CreateContext(configJson, history: [new StepOutputHistoryEntry(1, "Analyze", viewJson)]);
+
+        StepExecutionResult result = await executor.ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+
+        List<JsonElement> keep = doc.RootElement.GetProperty("keep").EnumerateArray().ToList();
+        keep.Should().HaveCount(2, "the corrected second synthesis attempt must be the accepted decision");
+        keep[0].GetProperty("toId").GetString().Should().Be("s1");
+        keep[1].GetProperty("fromId").GetString().Should().Be("s2");
+
+        JsonElement room = doc.RootElement.GetProperty("room");
+        room.GetProperty("degraded").GetBoolean().Should().BeFalse("a successful retry is not a degrade");
+        room.GetProperty("synthesisAttempts").GetInt32().Should().Be(2);
+        room.GetProperty("droppedSpanCount").GetInt32().Should().Be(0);
+        room.GetProperty("droppedMixedSourceSpanCount").GetInt32().Should().Be(0);
+
+        capturedPrompts.Should().HaveCount(2);
+        capturedPrompts[1].Should().Contain("different source clips",
+            "the retry prompt must tell the director exactly why the first decision was rejected");
     }
 
     /// <summary>

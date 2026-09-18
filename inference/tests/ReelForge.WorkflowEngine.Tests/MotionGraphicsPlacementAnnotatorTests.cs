@@ -201,6 +201,26 @@ public class MotionGraphicsPlacementAnnotatorTests
         MotionGraphicsPlacementAnnotator.TryParseDecision("no json here").Should().BeNull();
     }
 
+    [Fact]
+    public void TryParseDecision_accepts_an_EditRoom_step_output_with_its_additive_room_metadata_block()
+    {
+        // FindDecision is deliberately duck-typed by SHAPE (a non-empty "keep" array), not by the
+        // producing step's type — so a StepType.EditRoom predecessor works exactly like a solo
+        // Agent(VideoStoryEditor) one. The room's ADDITIVE "room" sibling object must be ignored,
+        // never a parse failure.
+        var decision = MotionGraphicsPlacementAnnotator.TryParseDecision(
+            """
+            {"keep":[{"fromId":"s0","toId":"s1","reason":"room agreed"}],
+             "editRationale":"room synthesis","suggestedTitle":"Room Edit",
+             "room":{"seats":["PacingEditor","StoryEditor"],"turnCount":6,"terminationReason":"converged","degraded":false}}
+            """);
+
+        decision.Should().NotBeNull();
+        decision!.Keep.Should().HaveCount(1);
+        decision.Keep[0].FromId.Should().Be("s0");
+        decision.Keep[0].ToId.Should().Be("s1");
+    }
+
     // =======================================================================
     // End-to-end through the real StepExecutionContext prompt assembly.
     // =======================================================================

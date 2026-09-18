@@ -40,7 +40,7 @@ export interface WorkflowStep {
   videoAnalyzeConfigJson?: string | null;
   /** JSON-serialized VideoCompileStepConfig (VideoCompile step type only). Deserialize with JSON.parse. */
   videoCompileConfigJson?: string | null;
-  /** JSON-serialized EditRoomStepConfig (EditRoom step type only). The builder UI has no editor for it yet — treat as an opaque passthrough so saving a workflow never drops it. */
+  /** JSON-serialized EditRoomStepConfig (EditRoom step type only). Edited via EditRoomStepConfigEditor as a raw string that preserves unknown fields — see StepData.editRoomConfigJson. */
   editRoomConfigJson?: string | null;
 }
 

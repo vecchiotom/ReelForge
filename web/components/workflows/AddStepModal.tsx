@@ -1,7 +1,7 @@
 'use client';
 
 import { Modal, Stack, Button, Text } from '@mantine/core';
-import { IconRobot, IconGitBranch, IconRepeat, IconStarFilled, IconLayoutColumns, IconFilterCog, IconWaveSine, IconScissors } from '@tabler/icons-react';
+import { IconRobot, IconGitBranch, IconRepeat, IconStarFilled, IconLayoutColumns, IconFilterCog, IconWaveSine, IconScissors, IconUsersGroup } from '@tabler/icons-react';
 import type { StepType } from '@/lib/types/workflow';
 
 interface AddStepModalProps {
@@ -9,16 +9,17 @@ interface AddStepModalProps {
   onClose: () => void;
   onAdd: (stepType: StepType) => void;
   /**
-   * True while the builder is still fetching the agent list. Extract/VideoAnalyze/VideoCompile
-   * steps auto-assign a built-in agent id from that list at the moment they're added — adding one
-   * before the fetch resolves would bake in a blank id that the create-workflow submit guard would
-   * then reject with a confusing "requires an agent" (found by Copilot review). Disable just those
-   * three step types until the list is in, rather than the whole modal.
+   * True while the builder is still fetching the agent list. Extract/VideoAnalyze/VideoCompile/
+   * EditRoom steps auto-assign a built-in placeholder agent id from that list at the moment
+   * they're added — adding one before the fetch resolves would bake in a blank id that the
+   * create-workflow submit guard would then reject with a confusing "requires an agent" (found by
+   * Copilot review). Disable just those step types until the list is in, rather than the whole
+   * modal.
    */
   nonLlmStepsDisabled?: boolean;
 }
 
-const NON_LLM_STEP_TYPES: ReadonlySet<StepType> = new Set(['Extract', 'VideoAnalyze', 'VideoCompile']);
+const NON_LLM_STEP_TYPES: ReadonlySet<StepType> = new Set(['Extract', 'VideoAnalyze', 'VideoCompile', 'EditRoom']);
 
 export function AddStepModal({ opened, onClose, onAdd, nonLlmStepsDisabled = false }: AddStepModalProps) {
   const stepTypes: { type: StepType; label: string; icon: React.ReactNode; color: string; description: string }[] = [
@@ -77,6 +78,13 @@ export function AddStepModal({ opened, onClose, onAdd, nonLlmStepsDisabled = fal
       icon: <IconScissors size={24} />,
       color: 'indigo',
       description: 'Deterministic ffmpeg-based cutting from an editorial decision',
+    },
+    {
+      type: 'EditRoom',
+      label: 'Edit Room',
+      icon: <IconUsersGroup size={24} />,
+      color: 'pink',
+      description: 'Multi-agent deliberation over an analyzed video, emitting one editorial decision',
     },
   ];
 

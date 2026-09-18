@@ -12,7 +12,9 @@ import { ReviewLoopStepConfig } from './ReviewLoopStepConfig';
 import { ExtractStepConfig, createDefaultExtractStepConfig } from './ExtractStepConfig';
 import { VideoAnalyzeStepConfig, createDefaultVideoAnalyzeStepConfig } from './VideoAnalyzeStepConfig';
 import { VideoCompileStepConfig, createDefaultVideoCompileStepConfig } from './VideoCompileStepConfig';
+import { EditRoomStepConfigEditor, createDefaultEditRoomConfigJson } from './EditRoomStepConfigEditor';
 import type { StepData } from './WorkflowStepList';
+import type { StepType } from '@/lib/types/workflow';
 
 interface StepCardProps {
   step: StepData;
@@ -47,7 +49,21 @@ export function StepCard({
     step.stepType !== 'Conditional' &&
     step.stepType !== 'Extract' &&
     step.stepType !== 'VideoAnalyze' &&
-    step.stepType !== 'VideoCompile';
+    step.stepType !== 'VideoCompile' &&
+    step.stepType !== 'EditRoom';
+
+  // Switching a step's TYPE to EditRoom must seed the runnable default config immediately — the
+  // executor hard-fails an EditRoom step whose EditRoomConfigJson is null/empty, and unlike the
+  // typed extract/video configs (which the submit mapper serializes from their `?? default`
+  // fallback), this config is carried as a raw string that would otherwise stay null until the
+  // user opened the editor.
+  const handleStepTypeChange = (stepType: StepType) => {
+    if (stepType === 'EditRoom' && !step.editRoomConfigJson) {
+      onChange({ stepType, editRoomConfigJson: createDefaultEditRoomConfigJson() });
+      return;
+    }
+    onChange({ stepType });
+  };
 
   return (
     <Card withBorder padding="sm" radius="md">
@@ -92,7 +108,7 @@ export function StepCard({
         </Group>
 
         <Group gap="sm" grow>
-          <StepTypeSelector value={step.stepType} onChange={(stepType) => onChange({ stepType })} />
+          <StepTypeSelector value={step.stepType} onChange={handleStepTypeChange} />
           {showAgentPicker && (
             <AgentPicker value={step.agentDefinitionId} onChange={(agentDefinitionId) => onChange({ agentDefinitionId })} />
           )}
@@ -153,6 +169,15 @@ export function StepCard({
           <VideoCompileStepConfig
             config={step.videoCompileConfig ?? createDefaultVideoCompileStepConfig()}
             onChange={(videoCompileConfig) => onChange({ videoCompileConfig })}
+            allSteps={allSteps}
+            currentStepIndex={currentStepIndex}
+          />
+        )}
+
+        {step.stepType === 'EditRoom' && (
+          <EditRoomStepConfigEditor
+            configJson={step.editRoomConfigJson}
+            onChange={(editRoomConfigJson) => onChange({ editRoomConfigJson })}
             allSteps={allSteps}
             currentStepIndex={currentStepIndex}
           />

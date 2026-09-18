@@ -29,10 +29,12 @@ import { ParallelNode } from './nodes/ParallelNode';
 import { ExtractNode } from './nodes/ExtractNode';
 import { VideoAnalyzeNode } from './nodes/VideoAnalyzeNode';
 import { VideoCompileNode } from './nodes/VideoCompileNode';
+import { EditRoomNode } from './nodes/EditRoomNode';
 import { AddStepModal } from './AddStepModal';
 import { createDefaultExtractStepConfig } from './ExtractStepConfig';
 import { createDefaultVideoAnalyzeStepConfig } from './VideoAnalyzeStepConfig';
 import { createDefaultVideoCompileStepConfig } from './VideoCompileStepConfig';
+import { createDefaultEditRoomConfigJson } from './EditRoomStepConfigEditor';
 import { useAgents } from '@/lib/hooks/use-agents';
 import { WorkflowStepList } from './WorkflowStepList';
 import type { StepData } from './WorkflowStepList';
@@ -47,6 +49,7 @@ const nodeTypes = {
   extract: ExtractNode,
   videoAnalyze: VideoAnalyzeNode,
   videoCompile: VideoCompileNode,
+  editRoom: EditRoomNode,
 } satisfies NodeTypes;
 
 /** Maps a workflow StepType to its React Flow node type key. */
@@ -59,9 +62,7 @@ const STEP_TYPE_TO_NODE_TYPE: Record<StepType, keyof typeof nodeTypes> = {
   Extract: 'extract',
   VideoAnalyze: 'videoAnalyze',
   VideoCompile: 'videoCompile',
-  // No dedicated node component yet — an EditRoom step (template-provisioned only for now)
-  // renders as a generic agent node; its config round-trips opaquely (see StepData).
-  EditRoom: 'agent',
+  EditRoom: 'editRoom',
 };
 
 interface FlowchartBuilderProps {
@@ -169,16 +170,18 @@ export function FlowchartBuilder({ steps, onChange, projectId }: FlowchartBuilde
   );
 
   const handleAddStep = (stepType: StepType) => {
-    // Extract, VideoAnalyze and VideoCompile steps run no model — auto-assign the appropriate
-    // built-in, non-LLM agent so the non-nullable AgentDefinitionId FK is always satisfied
-    // without user action. VideoTransform is a single deterministic-placeholder row that serves
-    // both new video step types, exactly as ExtractTransform serves Extract.
+    // Extract, VideoAnalyze, VideoCompile and EditRoom steps don't resolve their model from the
+    // step's own agent FK — auto-assign the appropriate built-in placeholder agent so the
+    // non-nullable AgentDefinitionId FK is always satisfied without user action. VideoTransform is
+    // a single deterministic-placeholder row that serves all three video-editing step types,
+    // exactly as ExtractTransform serves Extract (an EditRoom step's real seats/director are
+    // resolved server-side from EditRoomConfigJson, never from this FK).
     const extractTransformAgentId = agents?.find((a) => a.agentType === 'ExtractTransform')?.id ?? '';
     const videoTransformAgentId = agents?.find((a) => a.agentType === 'VideoTransform')?.id ?? '';
 
     let agentDefinitionId = '';
     if (stepType === 'Extract') agentDefinitionId = extractTransformAgentId;
-    if (stepType === 'VideoAnalyze' || stepType === 'VideoCompile') agentDefinitionId = videoTransformAgentId;
+    if (stepType === 'VideoAnalyze' || stepType === 'VideoCompile' || stepType === 'EditRoom') agentDefinitionId = videoTransformAgentId;
 
     const newStep: StepData = {
       id: `step-${Date.now()}`,
@@ -199,6 +202,10 @@ export function FlowchartBuilder({ steps, onChange, projectId }: FlowchartBuilde
       extractConfig: stepType === 'Extract' ? createDefaultExtractStepConfig() : null,
       videoAnalyzeConfig: stepType === 'VideoAnalyze' ? createDefaultVideoAnalyzeStepConfig() : null,
       videoCompileConfig: stepType === 'VideoCompile' ? createDefaultVideoCompileStepConfig() : null,
+      // A default config is written IMMEDIATELY on add (not lazily on first edit): the executor
+      // hard-fails an EditRoom step whose EditRoomConfigJson is null/empty, so a freshly-added,
+      // untouched step must still carry the runnable default ({view: Previous}).
+      editRoomConfigJson: stepType === 'EditRoom' ? createDefaultEditRoomConfigJson() : null,
     };
     onChange([...steps, newStep]);
     setAddModalOpen(false);

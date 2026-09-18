@@ -35,9 +35,11 @@ export interface StepData {
   /** VideoCompile step configuration (VideoCompile step type only). */
   videoCompileConfig: VideoCompileStepConfigValue | null;
   /**
-   * Raw JSON-serialized EditRoomStepConfig (EditRoom step type only). The builder has no editor
-   * for it yet — carried as an OPAQUE string so loading and re-saving a template-provisioned
-   * edit-room workflow never silently drops the step's config. Optional so every existing
+   * Raw JSON-serialized EditRoomStepConfig (EditRoom step type only). Deliberately carried as a
+   * raw string (not a parsed object like the extract/video configs): EditRoomStepConfigEditor
+   * parses it, edits the handful of fields it exposes, and re-serializes while spread-preserving
+   * every field it does not know about — so a template-provisioned config (seats, temperatures,
+   * termination mode…) round-trips losslessly through the builder. Optional so every existing
    * StepData construction site keeps compiling unchanged.
    */
   editRoomConfigJson?: string | null;
