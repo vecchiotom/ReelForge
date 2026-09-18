@@ -60,6 +60,7 @@ export const STEP_TYPE_LABELS: Record<StepType, string> = {
   VideoCompile: 'Compile Video',
   EditRoom: 'Edit Room',
   GraphicsRoom: 'Graphics Room',
+  ColorGradeRoom: 'Color Grade Room',
 };
 
 // Note: 'cyan'/'teal' were the plan's suggested colors for VideoAnalyze/VideoCompile, but both are
@@ -76,6 +77,7 @@ export const STEP_TYPE_COLORS: Record<StepType, string> = {
   VideoCompile: 'indigo',
   EditRoom: 'pink',
   GraphicsRoom: 'lime',
+  ColorGradeRoom: 'orange',
 };
 
 export const STEP_TYPE_DESCRIPTIONS: Record<StepType, string> = {
@@ -89,4 +91,5 @@ export const STEP_TYPE_DESCRIPTIONS: Record<StepType, string> = {
   VideoCompile: 'Deterministic ffmpeg-based cutting from an editorial decision (no AI call)',
   EditRoom: 'Multi-agent group-chat deliberation over an analyzed video, producing one editorial decision (same output shape as a solo story-editor step)',
   GraphicsRoom: 'Multi-agent group-chat deliberation producing one motion-graphics plan (template-provisioned; no builder editor yet)',
+  ColorGradeRoom: 'Multi-agent group-chat deliberation producing one whole-program colour-grade plan (template-provisioned; no builder editor yet)',
 };

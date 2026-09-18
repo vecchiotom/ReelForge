@@ -481,6 +481,73 @@ public class WorkflowTemplateCatalogConfigDeserializationTests
     }
 
     [Fact]
+    public void The_third_video_derush_edit_grade_room_step_is_a_ColorGradeRoom_step_referencing_the_analyze_view()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-grade-room", 2);
+        step.StepType.Should().Be(StepType.ColorGradeRoom);
+        step.AgentType.Should().Be(AgentType.VideoTransform, "the step's own AgentDefinitionId FK is a placeholder — the room's real seats/director are resolved from ColorGradeRoomConfigJson");
+        step.ColorGradeRoomConfigJson.Should().NotBeNullOrWhiteSpace();
+
+        ColorGradeRoomStepConfig? config = JsonSerializer.Deserialize<ColorGradeRoomStepConfig>(
+            step.ColorGradeRoomConfigJson!, ConfigJsonOptions);
+
+        config.Should().NotBeNull();
+        config!.Version.Should().Be(1);
+        config.View.Should().NotBeNull();
+        config.View!.From.Should().Be(ExtractInputSource.Step);
+        config.View.StepOrder.Should().Be(1,
+            "the view must reference the analyze step explicitly — Previous relative to the grade-room step resolves to the story editor's decision, not the measured-shot-descriptor envelope");
+
+        // Defaults not set by the literal — confirm they fall back to the documented values
+        // rather than being silently nulled/zeroed by a future property-name mismatch.
+        config.EffectiveSeats.Should().HaveCount(3);
+        config.Rounds.Should().Be(2);
+        config.MaxTurns.Should().Be(8);
+        config.ClampedMaxTurns.Should().Be(8);
+        config.Termination.Should().Be(EditRoomTerminationMode.SentinelOrConverged);
+        config.Temperature.Should().Be(0.7f);
+        config.DirectorTemperature.Should().Be(0.3f);
+        config.ReasoningEffort.Should().Be("none");
+        config.RoomTimeoutSeconds.Should().Be(1200);
+        config.FallbackToSoloColorist.Should().BeTrue();
+    }
+
+    [Fact]
+    public void VideoCompile_grade_room_step_literal_deserializes_against_the_real_config_type()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-grade-room", 3);
+        step.StepType.Should().Be(StepType.VideoCompile);
+        step.VideoCompileConfigJson.Should().NotBeNullOrWhiteSpace();
+
+        VideoCompileStepConfig? config = JsonSerializer.Deserialize<VideoCompileStepConfig>(
+            step.VideoCompileConfigJson!, ConfigJsonOptions);
+
+        config.Should().NotBeNull();
+        config!.Version.Should().Be(1);
+        config.Decision.From.Should().Be(ExtractInputSource.Step);
+        config.Decision.StepOrder.Should().Be(2, "must reference the story editor's decision, not the grade room's plan");
+        config.AnalysisStepOrder.Should().Be(1);
+        config.EnableColorGrade.Should().BeTrue();
+        config.ColorGradePlan.Should().NotBeNull();
+        config.ColorGradePlan!.From.Should().Be(ExtractInputSource.Step);
+        config.ColorGradePlan.StepOrder.Should().Be(3,
+            "must reference the ColorGradeRoom step, which emits the same ColorGradePlanOutput shape a solo Colorist step would");
+        config.MinSegmentMs.Should().Be(800);
+    }
+
+    [Fact]
+    public void The_fifth_video_derush_edit_grade_room_step_is_a_ReviewLoop_looping_back_to_the_story_editor()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-grade-room", 4);
+        step.AgentType.Should().Be(AgentType.VideoReviewAgent);
+        step.StepType.Should().Be(StepType.ReviewLoop);
+        step.LoopTargetStepOrder.Should().Be(2, "must loop back to the story editor so the story editor, grade room, and compile all re-run");
+        step.MaxIterations.Should().Be(3);
+        step.MinScore.Should().Be(8);
+        step.AgentInputContextMode.Should().Be(AgentInputContextMode.FullWorkflow);
+    }
+
+    [Fact]
     public void Lean_context_promo_Extract_step_literal_still_deserializes_against_the_real_config_type()
     {
         // Precedent check (R7): this template predates video editing but is the same

@@ -132,7 +132,31 @@ public enum AgentType
     /// ToolGroupCatalog's rationale. Room-participant turns are tool-restricted to read-only by
     /// GraphicsRoomStepExecutor regardless. See docs/video-editing.md "The graphics room".
     /// </summary>
-    MotionGraphicsDirector
+    MotionGraphicsDirector,
+    /// <summary>
+    /// LLM agent that picks ONE whole-program colour-grade treatment for a compiled edit as
+    /// enum WORDS only (a named look plus strength/shadow/highlight words — see
+    /// ReelForge.Shared.Data.OutputSchemas.ColorGradePlanOutput). Never emits an RGB value, a
+    /// curve/gamma/gain number, a percentage, or a timestamp — every property is a plain string
+    /// (guarded by ColorGradePlanOutputInvariantTests), and VideoCompileStepExecutor alone
+    /// resolves the words to concrete ffmpeg eq/colorbalance/colorlevels/hue parameters from
+    /// first-party tables (ColorGradeFilterBuilder). Deliberates over the same bounded
+    /// VideoAnalyze view (measured per-shot colour temperature/tone/saturation words) the story
+    /// editor sees. See docs/video-editing.md "Color grading".
+    /// </summary>
+    Colorist,
+    /// <summary>
+    /// LLM agent used TWICE by a StepType.ColorGradeRoom step — the colour-grading analogue of
+    /// AgentType.VideoEditDirector: once per-turn as the supervising-colorist moderator
+    /// participant in the room's live group chat (free-form prose, emits the literal sentinel
+    /// "ROOM_DECIDED" once satisfied), and once more, OUTSIDE the group chat, for a single
+    /// ordinary structured-output synthesis call that converts the room's discussion into ONE
+    /// schema-validated ColorGradePlanOutput — the exact same schema AgentType.Colorist emits,
+    /// reused verbatim: same words-only invariant (never a numeric colour value). Same minimal
+    /// read-only tool scope as VideoEditDirector — unlike MotionGraphicsDirector, nothing about
+    /// a grade ever needs rendering. See docs/video-editing.md "The color grade room".
+    /// </summary>
+    ColorGradeDirector
 }
 
 /// <summary>
@@ -186,7 +210,20 @@ public enum StepType
     /// ReelForge.Shared.Workflows.GraphicsRoomStepConfig and docs/video-editing.md
     /// "The graphics room".
     /// </summary>
-    GraphicsRoom
+    GraphicsRoom,
+    /// <summary>
+    /// Multi-agent "color grade room" — the colour-grading analogue of EditRoom/GraphicsRoom,
+    /// built on the same shared room infrastructure (RoomGroupChatManager/RoomStepExecutorBase):
+    /// several AgentType.Colorist-role seats plus an AgentType.ColorGradeDirector moderator
+    /// converse in a live group chat over a bounded VideoAnalyze view's measured per-shot colour
+    /// facts (s{n} shot ids), then the director emits ONE schema-validated ColorGradePlanOutput
+    /// in a normal structured call outside the chat loop — exactly the shape a StepType.Agent +
+    /// AgentType.Colorist step already produces, so VideoCompileStepExecutor's ColorGradePlan
+    /// resolution needs no changes to consume it. See
+    /// ReelForge.Shared.Workflows.ColorGradeRoomStepConfig and docs/video-editing.md
+    /// "The color grade room".
+    /// </summary>
+    ColorGradeRoom
 }
 
 /// <summary>

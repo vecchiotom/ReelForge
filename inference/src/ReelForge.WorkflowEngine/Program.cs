@@ -121,6 +121,8 @@ builder.Services.AddSingleton<IReelForgeAgent, VideoReviewAgentImpl>();
 builder.Services.AddSingleton<IReelForgeAgent, MusicSupervisorAgent>();
 builder.Services.AddSingleton<IReelForgeAgent, VideoEditDirectorAgent>();
 builder.Services.AddSingleton<IReelForgeAgent, MotionGraphicsDirectorAgent>();
+builder.Services.AddSingleton<IReelForgeAgent, ColoristAgent>();
+builder.Services.AddSingleton<IReelForgeAgent, ColorGradeDirectorAgent>();
 builder.Services.AddSingleton<IAgentRegistry, AgentRegistry>();
 builder.Services.AddSingleton<IAgentToolProvider, AgentToolProvider>();
 builder.Services.AddSingleton<IProjectFileWorkspace, ProjectFileWorkspace>();
@@ -152,6 +154,7 @@ builder.Services.AddSingleton<IStepExecutor, VideoAnalyzeStepExecutor>();
 builder.Services.AddSingleton<IStepExecutor, VideoCompileStepExecutor>();
 builder.Services.AddSingleton<IStepExecutor, EditRoomStepExecutor>();
 builder.Services.AddSingleton<IStepExecutor, GraphicsRoomStepExecutor>();
+builder.Services.AddSingleton<IStepExecutor, ColorGradeRoomStepExecutor>();
 
 // --- Workflow Executor ---
 // Singleton: WorkflowExecutorService is Scoped (a new instance per consumed message), so the

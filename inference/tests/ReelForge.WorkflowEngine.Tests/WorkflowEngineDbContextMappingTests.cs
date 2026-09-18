@@ -65,6 +65,7 @@ public class WorkflowEngineDbContextMappingTests
     [Theory]
     [InlineData(nameof(WorkflowStep.EditRoomConfigJson))]
     [InlineData(nameof(WorkflowStep.GraphicsRoomConfigJson))]
+    [InlineData(nameof(WorkflowStep.ColorGradeRoomConfigJson))]
     public void WorkflowStep_room_config_columns_are_mapped_as_jsonb(string propertyName)
     {
         // The exact mistake that broke a live deploy once: a new WorkflowStep config-json column

@@ -594,3 +594,50 @@ public class MusicPlanOutput
 
     public string PlanRationale { get; set; } = string.Empty;
 }
+
+// ============================================================================
+// COLOR GRADE AGENT OUTPUT SCHEMA (see docs/video-editing.md "Color grading")
+// ============================================================================
+
+/// <summary>
+/// Structured output for <c>ColoristAgent</c> (and, verbatim-reused, for
+/// <c>ColorGradeDirectorAgent</c>'s <c>StepType.ColorGradeRoom</c> synthesis call). Flat,
+/// single-grade, whole-program: one grade treatment applied to the entire compiled edit in v1 —
+/// no per-shot or per-look-group grades, no keyframes, no cue points. Every property is a plain
+/// string, so the rushcut invariant <see cref="VideoEditDecisionOutput"/>/
+/// <see cref="MusicPlanOutput"/> established holds here by construction — there is no numeric or
+/// time-bearing CLR type to even ban.
+/// </summary>
+/// <remarks>
+/// The model's only contribution is a handful of enum-word choices (<see cref="Look"/>/
+/// <see cref="Strength"/>/<see cref="ShadowTone"/>/<see cref="HighlightTone"/>) that
+/// <c>VideoCompileStepExecutor</c> alone resolves to concrete ffmpeg
+/// <c>eq</c>/<c>colorbalance</c>/<c>colorlevels</c>/<c>hue</c> parameters from first-party tables
+/// (<c>ColorGradeFilterBuilder</c>) — never an RGB value, a curve point, a gamma/gain/contrast
+/// number, a percentage, or a timestamp anywhere in this type. See
+/// <c>ColorGradePlanOutputInvariantTests</c>.
+/// </remarks>
+public class ColorGradePlanOutput
+{
+    /// <summary>
+    /// One of: None | Warm | Cool | Filmic | Vibrant | Muted | Mono. "None" declines the whole
+    /// grade — the compile applies no colour filter at all, a perfectly valid outcome for footage
+    /// that is already well exposed and consistent. Never a numeric colour value — mapped to
+    /// concrete filter parameters entirely server-side.
+    /// </summary>
+    public string Look { get; set; } = string.Empty;
+
+    /// <summary>One of: Subtle | Normal | Strong. Never a number — a server-side multiplier over the look's own first-party parameter table.</summary>
+    public string Strength { get; set; } = string.Empty;
+
+    /// <summary>One of: Neutral | Lifted | Deepened. Never a level value — mapped to a colorlevels black-point shift entirely server-side.</summary>
+    public string ShadowTone { get; set; } = string.Empty;
+
+    /// <summary>One of: Neutral | Softened | Brightened. Never a level value — mapped to a colorlevels white-point shift entirely server-side.</summary>
+    public string HighlightTone { get; set; } = string.Empty;
+
+    /// <summary>Why this grade was chosen for this footage. Prose only.</summary>
+    public string Reason { get; set; } = string.Empty;
+
+    public string PlanRationale { get; set; } = string.Empty;
+}

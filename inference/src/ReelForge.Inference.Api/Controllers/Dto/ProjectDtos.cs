@@ -104,7 +104,8 @@ public record WorkflowStepResponse(
     string? VideoAnalyzeConfigJson = null,
     string? VideoCompileConfigJson = null,
     string? EditRoomConfigJson = null,
-    string? GraphicsRoomConfigJson = null);
+    string? GraphicsRoomConfigJson = null,
+    string? ColorGradeRoomConfigJson = null);
 
 public record CreateWorkflowRequest(string Name, List<CreateWorkflowStepRequest> Steps, bool RequiresUserInput = false);
 
@@ -129,7 +130,8 @@ public record CreateWorkflowStepRequest(
     string? VideoAnalyzeConfigJson = null,
     string? VideoCompileConfigJson = null,
     string? EditRoomConfigJson = null,
-    string? GraphicsRoomConfigJson = null);
+    string? GraphicsRoomConfigJson = null,
+    string? ColorGradeRoomConfigJson = null);
 public record UpdateWorkflowRequest(string? Name, List<CreateWorkflowStepRequest> Steps, bool? RequiresUserInput = null);
 
 public record WorkflowTemplateSummaryResponse(

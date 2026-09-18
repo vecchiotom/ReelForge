@@ -21,7 +21,8 @@ public sealed record WorkflowTemplateStepDefinition(
     string? VideoAnalyzeConfigJson = null,
     string? VideoCompileConfigJson = null,
     string? EditRoomConfigJson = null,
-    string? GraphicsRoomConfigJson = null);
+    string? GraphicsRoomConfigJson = null,
+    string? ColorGradeRoomConfigJson = null);
 
 public sealed record WorkflowTemplateDefinition(
     string Key,
@@ -401,6 +402,74 @@ public static class WorkflowTemplateCatalog
                     StepType.ReviewLoop,
                     // Loop back to step 2 (the story editor) so a low score re-runs the story
                     // editor, the graphics room, and the compile step in sequence — step 1
+                    // (VideoAnalyze) is deterministic and need not rerun. Same
+                    // MinScore/MaxIterations/FullWorkflow pattern as the other video templates.
+                    LoopTargetStepOrder: 2,
+                    MaxIterations: 3,
+                    MinScore: 8,
+                    AgentInputContextMode: AgentInputContextMode.FullWorkflow)
+            ]),
+        new(
+            Key: "video-derush-edit-grade-room",
+            Name: "Video Derush, Edit & Grade Room",
+            Description: "Opt-in template that adds a multi-agent 'color grade room' to the derush pipeline: several colorist seats plus a supervising colorist converse in a live group chat over the analyzed video's measured per-shot colour facts, then the director synthesizes ONE whole-program colour-grade plan (enum words only — a look plus strength/shadow/highlight words) the compile step resolves to concrete ffmpeg filters from first-party tables. Demonstrates the ColorGradeRoom step type end to end.",
+            Version: 1,
+            AutoCreateOnProject: false,
+            RequiresUserInput: false,
+            Steps:
+            [
+                new(
+                    AgentType.VideoTransform,
+                    "Analyze source video",
+                    StepType.VideoAnalyze,
+                    // Same ProjectFile-source rationale as video-derush-edit's first step above
+                    // (this is the first step, so PreviousStepOutput would fail SOURCE_UNRESOLVED
+                    // on every run). The default AnalyzeVisuals:true already emits the measured
+                    // per-shot colour temperature/tone/saturation words the grade room argues
+                    // from — no extra analyze flag is needed.
+                    VideoAnalyzeConfigJson: """
+                        {"version":1,"source":{"kind":"ProjectFile"}}
+                        """),
+                new(
+                    AgentType.VideoStoryEditor,
+                    "Decide which spans to keep",
+                    AgentInputContextMode: AgentInputContextMode.PreviousStepOnly),
+                new(
+                    // The step's own AgentDefinitionId FK is satisfied by the same deterministic
+                    // VideoTransform placeholder VideoAnalyze/VideoCompile/EditRoom/GraphicsRoom
+                    // steps use — the room's actual LLM seats/director are resolved independently
+                    // by ColorGradeRoomStepExecutor from ColorGradeRoomConfigJson, never from
+                    // this step's own AgentDefinitionId.
+                    AgentType.VideoTransform,
+                    "Color grade room deliberation",
+                    StepType.ColorGradeRoom,
+                    // View references the analyze step explicitly by StepOrder — "Previous"
+                    // relative to THIS step would resolve to the story editor's decision (step
+                    // 2), not the analyze envelope carrying the shots' measured colour
+                    // descriptors (step 1). Same explicit-reference rationale as the graphics
+                    // room's own View.
+                    ColorGradeRoomConfigJson: """
+                        {"version":1,"view":{"from":"Step","stepOrder":1}}
+                        """),
+                new(
+                    AgentType.VideoTransform,
+                    "Compile edited video with grade",
+                    StepType.VideoCompile,
+                    // Decision/ColorGradePlan reference their source steps explicitly by
+                    // StepOrder — "Previous" relative to THIS step would resolve to the grade
+                    // room's plan (step 3), not the story editor's decision (step 2).
+                    // ColorGradePlan pointing at the ColorGradeRoom step works because that step
+                    // emits the exact same ColorGradePlanOutput shape a solo Colorist step would
+                    // (the additive "room" metadata key is skipped by deserialization).
+                    VideoCompileConfigJson: """
+                        {"version":1,"decision":{"from":"Step","stepOrder":2},"analysisStepOrder":1,"enableColorGrade":true,"colorGradePlan":{"from":"Step","stepOrder":3},"transitionPolicy":"Auto","programFadeInMs":500,"programFadeOutMs":800,"programAudioFadeInMs":300,"programAudioFadeOutMs":900,"minSegmentMs":800}
+                        """),
+                new(
+                    AgentType.VideoReviewAgent,
+                    "Review edit quality",
+                    StepType.ReviewLoop,
+                    // Loop back to step 2 (the story editor) so a low score re-runs the story
+                    // editor, the grade room, and the compile step in sequence — step 1
                     // (VideoAnalyze) is deterministic and need not rerun. Same
                     // MinScore/MaxIterations/FullWorkflow pattern as the other video templates.
                     LoopTargetStepOrder: 2,

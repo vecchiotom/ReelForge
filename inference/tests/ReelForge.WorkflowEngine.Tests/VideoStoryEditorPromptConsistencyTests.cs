@@ -64,6 +64,18 @@ public class VideoStoryEditorPromptConsistencyTests
         AssertFallbackMatchesSeeded(typeof(MotionGraphicsDirectorAgent), AgentType.MotionGraphicsDirector);
     }
 
+    [Fact]
+    public void Colorist_fallback_prompt_matches_the_seeded_built_in_agent_prompt_verbatim()
+    {
+        AssertFallbackMatchesSeeded(typeof(ColoristAgent), AgentType.Colorist);
+    }
+
+    [Fact]
+    public void ColorGradeDirector_fallback_prompt_matches_the_seeded_built_in_agent_prompt_verbatim()
+    {
+        AssertFallbackMatchesSeeded(typeof(ColorGradeDirectorAgent), AgentType.ColorGradeDirector);
+    }
+
     private static void AssertFallbackMatchesSeeded(System.Type agentType, AgentType builtInAgentType)
     {
         FieldInfo? promptField = agentType.GetField("DefaultPrompt", BindingFlags.NonPublic | BindingFlags.Static);

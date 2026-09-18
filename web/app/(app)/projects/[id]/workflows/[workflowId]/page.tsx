@@ -61,6 +61,7 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
             videoCompileConfig: s.videoCompileConfigJson ? JSON.parse(s.videoCompileConfigJson) : null,
             editRoomConfigJson: s.editRoomConfigJson ?? null,
             graphicsRoomConfigJson: s.graphicsRoomConfigJson ?? null,
+            colorGradeRoomConfigJson: s.colorGradeRoomConfigJson ?? null,
           })),
       );
       setInitialized(true);
@@ -102,6 +103,7 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
           videoCompileConfigJson: s.videoCompileConfig ? JSON.stringify(s.videoCompileConfig) : null,
           editRoomConfigJson: s.editRoomConfigJson ?? null,
           graphicsRoomConfigJson: s.graphicsRoomConfigJson ?? null,
+          colorGradeRoomConfigJson: s.colorGradeRoomConfigJson ?? null,
         })),
       });
       mutate();

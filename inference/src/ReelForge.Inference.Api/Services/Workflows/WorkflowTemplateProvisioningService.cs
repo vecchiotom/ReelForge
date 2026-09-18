@@ -123,7 +123,8 @@ public sealed class WorkflowTemplateProvisioningService
                 VideoAnalyzeConfigJson = stepDefinition.VideoAnalyzeConfigJson,
                 VideoCompileConfigJson = stepDefinition.VideoCompileConfigJson,
                 EditRoomConfigJson = stepDefinition.EditRoomConfigJson,
-                GraphicsRoomConfigJson = stepDefinition.GraphicsRoomConfigJson
+                GraphicsRoomConfigJson = stepDefinition.GraphicsRoomConfigJson,
+                ColorGradeRoomConfigJson = stepDefinition.ColorGradeRoomConfigJson
             };
 
             workflow.Steps.Add(step);
