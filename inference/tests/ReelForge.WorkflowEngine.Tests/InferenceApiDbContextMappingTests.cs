@@ -38,6 +38,18 @@ public class InferenceApiDbContextMappingTests
     }
 
     [Fact]
+    public void AgentDefinition_AssignedSkillsJson_is_mapped_as_jsonb()
+    {
+        using InferenceApiDbContext db = CreateContext();
+
+        var entityType = db.Model.FindEntityType(typeof(AgentDefinition));
+        var property = entityType?.FindProperty(nameof(AgentDefinition.AssignedSkillsJson));
+
+        property.Should().NotBeNull();
+        property!.GetColumnType().Should().Be("jsonb");
+    }
+
+    [Fact]
     public void InferenceProvider_has_a_composite_unique_index_on_capability_and_is_default_not_is_default_alone()
     {
         using InferenceApiDbContext db = CreateContext();

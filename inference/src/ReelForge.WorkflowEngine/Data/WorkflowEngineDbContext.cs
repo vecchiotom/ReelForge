@@ -98,6 +98,8 @@ public class WorkflowEngineDbContext : DbContext
                 .HasDefaultValue(ContextMode.LastStep);
             entity.Property(e => e.ConfigJson)
                 .HasColumnType("jsonb");
+            entity.Property(e => e.AssignedSkillsJson)
+                .HasColumnType("jsonb");
             entity.ToTable("agent_definitions", t => t.ExcludeFromMigrations());
         });
 

@@ -68,7 +68,14 @@ public record AgentDefinitionResponse(
     string AgentType, bool IsBuiltIn, Guid? OwnerId, string? ConfigJson,
     DateTime CreatedAt, string? Color, string? OutputSchemaJson,
     string[]? AvailableTools, bool GeneratesOutput, string? OutputSchemaName,
-    Guid? InferenceProviderId = null, string? InferenceProviderName = null);
+    Guid? InferenceProviderId = null, string? InferenceProviderName = null,
+    // Raw column value, deserialized. Null/absent for built-in agents always (they have no
+    // column value that means anything). For custom agents: null or empty = no skills assigned.
+    string[]? AssignedSkills = null,
+    // The resolved set: SkillCatalog.DefaultsFor(agentType) for a built-in row, or
+    // AssignedSkills (empty if null) for a custom row. Computed server-side so the frontend
+    // never has to reimplement the resolution rule.
+    string[]? EffectiveSkills = null);
 
 public record CreateAgentRequest(string Name, string Description, string SystemPrompt, string? ConfigJson, string? Color);
 public record UpdateAgentRequest(string Name, string Description, string SystemPrompt, string? ConfigJson, string? Color);
