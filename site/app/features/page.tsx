@@ -36,8 +36,7 @@ export default function FeaturesPage() {
             Features
           </h1>
           <p className="mt-4 max-w-2xl font-mono text-sm leading-relaxed text-ink-muted">
-            A tour of what actually runs under the hood — the agentic workflow engine, the agent
-            library, and the video pipeline it drives.
+            The agentic workflow engine, the agent library, and the video pipeline it drives.
           </p>
         </Container>
       </div>
@@ -56,7 +55,7 @@ export default function FeaturesPage() {
               a message queue.
             </p>
             <p>
-              Step types cover more than plain agent calls — conditionals branch on prior output,
+              Step types cover more than plain agent calls: conditionals branch on prior output,
               for-each steps repeat over a list, and review loops send low-scoring output back
               through production automatically.
             </p>
@@ -84,22 +83,10 @@ export default function FeaturesPage() {
             </p>
             <AccentList
               items={[
-                <>
-                  <strong className="text-ink">Analysis</strong> — inventories code structure,
-                  dependencies, components, routes, and styling/theming from your project
-                </>,
-                <>
-                  <strong className="text-ink">Translation</strong> — maps analyzed structure and an
-                  animation strategy onto Remotion components
-                </>,
-                <>
-                  <strong className="text-ink">Production</strong> — directs, scripts, and authors
-                  the actual video, plus editors that plan story cuts and motion graphics
-                </>,
-                <>
-                  <strong className="text-ink">Quality</strong> — reviews and scores each draft
-                  against the brief
-                </>,
+                'Analysis agents inventory code structure, dependencies, components, routes, and styling and theming from your project.',
+                'Translation agents map analyzed structure and an animation strategy onto Remotion components.',
+                'Production agents direct, script, and author the actual video, plus editors that plan story cuts and motion graphics.',
+                'Quality agents review and score each draft against the brief.',
               ]}
             />
           </div>
@@ -114,7 +101,7 @@ export default function FeaturesPage() {
           </h2>
           <div className="mt-4 max-w-3xl space-y-4 text-ink-muted">
             <p>
-              Videos aren&apos;t templated slideshows — they&apos;re React components rendered
+              Videos aren&apos;t templated slideshows. They&apos;re React components rendered
               frame-by-frame with Remotion, driven by the plan your production agents assemble.
             </p>
             <AccentList
@@ -137,12 +124,12 @@ export default function FeaturesPage() {
             <p>
               When you bring your own raw footage, ffmpeg-based analysis detects silence and shot
               boundaries, optionally transcribes the audio, and produces a bounded, id-anchored view
-              of the footage for an editorial agent to work from — it decides what to keep, never a
+              of the footage for an editorial agent to work from. It decides what to keep, never a
               raw timestamp.
             </p>
             <p>
               A separate compile step resolves those decisions back to frame-accurate cuts and can
-              layer in motion-graphics overlays — lower-thirds, titles, and callouts — planned by a
+              layer in motion-graphics overlays (lower-thirds, titles, and callouts) planned by a
               dedicated agent and placed only at deterministic, pre-offered positions.
             </p>
             <AccentList

@@ -78,33 +78,33 @@ export default function InferenceProviderDetailPage({ params }: { params: Promis
       <Card withBorder>
         <Stack gap="sm">
           <Group>
-            <Text size="sm" fw={500} w={140}>Kind</Text>
+            <Text size="sm" fw={500} w={{ base: '100%', sm: 140 }}>Kind</Text>
             <Badge color={provider.kind === 'AzureOpenAI' ? 'blue' : 'grape'} variant="light">
               {provider.kind === 'AzureOpenAI' ? 'Azure OpenAI' : 'OpenAI-compatible'}
             </Badge>
           </Group>
           <Group>
-            <Text size="sm" fw={500} w={140}>Capability</Text>
+            <Text size="sm" fw={500} w={{ base: '100%', sm: 140 }}>Capability</Text>
             <Badge color={provider.capability === 'Transcription' ? 'teal' : 'indigo'} variant="light">
               {provider.capability === 'Transcription' ? 'Transcription' : 'Chat'}
             </Badge>
           </Group>
           <Group>
-            <Text size="sm" fw={500} w={140}>{provider.kind === 'AzureOpenAI' ? 'Endpoint' : 'Base URL'}</Text>
-            <Text size="sm">{provider.endpoint}</Text>
+            <Text size="sm" fw={500} w={{ base: '100%', sm: 140 }}>{provider.kind === 'AzureOpenAI' ? 'Endpoint' : 'Base URL'}</Text>
+            <Text size="sm" style={{ wordBreak: 'break-all' }}>{provider.endpoint}</Text>
           </Group>
           <Group>
-            <Text size="sm" fw={500} w={140}>{provider.kind === 'AzureOpenAI' ? 'Deployment name' : 'Model'}</Text>
+            <Text size="sm" fw={500} w={{ base: '100%', sm: 140 }}>{provider.kind === 'AzureOpenAI' ? 'Deployment name' : 'Model'}</Text>
             <Text size="sm">{provider.modelName}</Text>
           </Group>
           <Group>
-            <Text size="sm" fw={500} w={140}>API Key</Text>
+            <Text size="sm" fw={500} w={{ base: '100%', sm: 140 }}>API Key</Text>
             <Text size="sm">
               {provider.hasApiKey ? `•••• ${provider.apiKeyLastFour ?? ''}` : 'Not set'}
             </Text>
           </Group>
           <Group>
-            <Text size="sm" fw={500} w={140}>Status</Text>
+            <Text size="sm" fw={500} w={{ base: '100%', sm: 140 }}>Status</Text>
             <Group gap="xs">
               {provider.isDefault && <Badge color="violet" variant="light">Default</Badge>}
               <Badge color={provider.isEnabled ? 'green' : 'gray'} variant="light">
@@ -113,11 +113,11 @@ export default function InferenceProviderDetailPage({ params }: { params: Promis
             </Group>
           </Group>
           <Group>
-            <Text size="sm" fw={500} w={140}>Timeout</Text>
+            <Text size="sm" fw={500} w={{ base: '100%', sm: 140 }}>Timeout</Text>
             <Text size="sm">{provider.timeoutSeconds ? `${provider.timeoutSeconds}s` : 'Default'}</Text>
           </Group>
           <Group>
-            <Text size="sm" fw={500} w={140}>Last Test</Text>
+            <Text size="sm" fw={500} w={{ base: '100%', sm: 140 }}>Last Test</Text>
             {provider.lastTestAt ? (
               <Group gap="xs">
                 <Badge color={provider.lastTestOk ? 'green' : 'red'} variant="light">
@@ -131,16 +131,16 @@ export default function InferenceProviderDetailPage({ params }: { params: Promis
           </Group>
           {provider.lastTestError && (
             <Group align="flex-start">
-              <Text size="sm" fw={500} w={140}>Last Error</Text>
+              <Text size="sm" fw={500} w={{ base: '100%', sm: 140 }}>Last Error</Text>
               <Text size="sm" c="red">{provider.lastTestError}</Text>
             </Group>
           )}
           <Group>
-            <Text size="sm" fw={500} w={140}>Created</Text>
+            <Text size="sm" fw={500} w={{ base: '100%', sm: 140 }}>Created</Text>
             <Text size="sm">{formatDate(provider.createdAt)}</Text>
           </Group>
           <Group>
-            <Text size="sm" fw={500} w={140}>Updated</Text>
+            <Text size="sm" fw={500} w={{ base: '100%', sm: 140 }}>Updated</Text>
             <Text size="sm">{formatDate(provider.updatedAt)}</Text>
           </Group>
         </Stack>

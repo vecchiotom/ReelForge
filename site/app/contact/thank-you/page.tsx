@@ -19,7 +19,7 @@ export default function ContactThankYouPage() {
         <div className="mx-auto max-w-2xl text-center">
           <Eyebrow as="div" className="justify-center">Message received</Eyebrow>
           <h1 className="mt-4 text-balance font-display text-[clamp(1.75rem,4.5vw,3rem)] font-bold uppercase leading-[0.95] tracking-[-0.02em] text-ink">
-            Thanks — your message is on its way
+            Thanks, your message is on its way
           </h1>
           <p className="mt-4 text-lg text-ink-muted">
             Someone from our team will read it and get back to you. Our target response time is{' '}

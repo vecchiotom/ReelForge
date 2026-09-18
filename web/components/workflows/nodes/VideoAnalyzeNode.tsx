@@ -108,7 +108,7 @@ export const VideoAnalyzeNode = memo(({ data }: { data: VideoAnalyzeNodeData }) 
             />
 
             <Text size="xs" c="dimmed">
-              Deterministic ffmpeg-based derushing — silence, shot, and transcript analysis. No model call.
+              Deterministic ffmpeg-based derushing: silence, shot, and transcript analysis. No model call.
             </Text>
 
             {/* Expanded: full config form */}

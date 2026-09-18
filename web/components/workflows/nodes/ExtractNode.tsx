@@ -105,7 +105,7 @@ export const ExtractNode = memo(({ data }: { data: ExtractNodeData }) => {
             />
 
             <Text size="xs" c="dimmed">
-              Deterministic, code-only projection — no model call, no tokens used.
+              Deterministic, code-only projection. No model call, no tokens used.
             </Text>
 
             {/* Expanded: full config form */}

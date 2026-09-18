@@ -87,7 +87,7 @@ export default function AdminOverviewPage() {
               </Text>
               <Text size="sm" c="dimmed">
                 Last test: {defaultProvider.lastTestAt
-                  ? `${defaultProvider.lastTestOk ? 'OK' : 'Failed'} — ${formatDate(defaultProvider.lastTestAt)}`
+                  ? `${defaultProvider.lastTestOk ? 'OK' : 'Failed'} (${formatDate(defaultProvider.lastTestAt)})`
                   : 'Never tested'}
               </Text>
             </Stack>
@@ -97,7 +97,7 @@ export default function AdminOverviewPage() {
           )}
           {!providersLoading && !providersError && !defaultProvider && (
             <Text size="sm" c="dimmed">
-              No default provider set — agents fall back to the AzureOpenAI:* config keys.
+              No default provider set. Agents fall back to the AzureOpenAI:* config keys.
             </Text>
           )}
           <Text size="sm" mt="sm" c="cyan.4">Manage inference providers</Text>

@@ -99,7 +99,7 @@ const features = [
   },
   {
     title: 'Bring your own inference provider',
-    description: 'Connect Azure OpenAI or any OpenAI-compatible endpoint — you control which model powers your agents.',
+    description: 'Connect Azure OpenAI or any OpenAI-compatible endpoint: you control which model powers your agents.',
     icon: (
       <path
         d="M12 3v4M12 17v4M3 12h4M17 12h4M6.3 6.3l2.8 2.8M14.9 14.9l2.8 2.8M17.7 6.3l-2.8 2.8M9.1 14.9l-2.8 2.8"

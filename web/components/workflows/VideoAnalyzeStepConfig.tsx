@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import {
-  Stack, Select, SegmentedControl, TextInput, NumberInput, Switch, Collapse, Button, Text, Divider, Code, Group, Paper, ActionIcon,
+  Stack, Select, SegmentedControl, TextInput, NumberInput, Switch, Collapse, Button, Text, Divider, Code, Group, Paper, ActionIcon, SimpleGrid,
 } from '@mantine/core';
 import { IconChevronDown, IconChevronUp, IconSettings, IconPlus, IconTrash } from '@tabler/icons-react';
 import type {
@@ -253,7 +253,7 @@ export function VideoAnalyzeStepConfig({
       )}
 
       <Divider label="Silence detection" labelPosition="left" />
-      <Group grow align="flex-end">
+      <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }}>
         <Switch
           label="Detect silence"
           checked={config.detectSilence}
@@ -274,10 +274,10 @@ export function VideoAnalyzeStepConfig({
           onChange={(v) => patch({ minSilenceMs: typeof v === 'number' ? v : 350 })}
           disabled={!config.detectSilence}
         />
-      </Group>
+      </SimpleGrid>
 
       <Divider label="Shot detection" labelPosition="left" />
-      <Group grow align="flex-end">
+      <SimpleGrid cols={{ base: 1, sm: 2 }}>
         <Switch
           label="Detect shots"
           checked={config.detectShots}
@@ -295,15 +295,15 @@ export function VideoAnalyzeStepConfig({
           onChange={(v) => patch({ sceneThreshold: typeof v === 'number' ? v : 0.3 })}
           disabled={!config.detectShots}
         />
-      </Group>
+      </SimpleGrid>
 
-      <Divider label="Scene/visual analysis (Phase 1)" labelPosition="left" />
+      <Divider label="Scene and visual analysis" labelPosition="left" />
       <Text size="xs" c="dimmed">
         Deterministic ffmpeg + pure C# descriptors (motion, camera move, exposure, dominant
-        colors, safe zones, near-duplicate takes, audio loudness) — no LLM call, no new external
+        colors, safe zones, near-duplicate takes, audio loudness). No LLM call, no new external
         dependency. See docs/video-editing.md.
       </Text>
-      <Group grow align="flex-end">
+      <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }}>
         <Switch
           label="Analyze visuals"
           checked={config.analyzeVisuals}
@@ -320,30 +320,30 @@ export function VideoAnalyzeStepConfig({
           onChange={(e) => patch({ detectNearDuplicates: e.currentTarget.checked })}
           disabled={!config.analyzeVisuals}
         />
-      </Group>
-      <Group grow align="flex-end">
+      </SimpleGrid>
+      <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }}>
         <Switch
           label="Analyze color grading"
-          description="D1-D3: colour temperature, tone curve, saturation — free from the grid"
+          description="Colour temperature, tone curve, and saturation. No extra processing cost."
           checked={config.analyzeColorGrading}
           onChange={(e) => patch({ analyzeColorGrading: e.currentTarget.checked })}
           disabled={!config.analyzeVisuals}
         />
         <Switch
           label="Detect look groups"
-          description="D4: groups shots sharing a similar grade (k{n}) — free"
+          description="Groups shots that share a similar grade. No extra processing cost."
           checked={config.detectLookGroups}
           onChange={(e) => patch({ detectLookGroups: e.currentTarget.checked })}
           disabled={!config.analyzeVisuals}
         />
         <Switch
           label="Detect letterbox/pillarbox"
-          description="D6: free from the grid — may under-report soft/gradient bars"
+          description="No extra processing cost. May under-report soft or gradient bars."
           checked={config.detectLetterbox}
           onChange={(e) => patch({ detectLetterbox: e.currentTarget.checked })}
           disabled={!config.analyzeVisuals}
         />
-      </Group>
+      </SimpleGrid>
       {config.analyzeVisuals && (
         <Select
           label="Per-shot detail in the prompt view"
@@ -351,9 +351,9 @@ export function VideoAnalyzeStepConfig({
           size="xs"
           value={config.visualDetail}
           data={[
-            { value: 'None', label: 'None — no visual/audio data in the view' },
-            { value: 'Compact', label: 'Compact — motion, camera move, safe zone, dup/best, exposure' },
-            { value: 'Full', label: 'Full — adds all regions, all still windows, motion std-dev/peak' },
+            { value: 'None', label: 'None: no visual/audio data in the view' },
+            { value: 'Compact', label: 'Compact: motion, camera move, safe zone, dup/best, exposure' },
+            { value: 'Full', label: 'Full: adds all regions, all still windows, motion std-dev/peak' },
           ]}
           onChange={(v) => v && patch({ visualDetail: v as VideoVisualDetail })}
         />
@@ -365,9 +365,9 @@ export function VideoAnalyzeStepConfig({
         size="xs"
         value={config.transcription}
         data={[
-          { value: 'Off', label: 'Off — silence + shot analysis only' },
-          { value: 'Optional', label: 'Optional — attempt ASR, degrade cleanly if unavailable' },
-          { value: 'Required', label: 'Required — fail the step if ASR is unavailable' },
+          { value: 'Off', label: 'Off: silence + shot analysis only' },
+          { value: 'Optional', label: 'Optional: attempt ASR, degrade cleanly if unavailable' },
+          { value: 'Required', label: 'Required: fail the step if ASR is unavailable' },
         ]}
         onChange={(v) => v && patch({ transcription: v as VideoTranscriptionMode })}
       />
@@ -389,10 +389,10 @@ export function VideoAnalyzeStepConfig({
             clearable
             disabled={!isAdmin || transcriptionProviders.length === 0}
           />
-          <Group grow>
+          <SimpleGrid cols={{ base: 1, sm: 2 }}>
             <TextInput
               label="Language"
-              description="ISO 639-1 code, e.g. en — blank auto-detects"
+              description="ISO 639-1 code, e.g. en (blank auto-detects)"
               placeholder="en"
               size="xs"
               value={config.language ?? ''}
@@ -405,7 +405,7 @@ export function VideoAnalyzeStepConfig({
               value={config.maxAsrChunkBytes}
               onChange={(v) => patch({ maxAsrChunkBytes: typeof v === 'number' ? v : 20_000_000 })}
             />
-          </Group>
+          </SimpleGrid>
           <Switch
             label="Word-level timestamps"
             checked={config.wordTimestamps}
@@ -415,7 +415,7 @@ export function VideoAnalyzeStepConfig({
       )}
 
       <Divider label="Guardrails (checked before any decode)" labelPosition="left" />
-      <Group grow>
+      <SimpleGrid cols={{ base: 1, sm: 2 }}>
         <NumberInput
           label="Max duration (seconds)"
           size="xs"
@@ -430,10 +430,10 @@ export function VideoAnalyzeStepConfig({
           value={config.maxInputBytes}
           onChange={(v) => patch({ maxInputBytes: typeof v === 'number' ? v : 2_000_000_000 })}
         />
-      </Group>
+      </SimpleGrid>
 
       <Divider label="Prompt-view budget" labelPosition="left" />
-      <Group grow>
+      <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }}>
         <NumberInput
           label="Max output chars"
           description="Trailing items are dropped and re-serialized, never truncated mid-JSON"
@@ -457,7 +457,7 @@ export function VideoAnalyzeStepConfig({
           value={config.maxSegmentTextChars}
           onChange={(v) => patch({ maxSegmentTextChars: typeof v === 'number' ? v : 160 })}
         />
-      </Group>
+      </SimpleGrid>
 
       <Button
         variant="subtle"
@@ -469,7 +469,7 @@ export function VideoAnalyzeStepConfig({
         Expectations (fail fast before the next step runs)
       </Button>
       <Collapse in={expectOpen}>
-        <Group grow>
+        <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }}>
           <NumberInput
             label="Min shots"
             min={0}
@@ -499,7 +499,7 @@ export function VideoAnalyzeStepConfig({
               patch({ expect: { ...config.expect, maxSilenceRatio: typeof v === 'number' ? v : null } })
             }
           />
-        </Group>
+        </SimpleGrid>
       </Collapse>
 
       <Divider />

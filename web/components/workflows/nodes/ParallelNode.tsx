@@ -123,7 +123,7 @@ export const ParallelNode = memo(({ data }: { data: ParallelNodeData }) => {
             {expanded && (
               <Stack gap="xs" onClick={(e) => e.stopPropagation()}>
                 <Text size="xs" c="dimmed" fw={600}>
-                  Agents run in parallel — their outputs are merged into a JSON array for the next step.
+                  Agents run in parallel. Their outputs are merged into a JSON array for the next step.
                 </Text>
 
                 {agentIds.length > 0 && (

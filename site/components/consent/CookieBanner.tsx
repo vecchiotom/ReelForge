@@ -22,7 +22,7 @@ export function CookieBanner() {
     >
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
         <p id="cookie-banner-heading" className="font-mono text-sm text-ink-muted">
-          We use Google Analytics cookies to understand how visitors use this site — they&apos;re
+          We use Google Analytics cookies to understand how visitors use this site. They&apos;re
           only set if you accept. Read our{' '}
           <Link href="/legal/privacy" className="font-medium text-accent-strong hover:text-accent-ink">
             privacy policy

@@ -34,81 +34,83 @@ export function FileList({ files, onDelete, onSelect, onDownload, onMove, onRein
   };
 
   return (
-    <Table striped highlightOnHover>
-      <Table.Thead>
-        <Table.Tr>
-          <Table.Th>Name</Table.Th>
-          <Table.Th>Type</Table.Th>
-          <Table.Th>Size</Table.Th>
-          <Table.Th>Summary</Table.Th>
-          <Table.Th>Index</Table.Th>
-          <Table.Th>Uploaded</Table.Th>
-          <Table.Th />
-        </Table.Tr>
-      </Table.Thead>
-      <Table.Tbody>
-        {sorted.map((file) => (
-          <Table.Tr key={file.id} onClick={() => onSelect(file)} style={{ cursor: 'pointer' }}>
-            <Table.Td>{renderName(file)}</Table.Td>
-            <Table.Td>{file.category}</Table.Td>
-            <Table.Td>{formatFileSize(file.sizeBytes)}</Table.Td>
-            <Table.Td><StatusBadge status={file.summaryStatus} /></Table.Td>
-            <Table.Td><StatusBadge status={file.indexingStatus} /></Table.Td>
-            <Table.Td>{formatDate(file.uploadedAt)}</Table.Td>
-            <Table.Td>
-              <Group justify="flex-end">
-                {onReindex ? (
-                  <ActionIcon
-                    color="teal"
-                    variant="subtle"
-                    disabled={file.indexingStatus === 'Pending' || file.indexingStatus === 'Processing'}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onReindex(file);
-                    }}
-                  >
-                    <IconRefresh size={16} />
-                  </ActionIcon>
-                ) : null}
-                {onDownload ? (
-                  <ActionIcon
-                    color="blue"
-                    variant="subtle"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDownload(file);
-                    }}
-                  >
-                    <IconDownload size={16} />
-                  </ActionIcon>
-                ) : null}
-                {onMove ? (
-                  <ActionIcon
-                    color="grape"
-                    variant="subtle"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onMove(file);
-                    }}
-                  >
-                    <IconArrowsMove size={16} />
-                  </ActionIcon>
-                ) : null}
-                <ActionIcon
-                  color="red"
-                  variant="subtle"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDelete(file.id);
-                  }}
-                >
-                  <IconTrash size={16} />
-                </ActionIcon>
-              </Group>
-            </Table.Td>
+    <Table.ScrollContainer minWidth={700}>
+      <Table striped highlightOnHover>
+        <Table.Thead>
+          <Table.Tr>
+            <Table.Th>Name</Table.Th>
+            <Table.Th>Type</Table.Th>
+            <Table.Th>Size</Table.Th>
+            <Table.Th>Summary</Table.Th>
+            <Table.Th visibleFrom="sm">Index</Table.Th>
+            <Table.Th visibleFrom="sm">Uploaded</Table.Th>
+            <Table.Th />
           </Table.Tr>
-        ))}
-      </Table.Tbody>
-    </Table>
+        </Table.Thead>
+        <Table.Tbody>
+          {sorted.map((file) => (
+            <Table.Tr key={file.id} onClick={() => onSelect(file)} style={{ cursor: 'pointer' }}>
+              <Table.Td>{renderName(file)}</Table.Td>
+              <Table.Td>{file.category}</Table.Td>
+              <Table.Td>{formatFileSize(file.sizeBytes)}</Table.Td>
+              <Table.Td><StatusBadge status={file.summaryStatus} /></Table.Td>
+              <Table.Td visibleFrom="sm"><StatusBadge status={file.indexingStatus} /></Table.Td>
+              <Table.Td visibleFrom="sm">{formatDate(file.uploadedAt)}</Table.Td>
+              <Table.Td>
+                <Group justify="flex-end">
+                  {onReindex ? (
+                    <ActionIcon
+                      color="teal"
+                      variant="subtle"
+                      disabled={file.indexingStatus === 'Pending' || file.indexingStatus === 'Processing'}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onReindex(file);
+                      }}
+                    >
+                      <IconRefresh size={16} />
+                    </ActionIcon>
+                  ) : null}
+                  {onDownload ? (
+                    <ActionIcon
+                      color="blue"
+                      variant="subtle"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDownload(file);
+                      }}
+                    >
+                      <IconDownload size={16} />
+                    </ActionIcon>
+                  ) : null}
+                  {onMove ? (
+                    <ActionIcon
+                      color="grape"
+                      variant="subtle"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onMove(file);
+                      }}
+                    >
+                      <IconArrowsMove size={16} />
+                    </ActionIcon>
+                  ) : null}
+                  <ActionIcon
+                    color="red"
+                    variant="subtle"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDelete(file.id);
+                    }}
+                  >
+                    <IconTrash size={16} />
+                  </ActionIcon>
+                </Group>
+              </Table.Td>
+            </Table.Tr>
+          ))}
+        </Table.Tbody>
+      </Table>
+    </Table.ScrollContainer>
   );
 }
