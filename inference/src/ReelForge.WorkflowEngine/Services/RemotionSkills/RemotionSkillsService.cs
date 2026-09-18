@@ -14,7 +14,33 @@ public sealed class RemotionSkillsService
     private const string RepoOwner = "remotion-dev";
     private const string RepoName = "skills";
     private const string Branch = "main";
-    private const string SkillsBasePath = "skills/remotion/";
+
+    // As of 2026-09, the upstream repo no longer has a single "skills/remotion/" directory —
+    // content is spread across sibling "skills/{skill-name}/" directories, each with its own
+    // SKILL.md plus flat and nested topic .md files (confirmed by fetching the live recursive
+    // tree API). SkillsRootPath now matches the whole "skills/" tree; AllowedSkillDirs narrows
+    // that down to the directories actually useful for a headless, automated Remotion codegen
+    // pipeline. Deliberately excluded:
+    //   - remotion-best-practices: a bundle directory that re-nests full COPIES of the other
+    //     skill directories' content (e.g. skills/remotion-best-practices/remotion-markup/...),
+    //     which would otherwise duplicate every topic and collide topic names.
+    //   - remotion-maps: third-party mapping providers (Mapbox/Cesium/MapTiler) unrelated to
+    //     promotional-video generation, and itself duplicated as a nested directory inside
+    //     remotion-markup (guarded against separately below regardless of this exclusion).
+    //   - remotion-saas, remotion-studio, remotion-upgrade, remotion-docs, remotion-interactivity:
+    //     SaaS-platform building, interactive Studio UI, version-upgrade guides, and general docs
+    //     indexing — none of it applies to agents doing automated, headless Remotion codegen.
+    private const string SkillsRootPath = "skills/";
+
+    private static readonly HashSet<string> AllowedSkillDirs = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "remotion-create",
+        "remotion-markup",
+        "remotion-render",
+        "remotion-captions",
+        "remotion-multimedia",
+    };
+
     private const string RawBaseUrl = $"https://raw.githubusercontent.com/{RepoOwner}/{RepoName}/{Branch}/";
     private const string TreeApiUrl = $"https://api.github.com/repos/{RepoOwner}/{RepoName}/git/trees/{Branch}?recursive=1";
 
@@ -27,7 +53,10 @@ public sealed class RemotionSkillsService
     // Full content cache: relative path → markdown content
     private readonly ConcurrentDictionary<string, CachedContent> _contentCache = new();
 
-    private DateTime _indexLoadedAt = DateTime.MinValue;
+    // Tracks "the index has been successfully loaded at least once" independently of _index.Count,
+    // so a load that legitimately produces zero entries isn't indistinguishable from "never
+    // loaded" and defeat the cache guard below. Stays null until the first successful load.
+    private DateTime? _indexLoadedAt;
     private readonly SemaphoreSlim _indexLock = new(1, 1);
 
     public RemotionSkillsService(
@@ -89,7 +118,7 @@ public sealed class RemotionSkillsService
         }
 
         // Fetch from GitHub raw
-        string url = RawBaseUrl + SkillsBasePath + relativePath;
+        string url = RawBaseUrl + SkillsRootPath + relativePath;
         try
         {
             using HttpClient client = CreateClient();
@@ -119,14 +148,14 @@ public sealed class RemotionSkillsService
 
     private async Task EnsureIndexLoadedAsync(CancellationToken ct)
     {
-        if (_index.Count > 0 && DateTime.UtcNow - _indexLoadedAt < _cacheTtl)
+        if (IsIndexFresh())
             return;
 
         await _indexLock.WaitAsync(ct);
         try
         {
             // Double-check after acquiring lock
-            if (_index.Count > 0 && DateTime.UtcNow - _indexLoadedAt < _cacheTtl)
+            if (IsIndexFresh())
                 return;
 
             await LoadIndexFromGitHubAsync(ct);
@@ -136,6 +165,12 @@ public sealed class RemotionSkillsService
             _indexLock.Release();
         }
     }
+
+    // "Fresh" means loaded at least once, within the TTL — deliberately independent of
+    // _index.Count so an index that legitimately loaded as empty still caches (and doesn't
+    // hot-loop refetching the GitHub tree on every tool call).
+    private bool IsIndexFresh() =>
+        _indexLoadedAt.HasValue && DateTime.UtcNow - _indexLoadedAt.Value < _cacheTtl;
 
     private async Task LoadIndexFromGitHubAsync(CancellationToken ct)
     {
@@ -153,24 +188,49 @@ public sealed class RemotionSkillsService
                 return;
             }
 
-            _index.Clear();
+            ConcurrentDictionary<string, SkillFileEntry> newIndex = new();
 
             foreach (GitHubTreeEntry entry in tree.Tree)
             {
-                if (entry.Type != "blob" || !entry.Path.StartsWith(SkillsBasePath))
+                if (entry.Type != "blob" || !entry.Path.StartsWith(SkillsRootPath, StringComparison.Ordinal))
                     continue;
 
-                string relativePath = entry.Path[SkillsBasePath.Length..];
+                string relativePath = entry.Path[SkillsRootPath.Length..];
 
-                // Include .md files and .tsx example files
                 if (!relativePath.EndsWith(".md", StringComparison.OrdinalIgnoreCase))
                     continue;
 
-                string topic = Path.GetFileNameWithoutExtension(relativePath);
-                string description = GenerateDescription(topic, relativePath);
+                string[] segments = relativePath.Split('/');
+                if (segments.Length < 2)
+                    continue; // stray top-level file directly under skills/, not a skill doc
 
-                _index[relativePath] = new SkillFileEntry(relativePath, topic, description);
+                string skillDir = segments[0];
+                if (!AllowedSkillDirs.Contains(skillDir))
+                    continue;
+
+                // Guard against remotion-maps content leaking in nested under an allowed
+                // directory (e.g. skills/remotion-markup/remotion-maps/...) — out of scope
+                // regardless of nesting depth, same rationale as the top-level exclusion above.
+                if (segments.Any(s => s.Equals("remotion-maps", StringComparison.OrdinalIgnoreCase)))
+                    continue;
+
+                string fileNameNoExt = Path.GetFileNameWithoutExtension(relativePath);
+
+                // Every allowed directory has its own SKILL.md overview file, so the plain
+                // filename ("SKILL") would collide across directories when used as a topic name.
+                // Disambiguate by using the directory name itself as the topic for those files.
+                string topic = fileNameNoExt.Equals("SKILL", StringComparison.OrdinalIgnoreCase)
+                    ? skillDir
+                    : fileNameNoExt;
+
+                string description = GenerateDescription(topic, fileNameNoExt, skillDir);
+
+                newIndex[relativePath] = new SkillFileEntry(relativePath, topic, description);
             }
+
+            _index.Clear();
+            foreach (KeyValuePair<string, SkillFileEntry> kvp in newIndex)
+                _index[kvp.Key] = kvp.Value;
 
             _indexLoadedAt = DateTime.UtcNow;
             _logger.LogInformation("Loaded {Count} Remotion skill files", _index.Count);
@@ -188,49 +248,61 @@ public sealed class RemotionSkillsService
         return client;
     }
 
-    private static string GenerateDescription(string topic, string relativePath)
+    private static string GenerateDescription(string topic, string fileNameNoExt, string skillDir)
     {
-        if (relativePath == "SKILL.md")
-            return "Main Remotion skill overview — index of all available topics";
+        // Each allowed directory's own SKILL.md is the overview for that directory; give each
+        // one a distinct, accurate blurb rather than one generic line shared across all five.
+        if (fileNameNoExt.Equals("SKILL", StringComparison.OrdinalIgnoreCase))
+        {
+            return skillDir switch
+            {
+                "remotion-create" => "Scaffolding a new Remotion project and composition",
+                "remotion-markup" => "Content, animation, and effects best practices — the core React markup skill (compositions, timing, transitions, audio, text, and more)",
+                "remotion-render" => "Exporting/rendering a Remotion video — rendering strategy and transparent output",
+                "remotion-captions" => "Transcribing, displaying, and animating captions",
+                "remotion-multimedia" => "Reading audio/video duration and dimensions via Mediabunny",
+                _ => $"Overview of the {skillDir} skill directory"
+            };
+        }
 
         return topic switch
         {
             "3d" => "3D content in Remotion using Three.js and React Three Fiber",
-            "animations" => "Fundamental animation skills — interpolate, spring, useCurrentFrame",
-            "assets" => "Importing images, videos, audio, and fonts into Remotion",
             "audio-visualization" => "Audio visualization — spectrum bars, waveforms, bass-reactive effects",
             "audio" => "Using audio and sound — importing, trimming, volume, speed, pitch",
             "calculate-metadata" => "Dynamically set composition duration, dimensions, and props",
-            "can-decode" => "Check if a video can be decoded by the browser",
-            "charts" => "Chart and data visualization patterns (bar, pie, line, stock charts)",
             "compositions" => "Defining compositions, stills, folders, default props, dynamic metadata",
+            "cropping" => "Cropping components with cropLeft/cropRight/cropTop/cropBottom props",
             "display-captions" => "Displaying captions and subtitles on video",
-            "extract-frames" => "Extract frames from videos at specific timestamps",
-            "ffmpeg" => "FFmpeg operations — trimming, silence detection",
-            "fonts" => "Loading Google Fonts and local fonts in Remotion",
+            "effects" => "Canvas/WebGL visual effects using effects arrays and createEffect()",
+            "embedding-videos" => "Embedding videos — trimming, volume, speed, looping, pitch",
+            "ffmpeg" => "FFmpeg operations for Remotion pipelines",
+            "gifs" => "Displaying GIFs synchronized with Remotion's timeline",
+            "google-fonts" => "Loading Google Fonts in Remotion",
+            "html-in-canvas" => "Rendering children into a <canvas> for Canvas 2D/WebGL post-processing",
+            "images" => "Embedding images using the Img component",
+            "import-srt-captions" => "Importing SRT caption files",
             "get-audio-duration" => "Getting audio file duration in seconds",
             "get-video-dimensions" => "Getting video width and height",
             "get-video-duration" => "Getting video file duration in seconds",
-            "gifs" => "Displaying GIFs synchronized with Remotion's timeline",
-            "images" => "Embedding images using the Img component",
-            "import-srt-captions" => "Importing SRT caption files",
             "light-leaks" => "Light leak overlay effects",
+            "local-fonts" => "Loading local font files via @remotion/fonts",
             "lottie" => "Embedding Lottie animations in Remotion",
-            "maps" => "Adding maps using Mapbox with animation",
             "measuring-dom-nodes" => "Measuring DOM element dimensions in Remotion",
             "measuring-text" => "Measuring text dimensions, fitting text to containers",
-            "parameters" => "Making videos parametrizable with Zod schema",
+            "multi-scene-video" => "Structuring a multi-scene video — one file per scene",
+            "parameters" => "Making videos parametrizable with a Zod schema",
             "sequencing" => "Sequencing patterns — delay, trim, limit duration",
             "sfx" => "Sound effects in Remotion",
-            "subtitles" => "Subtitle rendering patterns",
+            "silence-detection" => "Adaptive silence detection for video/audio using FFmpeg loudnorm and silencedetect",
             "tailwind" => "Using TailwindCSS in Remotion",
-            "text-animations" => "Typography and text animation patterns",
+            "text-highlights" => "Animated text highlights and hand-drawn annotations via @remotion/rough-notation",
             "timing" => "Interpolation curves — linear, easing, spring animations",
             "transcribe-captions" => "Transcribing and generating captions",
             "transitions" => "Scene transition patterns for Remotion",
             "transparent-videos" => "Rendering video with transparency",
-            "trimming" => "Trimming patterns — cut beginning or end of animations",
-            "videos" => "Embedding videos — trimming, volume, speed, looping, pitch",
+            "video-editing" => "Bare-bones video editing in the Remotion Studio — independently positioned vs. ripple-edited clips",
+            "video-layout" => "Designing video layouts — framing, safe areas, minimum on-screen content sizes",
             "voiceover" => "AI-generated voiceover using ElevenLabs TTS",
             _ => $"Remotion skill: {topic}"
         };
