@@ -123,6 +123,7 @@ builder.Services.AddSingleton<IReelForgeAgent, VideoEditDirectorAgent>();
 builder.Services.AddSingleton<IReelForgeAgent, MotionGraphicsDirectorAgent>();
 builder.Services.AddSingleton<IReelForgeAgent, ColoristAgent>();
 builder.Services.AddSingleton<IReelForgeAgent, ColorGradeDirectorAgent>();
+builder.Services.AddSingleton<IReelForgeAgent, SoundDesignerAgent>();
 builder.Services.AddSingleton<IAgentRegistry, AgentRegistry>();
 builder.Services.AddSingleton<IAgentToolProvider, AgentToolProvider>();
 builder.Services.AddSingleton<IProjectFileWorkspace, ProjectFileWorkspace>();

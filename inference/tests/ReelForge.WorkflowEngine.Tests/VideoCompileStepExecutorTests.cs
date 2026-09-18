@@ -1100,10 +1100,14 @@ public class VideoCompileStepExecutorTests
         // configureMediaProbe comment below documents — so the amix probe (which also doesn't
         // contain "-filters") gets its own realistic response instead of the catch-all's empty
         // stdout (which would make IsAmixNormalizeAvailableAsync always resolve to unavailable).
+        // The "unavailable" stdout must NOT contain the literal substring "normalize" anywhere —
+        // IsAmixNormalizeAvailableAsync does a plain Contains("normalize") check, so the previous
+        // "... (no normalize) ..." wording accidentally read as AVAILABLE, silently breaking both
+        // amix-unavailable tests (found while adding the SFX twin of the music test).
         toolRunner
             .Setup(t => t.RunFfmpegAsync(
                 It.Is<IReadOnlyList<string>>(a => a.Contains("filter=amix")), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new VideoToolResult(0, amixNormalizeAvailable ? "... normalize ..." : "... (no normalize) ...", string.Empty, false));
+            .ReturnsAsync(new VideoToolResult(0, amixNormalizeAvailable ? "... normalize ..." : "... (no such option) ...", string.Empty, false));
 
         var mediaProbe = new Mock<IMediaProbe>();
         mediaProbe
@@ -3442,5 +3446,444 @@ public class VideoCompileStepExecutorTests
         dropped.GetArrayLength().Should().Be(1);
         dropped[0].GetProperty("regionId").GetString().Should().Be("r1");
         dropped[0].GetProperty("reason").GetString().Should().Be("max_inserts_exceeded");
+    }
+
+    // =======================================================================
+    // Sound effects (see docs/video-editing.md "Sound effects")
+    // =======================================================================
+
+    private const string SfxClipStorageKey = "projects/p/userFiles/whoosh.wav";
+    private static readonly Guid SfxProjectFileId = Guid.NewGuid();
+
+    private static VideoAnalysisArtifact WithSfxCandidates(VideoAnalysisArtifact artifact) =>
+        artifact with
+        {
+            SfxCandidates = [new VideoAnalysisSfxCandidate("x0", SfxProjectFileId, "whoosh.wav", "audio/wav", 2048)],
+            OfferedSfxIds = ["x0"]
+        };
+
+    private static string BuildSfxPlanJson(params (string SfxId, string AnchorId, string Timing, string Volume)[] cues)
+    {
+        var cueObjects = cues.Select(c => new
+        {
+            sfxId = c.SfxId,
+            anchorId = c.AnchorId,
+            timing = c.Timing,
+            volume = c.Volume,
+            reason = "test"
+        });
+        return JsonSerializer.Serialize(new { cues = cueObjects, planRationale = "test" });
+    }
+
+    /// <summary>Builds a context wired for SFX: a 4th history entry (StepOrder 3, the SoundDesigner step) plus EnableSfx=true, SfxPlan pointed at it — the CreateMusicContext precedent.</summary>
+    private static StepExecutionContext CreateSfxContext(
+        VideoAnalysisArtifact artifact,
+        string decisionJson,
+        string sfxPlanJson,
+        out Mock<IProjectFileWorkspace> workspace,
+        Func<VideoCompileStepConfig, VideoCompileStepConfig>? configOverride = null,
+        string sfxMimeType = "audio/wav")
+    {
+        workspace = new Mock<IProjectFileWorkspace>();
+
+        string artifactJson = JsonSerializer.Serialize(artifact, ArtifactOptions());
+
+        workspace
+            .Setup(w => w.DownloadStorageKeyToFileAsync(
+                It.IsAny<Guid>(), AnalysisKey, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<Guid, string, string, CancellationToken>((_, _, destPath, _) =>
+            {
+                File.WriteAllText(destPath, artifactJson);
+                return Task.CompletedTask;
+            });
+
+        workspace
+            .Setup(w => w.DownloadStorageKeyToFileAsync(
+                It.IsAny<Guid>(), SourceVideoKey, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<Guid, string, string, CancellationToken>((_, _, destPath, _) =>
+            {
+                File.WriteAllBytes(destPath, new byte[] { 0x00, 0x01, 0x02 });
+                return Task.CompletedTask;
+            });
+
+        workspace
+            .Setup(w => w.DownloadStorageKeyToFileAsync(
+                It.IsAny<Guid>(), SfxClipStorageKey, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<Guid, string, string, CancellationToken>((_, _, destPath, _) =>
+            {
+                File.WriteAllBytes(destPath, new byte[] { 0x00, 0x01, 0x02 });
+                return Task.CompletedTask;
+            });
+
+        workspace
+            .Setup(w => w.ListFilesAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ProjectWorkspaceFile>
+            {
+                new(SfxProjectFileId, ProjectId, "whoosh.wav", null, "userFiles", SfxClipStorageKey, sfxMimeType, 2048, DateTime.UtcNow, null)
+            });
+
+        VideoCompileStepConfig config = new(
+            Version: 1,
+            Decision: new ExtractInputRef(ExtractInputSource.Step, StepOrder: 2),
+            AnalysisStepOrder: 1,
+            EnableSfx: true,
+            SfxPlan: new ExtractInputRef(ExtractInputSource.Step, StepOrder: 3));
+
+        if (configOverride is not null)
+            config = configOverride(config);
+
+        string configJson = JsonSerializer.Serialize(config, ConfigOptions());
+
+        var step = new WorkflowStep
+        {
+            Id = Guid.NewGuid(),
+            StepOrder = 4,
+            StepType = StepType.VideoCompile,
+            VideoCompileConfigJson = configJson
+        };
+
+        VideoAnalyzeStepConfig analyzeConfig = new(
+            Version: 1,
+            Source: new VideoSourceRef(VideoSourceKind.PreviousStepOutput));
+        var analyzeStep = new WorkflowStep
+        {
+            Id = Guid.NewGuid(),
+            StepOrder = 1,
+            StepType = StepType.VideoAnalyze,
+            VideoAnalyzeConfigJson = JsonSerializer.Serialize(analyzeConfig, ConfigOptions())
+        };
+
+        List<StepOutputHistoryEntry> history =
+        [
+            new StepOutputHistoryEntry(0, "Render", "{}", OutputStorageKey: SourceVideoKey, ArtifactStorageKey: null),
+            new StepOutputHistoryEntry(1, "Analyze", "{}", OutputStorageKey: null, ArtifactStorageKey: AnalysisKey),
+            new StepOutputHistoryEntry(2, "StoryEditor", decisionJson, OutputStorageKey: null, ArtifactStorageKey: null),
+            new StepOutputHistoryEntry(3, "SoundDesigner", sfxPlanJson, OutputStorageKey: null, ArtifactStorageKey: null)
+        ];
+
+        return new StepExecutionContext
+        {
+            Execution = new WorkflowExecution { Id = Guid.NewGuid(), ProjectId = ProjectId },
+            Step = step,
+            AllSteps = [analyzeStep, step],
+            AccumulatedOutput = sfxPlanJson,
+            StepOutputHistory = history,
+            CurrentStepIndex = 3,
+            IterationCount = 0,
+            CorrelationId = "test",
+            CancellationToken = CancellationToken.None
+        };
+    }
+
+    [Fact]
+    public async Task EnableSfx_false_leaves_filter_string_and_output_byte_identical_to_pre_sfx_compile()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" });
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+
+        string? baselineFilter = null;
+        StepExecutionContext baselineContext = CreateContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> baselineWorkspace);
+        JsonElement baselineEdl = default;
+        StepExecutionResult baselineResult = await CreateExecutor(
+            baselineWorkspace, edlCaptured: e => baselineEdl = e,
+            ffmpegArgsCaptured: args => baselineFilter ??= ExtractFilterComplexValue(args)).ExecuteAsync(baselineContext);
+        baselineResult.Status.Should().Be(StepStatus.Completed, because: baselineResult.ErrorDetails ?? baselineResult.Output);
+
+        // Even with an SfxPlan configured, EnableSfx=false must leave everything untouched.
+        string sfxPlanJson = BuildSfxPlanJson(("x0", "s0", "OnCut", "Normal"));
+        string? sfxOffFilter = null;
+        StepExecutionContext sfxOffContext = CreateSfxContext(
+            WithSfxCandidates(artifact), decisionJson, sfxPlanJson, out Mock<IProjectFileWorkspace> sfxOffWorkspace,
+            configOverride: cfg => cfg with { EnableSfx = false, Decision = new ExtractInputRef(ExtractInputSource.Step, StepOrder: 2) });
+        JsonElement sfxOffEdl = default;
+        StepExecutionResult sfxOffResult = await CreateExecutor(
+            sfxOffWorkspace, edlCaptured: e => sfxOffEdl = e,
+            ffmpegArgsCaptured: args => sfxOffFilter ??= ExtractFilterComplexValue(args)).ExecuteAsync(sfxOffContext);
+
+        sfxOffResult.Status.Should().Be(StepStatus.Completed, because: sfxOffResult.ErrorDetails ?? sfxOffResult.Output);
+        sfxOffFilter.Should().Be(baselineFilter, "EnableSfx=false must leave the filter string byte-identical");
+
+        baselineEdl.TryGetProperty("sfx", out _).Should().BeFalse();
+        sfxOffEdl.TryGetProperty("sfx", out _).Should().BeFalse();
+        using JsonDocument outputDoc = JsonDocument.Parse(sfxOffResult.Output);
+        outputDoc.RootElement.TryGetProperty("sfx", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task EnableSfx_true_with_StreamCopy_fails_SFX_REQUIRES_REENCODE()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" });
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateContext(
+            artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with
+            {
+                EnableSfx = true,
+                SfxPlan = new ExtractInputRef(ExtractInputSource.Previous),
+                Mode = VideoCompileMode.StreamCopy,
+                AllowKeyframeSnapping = true
+            });
+
+        StepExecutionResult result = await CreateExecutor(workspace).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Failed);
+        ErrorCode(result).Should().Be("SFX_REQUIRES_REENCODE");
+    }
+
+    [Fact]
+    public async Task EnableSfx_true_with_AudioCodec_copy_fails_SFX_REQUIRES_AUDIO_REENCODE()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" });
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateContext(
+            artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with
+            {
+                EnableSfx = true,
+                SfxPlan = new ExtractInputRef(ExtractInputSource.Previous),
+                AudioCodec = "copy"
+            });
+
+        StepExecutionResult result = await CreateExecutor(workspace).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Failed);
+        ErrorCode(result).Should().Be("SFX_REQUIRES_AUDIO_REENCODE");
+    }
+
+    [Fact]
+    public async Task Keep_span_naming_an_sfx_clip_id_fails_UNKNOWN_ID_since_sfx_clips_are_a_separate_namespace()
+    {
+        VideoAnalysisArtifact artifact = WithSfxCandidates(
+            BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" }));
+        string decisionJson = BuildDecisionJson(("x0", "x0", "wrong namespace"));
+        StepExecutionContext context = CreateContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        StepExecutionResult result = await CreateExecutor(workspace).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Failed);
+        ErrorCode(result).Should().Be("UNKNOWN_ID");
+    }
+
+    [Fact]
+    public async Task Planned_cue_is_resolved_delayed_to_the_output_timeline_and_recorded_in_the_sfx_block()
+    {
+        // Two shots kept as one span [0,10); the cue anchors to s1 (source 4.0s), which maps to
+        // output 4.0s — so the branch must carry adelay=4000 and the Strong word must resolve to
+        // the -6 dB default gain, all server-side.
+        VideoAnalysisArtifact artifact = WithSfxCandidates(BuildArtifact(
+            shots: new[] { ("s0", 0.0, 4.0), ("s1", 4.0, 10.0) },
+            offeredIds: new[] { "s0", "s1" }));
+        string decisionJson = BuildDecisionJson(("s0", "s1", "keep all"));
+        string sfxPlanJson = BuildSfxPlanJson(("x0", "s1", "OnCut", "Strong"));
+
+        StepExecutionContext context = CreateSfxContext(
+            artifact, decisionJson, sfxPlanJson, out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with { PrePaddingMs = 0, PostPaddingMs = 0 });
+
+        JsonElement edl = default;
+        IReadOnlyList<string>? capturedArgs = null;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, edlCaptured: e => edl = e, ffmpegArgsCaptured: args => capturedArgs ??= args).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+
+        JsonElement sfx = edl.GetProperty("sfx");
+        sfx.GetProperty("enabled").GetBoolean().Should().BeTrue();
+        sfx.GetProperty("applied").GetBoolean().Should().BeTrue();
+        sfx.GetProperty("appliedCueCount").GetInt32().Should().Be(1);
+        JsonElement cue = sfx.GetProperty("cues")[0];
+        cue.GetProperty("sfxId").GetString().Should().Be("x0");
+        cue.GetProperty("anchorId").GetString().Should().Be("s1");
+        cue.GetProperty("timing").GetString().Should().Be("OnCut");
+        cue.GetProperty("volume").GetString().Should().Be("Strong");
+        cue.GetProperty("gainDb").GetInt32().Should().Be(-6);
+        cue.GetProperty("outputStartSec").GetDouble().Should().BeApproximately(4.0, 0.01);
+        sfx.GetProperty("dropped").GetArrayLength().Should().Be(0);
+
+        string filterComplex = ExtractFilterComplexValue(capturedArgs!);
+        filterComplex.Should().Contain("[abase]", "the pre-SFX audio chain must end at the internal base label");
+        filterComplex.Should().Contain("adelay=4000|4000[sfx0]");
+        filterComplex.Should().Contain("[abase][sfx0]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]");
+
+        // The cue's clip must be the LAST ffmpeg input (after the source; no music here).
+        List<int> inputFlagIndices = capturedArgs!
+            .Select((a, i) => (a, i))
+            .Where(t => t.a == "-i")
+            .Select(t => t.i)
+            .ToList();
+        inputFlagIndices.Should().HaveCount(2, "the main source input plus the one cue input");
+        capturedArgs[inputFlagIndices[^1] + 1].Should().Contain("sfx-", "the cue clip must be the last ffmpeg input");
+        filterComplex.Should().Contain("[1:a]atrim=end=", "the cue is ffmpeg input index 1 here (no asset overlays or music present)");
+
+        using JsonDocument outputDoc = JsonDocument.Parse(result.Output);
+        outputDoc.RootElement.GetProperty("sfx").GetProperty("applied").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Cue_naming_an_unoffered_clip_id_is_dropped_and_the_remaining_cue_still_applies()
+    {
+        VideoAnalysisArtifact artifact = WithSfxCandidates(BuildArtifact(
+            shots: new[] { ("s0", 0.0, 4.0), ("s1", 4.0, 10.0) },
+            offeredIds: new[] { "s0", "s1" }));
+        string decisionJson = BuildDecisionJson(("s0", "s1", "keep all"));
+        string sfxPlanJson = BuildSfxPlanJson(
+            ("x9", "s0", "OnCut", "Normal"),   // not in OfferedSfxIds
+            ("x0", "s1", "Lag", "Subtle"));
+
+        StepExecutionContext context = CreateSfxContext(
+            artifact, decisionJson, sfxPlanJson, out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with { PrePaddingMs = 0, PostPaddingMs = 0 });
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(workspace, edlCaptured: e => edl = e).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, "a bad cue must never fail the cut itself");
+        JsonElement sfx = edl.GetProperty("sfx");
+        sfx.GetProperty("appliedCueCount").GetInt32().Should().Be(1);
+        JsonElement dropped = sfx.GetProperty("dropped");
+        dropped.GetArrayLength().Should().Be(1);
+        dropped[0].GetProperty("reason").GetString().Should().Be("unknown_sfx_id");
+        dropped[0].GetProperty("sfxId").GetString().Should().Be("x9");
+
+        // The surviving Lag cue fires SfxLagMs (default 150ms) after its anchor's output moment.
+        JsonElement cue = sfx.GetProperty("cues")[0];
+        cue.GetProperty("timing").GetString().Should().Be("Lag");
+        cue.GetProperty("outputStartSec").GetDouble().Should().BeApproximately(4.15, 0.01);
+    }
+
+    [Fact]
+    public async Task Cue_anchored_to_a_cut_away_moment_is_dropped_never_relocated()
+    {
+        // Only s1 is kept, so s0's start (source 0.0) has no output moment at all.
+        VideoAnalysisArtifact artifact = WithSfxCandidates(BuildArtifact(
+            shots: new[] { ("s0", 0.0, 4.0), ("s1", 4.0, 10.0) },
+            offeredIds: new[] { "s0", "s1" }));
+        string decisionJson = BuildDecisionJson(("s1", "s1", "keep"));
+        string sfxPlanJson = BuildSfxPlanJson(("x0", "s0", "OnCut", "Normal"));
+
+        StepExecutionContext context = CreateSfxContext(
+            artifact, decisionJson, sfxPlanJson, out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with { PrePaddingMs = 0, PostPaddingMs = 0 });
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(workspace, edlCaptured: e => edl = e).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        JsonElement sfx = edl.GetProperty("sfx");
+        sfx.GetProperty("applied").GetBoolean().Should().BeFalse();
+        sfx.GetProperty("dropped")[0].GetProperty("reason").GetString().Should().Be("anchor_cut_away");
+    }
+
+    [Fact]
+    public async Task Empty_cue_list_is_a_valid_plan_reported_as_empty_plan_not_a_failure()
+    {
+        VideoAnalysisArtifact artifact = WithSfxCandidates(
+            BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" }));
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        string sfxPlanJson = BuildSfxPlanJson();
+
+        StepExecutionContext context = CreateSfxContext(
+            artifact, decisionJson, sfxPlanJson, out Mock<IProjectFileWorkspace> workspace);
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(workspace, edlCaptured: e => edl = e).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        JsonElement sfx = edl.GetProperty("sfx");
+        sfx.GetProperty("applied").GetBoolean().Should().BeFalse();
+        sfx.GetProperty("reason").GetString().Should().Be("empty_plan");
+        sfx.GetProperty("dropped").GetArrayLength().Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Source_with_no_audio_stream_and_no_music_drops_every_cue_as_no_base_audio()
+    {
+        VideoAnalysisArtifact artifact = WithSfxCandidates(
+            BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" }));
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        string sfxPlanJson = BuildSfxPlanJson(("x0", "s0", "OnCut", "Normal"));
+
+        StepExecutionContext context = CreateSfxContext(
+            artifact, decisionJson, sfxPlanJson, out Mock<IProjectFileWorkspace> workspace);
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, edlCaptured: e => edl = e,
+            configureMediaProbe: mock => mock
+                .Setup(p => p.ProbeAsync(It.Is<string>(path => !path.Contains("sfx-")), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new MediaProbeResult(10, 30, 1, 1920, 1080, "h264", null, null)))
+            .ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        JsonElement sfx = edl.GetProperty("sfx");
+        sfx.GetProperty("applied").GetBoolean().Should().BeFalse();
+        sfx.GetProperty("reason").GetString().Should().Be("no_base_audio");
+        sfx.GetProperty("dropped")[0].GetProperty("reason").GetString().Should().Be("no_base_audio");
+    }
+
+    [Fact]
+    public async Task Non_audio_clip_is_dropped_as_sfx_not_audio_and_the_cut_still_succeeds()
+    {
+        VideoAnalysisArtifact artifact = WithSfxCandidates(
+            BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" }));
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        string sfxPlanJson = BuildSfxPlanJson(("x0", "s0", "OnCut", "Normal"));
+
+        StepExecutionContext context = CreateSfxContext(
+            artifact, decisionJson, sfxPlanJson, out Mock<IProjectFileWorkspace> workspace, sfxMimeType: "video/mp4");
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(workspace, edlCaptured: e => edl = e).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, "a bad clip must never fail the cut itself");
+        JsonElement sfx = edl.GetProperty("sfx");
+        sfx.GetProperty("applied").GetBoolean().Should().BeFalse();
+        sfx.GetProperty("dropped")[0].GetProperty("reason").GetString().Should().Be("sfx_not_audio");
+    }
+
+    [Fact]
+    public async Task Cues_beyond_MaxSfxCues_are_dropped_in_plan_order()
+    {
+        VideoAnalysisArtifact artifact = WithSfxCandidates(BuildArtifact(
+            shots: new[] { ("s0", 0.0, 4.0), ("s1", 4.0, 10.0) },
+            offeredIds: new[] { "s0", "s1" }));
+        string decisionJson = BuildDecisionJson(("s0", "s1", "keep all"));
+        string sfxPlanJson = BuildSfxPlanJson(
+            ("x0", "s0", "OnCut", "Normal"),
+            ("x0", "s1", "OnCut", "Normal"));
+
+        StepExecutionContext context = CreateSfxContext(
+            artifact, decisionJson, sfxPlanJson, out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with { MaxSfxCues = 1, PrePaddingMs = 0, PostPaddingMs = 0 });
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(workspace, edlCaptured: e => edl = e).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        JsonElement sfx = edl.GetProperty("sfx");
+        sfx.GetProperty("appliedCueCount").GetInt32().Should().Be(1);
+        sfx.GetProperty("cues")[0].GetProperty("anchorId").GetString().Should().Be("s0", "cues apply in plan order");
+        sfx.GetProperty("dropped")[0].GetProperty("reason").GetString().Should().Be("max_cues_exceeded");
+    }
+
+    [Fact]
+    public async Task Amix_without_normalize_option_skips_all_sfx_and_the_cut_still_succeeds()
+    {
+        VideoAnalysisArtifact artifact = WithSfxCandidates(
+            BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" }));
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        string sfxPlanJson = BuildSfxPlanJson(("x0", "s0", "OnCut", "Normal"));
+
+        StepExecutionContext context = CreateSfxContext(
+            artifact, decisionJson, sfxPlanJson, out Mock<IProjectFileWorkspace> workspace);
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, edlCaptured: e => edl = e, amixNormalizeAvailable: false).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        JsonElement sfx = edl.GetProperty("sfx");
+        sfx.GetProperty("unavailable").GetBoolean().Should().BeTrue();
+        sfx.GetProperty("applied").GetBoolean().Should().BeFalse();
     }
 }

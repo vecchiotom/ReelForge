@@ -156,7 +156,20 @@ public enum AgentType
     /// read-only tool scope as VideoEditDirector — unlike MotionGraphicsDirector, nothing about
     /// a grade ever needs rendering. See docs/video-editing.md "The color grade room".
     /// </summary>
-    ColorGradeDirector
+    ColorGradeDirector,
+    /// <summary>
+    /// LLM agent that plans zero or more discrete sound-effect cues (whooshes, clicks, dings,
+    /// stingers) for a compiled edit — each cue an offered "x{n}" SFX-clip id (drawn from a
+    /// StepType.VideoAnalyze step's OfferSfxClips-derived candidate list) anchored to an offered
+    /// cut-anchor id ("s{n}"/"g{n}"/"t{n}"), plus enum-word Timing/Volume choices — see
+    /// ReelForge.Shared.Data.OutputSchemas.SfxPlanOutput and docs/video-editing.md
+    /// "Sound effects". Never emits a timestamp, a dB value, or a duration (guarded by
+    /// SfxPlanOutputInvariantTests); VideoCompileStepExecutor alone resolves each anchor id to an
+    /// output-timeline moment and each word to a concrete gain/offset. Unlike background music,
+    /// there is deliberately NO deterministic no-agent config path — cue placement is inherently
+    /// editorial (see docs/video-editing.md "Sound effects" for the rejected alternative).
+    /// </summary>
+    SoundDesigner
 }
 
 /// <summary>

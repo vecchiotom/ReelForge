@@ -185,7 +185,11 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                 enabledStages.Add(VideoAnalyzeProgressPlan.Stage.SampleSharpness);
             if (config.AnalyzeVisuals && config.AnalyzeColorGrading && config.DetectLookGroups)
                 enabledStages.Add(VideoAnalyzeProgressPlan.Stage.MatchLooks);
-            if (config.OfferMusicTracks)
+            // Sound effects (see docs/video-editing.md "Sound effects") deliberately reuse the
+            // music-candidate listing stage rather than adding a new one: both enumerate the same
+            // project file list in the same single ListFilesAsync call below, so there is no
+            // independent duration for a separate stage to weight.
+            if (config.OfferMusicTracks || config.OfferSfxClips)
                 enabledStages.Add(VideoAnalyzeProgressPlan.Stage.ListMusicCandidates);
             if (config.Vision != VideoVisionMode.Off)
             {
@@ -342,21 +346,41 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             // probing every candidate here would only cost N downloads for a list the agent picks
             // one item from). Never fails the step — a ListFilesAsync failure just degrades to zero
             // candidates. ----
+            // Sound-effects candidates (docs/video-editing.md "Sound effects") share this same
+            // block, and the same single ListFilesAsync call, since both features enumerate the
+            // project's audio/* files — under independent id namespaces (m{n} vs x{n}) and
+            // independent caps. Same degrade rule: a listing failure produces zero candidates
+            // for BOTH lists, never a failed step.
             List<VideoAnalysisMusicCandidate> musicCandidates = [];
-            if (config.OfferMusicTracks)
+            List<VideoAnalysisSfxCandidate> sfxCandidates = [];
+            if (config.OfferMusicTracks || config.OfferSfxClips)
             {
-                await ReportAsync(context, progress, VideoAnalyzeProgressPlan.Stage.ListMusicCandidates, "Listing music candidates");
+                await ReportAsync(context, progress, VideoAnalyzeProgressPlan.Stage.ListMusicCandidates, "Listing audio candidates");
                 try
                 {
                     IReadOnlyList<ProjectWorkspaceFile> files =
                         await _workspace.ListFilesAsync(context.Execution.ProjectId, context.CancellationToken);
-                    musicCandidates = files
+                    List<ProjectWorkspaceFile> audioFiles = files
                         .Where(f => f.MimeType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase))
                         .OrderBy(f => f.OriginalFileName, StringComparer.Ordinal)
                         .ThenBy(f => f.Id)
-                        .Take(Math.Clamp(config.MaxMusicTracks, 0, 100))
-                        .Select((f, i) => new VideoAnalysisMusicCandidate($"m{i}", f.Id, f.OriginalFileName, f.MimeType, f.SizeBytes))
                         .ToList();
+
+                    if (config.OfferMusicTracks)
+                    {
+                        musicCandidates = audioFiles
+                            .Take(Math.Clamp(config.MaxMusicTracks, 0, 100))
+                            .Select((f, i) => new VideoAnalysisMusicCandidate($"m{i}", f.Id, f.OriginalFileName, f.MimeType, f.SizeBytes))
+                            .ToList();
+                    }
+
+                    if (config.OfferSfxClips)
+                    {
+                        sfxCandidates = audioFiles
+                            .Take(Math.Clamp(config.MaxSfxClips, 0, 100))
+                            .Select((f, i) => new VideoAnalysisSfxCandidate($"x{i}", f.Id, f.OriginalFileName, f.MimeType, f.SizeBytes))
+                            .ToList();
+                    }
                 }
                 catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
                 {
@@ -364,7 +388,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "VideoAnalyze step {StepOrder}: listing project files for music candidates failed; degrading to zero candidates.", step.StepOrder);
+                    _logger.LogWarning(ex, "VideoAnalyze step {StepOrder}: listing project files for music/SFX candidates failed; degrading to zero candidates.", step.StepOrder);
                 }
             }
 
@@ -681,7 +705,9 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                 OfferedMusicIds: [],
                 LookGroups: lookGroups.Count > 0 ? lookGroups : null,
                 InsertRegions: insertRegionTracks.Count > 0 ? insertRegionTracks : null,
-                OfferedInsertRegionIds: []);
+                OfferedInsertRegionIds: [],
+                SfxCandidates: sfxCandidates.Count > 0 ? sfxCandidates : null,
+                OfferedSfxIds: []);
 
             // ---- Build the bounded, id-anchored prompt view FIRST, so we know exactly which ids
             // were actually shown before persisting the artifact's OfferedIds. ----
@@ -699,7 +725,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
 
             // artifactStorageKey isn't known yet (the artifact hasn't been uploaded) — meta's
             // copy is patched in below once it is.
-            (JsonObject view, JsonObject meta, List<string> viewOfferedIds, List<string> viewOfferedPlacementIds, List<string> viewOfferedMusicIds, List<string> viewOfferedInsertRegionIds) = BuildBoundedView(
+            (JsonObject view, JsonObject meta, List<string> viewOfferedIds, List<string> viewOfferedPlacementIds, List<string> viewOfferedMusicIds, List<string> viewOfferedInsertRegionIds, List<string> viewOfferedSfxIds) = BuildBoundedView(
                 draftArtifact, viewSegments, config, artifactStorageKey: string.Empty,
                 provenance.TranscriptionApplied, provenance.TranscriptionDegraded, provenance.TranscriptionProvider,
                 provenance.VisualAnalysisApplied, provenance.VisualAnalysisDegraded, gridWidth, gridHeight, provenance.AudioLevelsApplied,
@@ -718,7 +744,8 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                 OfferedIds = viewOfferedIds,
                 OfferedPlacementIds = viewOfferedPlacementIds,
                 OfferedMusicIds = viewOfferedMusicIds,
-                OfferedInsertRegionIds = viewOfferedInsertRegionIds
+                OfferedInsertRegionIds = viewOfferedInsertRegionIds,
+                OfferedSfxIds = viewOfferedSfxIds
             };
 
             string artifactLocalPath = scratch.GetPath("analysis.json");
@@ -1660,7 +1687,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         return list;
     }
 
-    private static (JsonObject View, JsonObject Meta, List<string> OfferedIds, List<string> OfferedPlacementIds, List<string> OfferedMusicIds, List<string> OfferedInsertRegionIds) BuildBoundedView(
+    private static (JsonObject View, JsonObject Meta, List<string> OfferedIds, List<string> OfferedPlacementIds, List<string> OfferedMusicIds, List<string> OfferedInsertRegionIds, List<string> OfferedSfxIds) BuildBoundedView(
         VideoAnalysisArtifact artifact,
         List<VideoAnalysisSegment> viewSegments,
         VideoAnalyzeStepConfig config,
@@ -1752,6 +1779,25 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             }
         }
 
+        // Sound-effect clips: same atomic-array budget discipline as musicTracks just above —
+        // suppressed as a whole only after detail has fully degraded and musicTracks was already
+        // tried, and always before any offered item is dropped. Suppressed AFTER musicTracks
+        // (SFX is the newer, more optional layer) and BEFORE insertRegions.
+        bool sfxClipsSuppressed = false;
+        if (serialized.Length > maxOutputChars && artifact.SfxCandidates is { Count: > 0 })
+        {
+            JsonObject suppressedView = BuildView(
+                artifact, offered, detailApplied, config, isMultiSource, lookUniform, endsSentenceIds,
+                suppressMusicTracks: musicTracksSuppressed, suppressSfxClips: true);
+            string suppressedSerialized = suppressedView.ToJsonString(EnvelopeJsonOptions);
+            if (suppressedSerialized.Length < serialized.Length)
+            {
+                view = suppressedView;
+                serialized = suppressedSerialized;
+                sfxClipsSuppressed = true;
+            }
+        }
+
         // Tracked screen inserts: same atomic-array budget discipline as musicTracks just above —
         // suppressed as a whole only after detail has fully degraded and music was already
         // suppressed, and always before any offered item is dropped.
@@ -1760,7 +1806,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         {
             JsonObject suppressedView = BuildView(
                 artifact, offered, detailApplied, config, isMultiSource, lookUniform, endsSentenceIds,
-                suppressMusicTracks: musicTracksSuppressed, suppressInsertRegions: true);
+                suppressMusicTracks: musicTracksSuppressed, suppressInsertRegions: true, suppressSfxClips: sfxClipsSuppressed);
             string suppressedSerialized = suppressedView.ToJsonString(EnvelopeJsonOptions);
             if (suppressedSerialized.Length < serialized.Length)
             {
@@ -1777,7 +1823,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         while (serialized.Length > maxOutputChars && offered.Count > 0)
         {
             offered.RemoveAt(offered.Count - 1);
-            view = BuildView(artifact, offered, detailApplied, config, isMultiSource, lookUniform, endsSentenceIds, suppressMusicTracks: musicTracksSuppressed, suppressInsertRegions: insertRegionsSuppressed);
+            view = BuildView(artifact, offered, detailApplied, config, isMultiSource, lookUniform, endsSentenceIds, suppressMusicTracks: musicTracksSuppressed, suppressInsertRegions: insertRegionsSuppressed, suppressSfxClips: sfxClipsSuppressed);
             serialized = view.ToJsonString(EnvelopeJsonOptions);
         }
 
@@ -1810,6 +1856,13 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         // pass and are independent of Phase 1 visual analysis).
         List<string> offeredInsertRegionIds = !insertRegionsSuppressed
             ? (artifact.InsertRegions?.Select(r => r.Id).ToList() ?? [])
+            : [];
+
+        // Sound-effect clips: "offered" means exactly "the whole sfxClips array survived to the
+        // final view" — empty whenever it was suppressed for budget, regardless of VisualDetail
+        // (the exact musicTracks discipline).
+        List<string> offeredSfxIds = !sfxClipsSuppressed
+            ? (artifact.SfxCandidates?.Select(c => c.Id).ToList() ?? [])
             : [];
 
         var meta = new JsonObject
@@ -1868,6 +1921,12 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             ["offeredMusicTrackCount"] = offeredMusicIds.Count
         };
 
+        // Sound effects — gated on the step actually configuring SFX candidates (the newer
+        // insertTracking discipline rather than offeredMusicTrackCount's unconditional one), so
+        // an OfferSfxClips=false run's meta shape is byte-identical to before this addition.
+        if (config.OfferSfxClips)
+            meta["offeredSfxClipCount"] = offeredSfxIds.Count;
+
         // Tracked screen inserts — only ever present when the step actually configured tracking,
         // so a DetectInsertRegions=false run's meta shape is byte-identical to before this
         // addition (the same gating discipline isMultiSource uses just below).
@@ -1887,12 +1946,13 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         if (isMultiSource)
             meta["sourceCount"] = artifact.Sources?.Count ?? 1;
 
-        return (view, meta, offeredIds, offeredPlacementIds, offeredMusicIds, offeredInsertRegionIds);
+        return (view, meta, offeredIds, offeredPlacementIds, offeredMusicIds, offeredInsertRegionIds, offeredSfxIds);
     }
 
     private static JsonObject BuildView(
         VideoAnalysisArtifact artifact, List<OfferedItem> items, VideoVisualDetail detail, VideoAnalyzeStepConfig config, bool isMultiSource,
-        bool lookUniform, IReadOnlySet<string> endsSentenceIds, bool suppressMusicTracks = false, bool suppressInsertRegions = false)
+        bool lookUniform, IReadOnlySet<string> endsSentenceIds, bool suppressMusicTracks = false, bool suppressInsertRegions = false,
+        bool suppressSfxClips = false)
     {
         var view = new JsonObject
         {
@@ -1944,6 +2004,14 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         if (!suppressMusicTracks && artifact.MusicCandidates is { Count: > 0 })
             view["musicTracks"] = MusicTracksNode(artifact.MusicCandidates);
 
+        // Sound effects (see docs/video-editing.md "Sound effects"): the exact same UNCONDITIONAL
+        // discipline as musicTracks directly above — SFX clip candidates have nothing to do with
+        // visual detail, so this key's presence must never depend on VisualDetail. Dropped as one
+        // atomic array when the caller determines it must suppress it for budget, via
+        // suppressSfxClips.
+        if (!suppressSfxClips && artifact.SfxCandidates is { Count: > 0 })
+            view["sfxClips"] = SfxClipsNode(artifact.SfxCandidates);
+
         // Tracked screen inserts: same UNCONDITIONAL discipline as musicTracks (deliberately NOT
         // the detail-gated placements one) — insert regions come from their own dedicated grid
         // pass and exist regardless of whether Phase 1 visual analysis ran at all, so their
@@ -1964,6 +2032,17 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         {
             ["id"] = m.Id,
             ["name"] = m.FileName
+        }).ToArray());
+
+    /// <summary>
+    /// Deliberately as small as <see cref="MusicTracksNode"/>: the model needs the name to choose
+    /// and the id to reference; anything else is unnecessary surface area.
+    /// </summary>
+    private static JsonArray SfxClipsNode(IReadOnlyList<VideoAnalysisSfxCandidate> candidates) =>
+        new(candidates.Select(c => (JsonNode)new JsonObject
+        {
+            ["id"] = c.Id,
+            ["name"] = c.FileName
         }).ToArray());
 
     private static JsonArray ToArray(IEnumerable<JsonObject> items)

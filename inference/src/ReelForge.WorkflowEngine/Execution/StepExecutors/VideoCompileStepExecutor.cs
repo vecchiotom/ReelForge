@@ -214,6 +214,34 @@ public class VideoCompileStepExecutor : IStepExecutor
                     $"VideoCompile ColorGradePlan.From must be Previous or Step; got '{config.ColorGradePlan.From}'.");
             }
 
+            if (config.SfxPlan is not null &&
+                config.SfxPlan.From != ExtractInputSource.Previous && config.SfxPlan.From != ExtractInputSource.Step)
+            {
+                return Failure(
+                    context, sw, "CONFIG_INVALID",
+                    $"VideoCompile SfxPlan.From must be Previous or Step; got '{config.SfxPlan.From}'.");
+            }
+
+            // Sound effects (see docs/video-editing.md "Sound effects"): the only two HARD
+            // failures in this whole addition, both pure config errors caught up front —
+            // everything else about SFX is soft-failure ("no SFX applied" / "drop this one cue",
+            // cut proceeds). Mirrors MUSIC_REQUIRES_REENCODE/MUSIC_REQUIRES_AUDIO_REENCODE's
+            // reasoning exactly: cues are mixed into the audio filtergraph, which stream-copy /
+            // AudioCodec=copy do not have.
+            if (config.EnableSfx && config.Mode == VideoCompileMode.StreamCopy)
+            {
+                return Failure(
+                    context, sw, "SFX_REQUIRES_REENCODE",
+                    "EnableSfx=true requires Mode=Reencode — stream-copy has no audio filtergraph to mix cues into.");
+            }
+
+            if (config.EnableSfx && string.Equals(config.AudioCodec, "copy", StringComparison.OrdinalIgnoreCase))
+            {
+                return Failure(
+                    context, sw, "SFX_REQUIRES_AUDIO_REENCODE",
+                    "EnableSfx=true is incompatible with AudioCodec=copy — the mixed audio must be encoded.");
+            }
+
             // Color grading (see docs/video-editing.md "Color grading"): the one HARD failure in
             // the whole addition, a pure config error caught up front — everything else about the
             // grade is soft-failure ("no grade applied", cut proceeds). Mirrors
@@ -771,6 +799,27 @@ public class VideoCompileStepExecutor : IStepExecutor
                     context, config, context.CancellationToken);
             }
 
+            // ---- Sound effects (see docs/video-editing.md "Sound effects"): purely
+            // soft-failure, exactly like graphics/music/inserts/grade above — a missing/bad
+            // plan, an unoffered clip/anchor id, a cut-away anchor, or a bad clip file all
+            // degrade to "no SFX applied" / "drop this one cue", never to a failed compile.
+            // Only even attempted when EnableSfx=true — when false (the default), nothing
+            // below this point differs from the pre-SFX compile path at all. ----
+
+            List<ResolvedSfxCue> resolvedSfx = [];
+            JsonObject? sfxNode = null;
+            if (config.EnableSfx)
+            {
+                await context.ReportProgressAsync("Resolving sound effects plan");
+                // A cue is layered OVER the base audio mix, so it needs a base to mix into:
+                // real dialogue audio, or (failing that) an applied music bed. When neither
+                // exists the output has no audio track at all, and ResolveSfxAsync degrades
+                // every cue (no_base_audio) rather than synthesizing an SFX-only track.
+                bool hasBaseAudio = hasDialogueAudioInOutput || resolvedMusic is not null;
+                (resolvedSfx, sfxNode) = await ResolveSfxAsync(
+                    context, config, artifact, timeline, scratch, hasBaseAudio, context.CancellationToken);
+            }
+
             // ---- Audio degrade report (bug group C): every OTHER degrade path in this feature
             // (graphics.reason, music.dropped, meta.transcription.degraded) records itself in the
             // EDL/outputSummary — this one previously didn't, so a silent-video deliverable could
@@ -810,7 +859,7 @@ public class VideoCompileStepExecutor : IStepExecutor
             JsonObject edl = BuildEdl(
                 config, analysisArtifactKey, resolvedSpans, retainedRatio, totalOutputSeconds, droppedOverCap, crf, graphicsNode, musicNode, audioNode,
                 transitions: transitionsNode, programFade: programFadeNode, transitionOverlapSec: transitionOverlapSec,
-                inserts: insertsNode, colorGrade: colorGradeNode);
+                inserts: insertsNode, colorGrade: colorGradeNode, sfx: sfxNode);
             await File.WriteAllTextAsync(edlLocalPath, edl.ToJsonString(EnvelopeJsonOptions), context.CancellationToken);
 
             string edlFileName = $"video-analysis/{context.Execution.Id:D}/step-{step.StepOrder}-edl.json";
@@ -839,7 +888,7 @@ public class VideoCompileStepExecutor : IStepExecutor
                     progressContext: context, totalOutputSeconds: timeline.TotalSec,
                     music: resolvedMusic, sourceHasAudioByIndex: sourceHasAudioByIndex,
                     seamPlans: seamPlans, timeline: timeline, transitionConfig: config, programFade: programFade,
-                    colorGradeFilter: colorGradeFilter);
+                    colorGradeFilter: colorGradeFilter, sfx: resolvedSfx);
             }
             else
             {
@@ -858,7 +907,7 @@ public class VideoCompileStepExecutor : IStepExecutor
                         progressContext: context, totalOutputSeconds: timeline.TotalSec,
                         music: resolvedMusic, sourceHasAudio: sourceHasAudio,
                         seamPlans: seamPlans, timeline: timeline, transitionConfig: config, programFade: programFade,
-                        inserts: resolvedInserts, colorGradeFilter: colorGradeFilter)
+                        inserts: resolvedInserts, colorGradeFilter: colorGradeFilter, sfx: resolvedSfx)
                     : await EncodeStreamCopyAsync(scratch, localVideoPath, encodedLocalPath, resolvedSpans, timeout, context.CancellationToken);
             }
 
@@ -915,6 +964,9 @@ public class VideoCompileStepExecutor : IStepExecutor
 
             if (colorGradeNode is not null)
                 outputSummary["colorGrade"] = JsonNode.Parse(colorGradeNode.ToJsonString(EnvelopeJsonOptions));
+
+            if (sfxNode is not null)
+                outputSummary["sfx"] = JsonNode.Parse(sfxNode.ToJsonString(EnvelopeJsonOptions));
 
             outputSummary["audio"] = JsonNode.Parse(audioNode.ToJsonString(EnvelopeJsonOptions));
 
@@ -1256,6 +1308,14 @@ public class VideoCompileStepExecutor : IStepExecutor
         // exact same reason — a completely separate id namespace used only by ResolveMusicAsync to
         // resolve a MusicPlanOutput.TrackId to a ProjectFileId, never a time. A `Keep` span naming
         // a music-track id must also fail UNKNOWN_ID.
+        //
+        // Sound-effect clip candidates (artifact.SfxCandidates, ids "x{n}") are excluded for the
+        // same reason again — an SFX-clip id names a FILE (resolved by ResolveSfxAsync to a
+        // ProjectFileId), never a moment. Note the inverse relationship for SFX ANCHOR ids: an
+        // SfxCue.AnchorId deliberately IS one of the cut-anchor ids this index resolves
+        // (s{n}/g{n}/t{n}) — "this sound fires when this item begins" is the whole anchoring
+        // model — but it is validated against OfferedIds by ResolveSfxAsync, never accepted
+        // merely for existing here.
         //
         // Look groups (artifact.LookGroups, ids "k{n}") are excluded for the same reason as
         // placements and music candidates — but note the stronger property: k{n} is a purely
@@ -2615,6 +2675,262 @@ public class VideoCompileStepExecutor : IStepExecutor
         };
     }
 
+    // ---------------------------------------------------------------------
+    // Sound effects (see docs/video-editing.md "Sound effects"): plan resolution — soft-failure
+    // only, exactly like graphics/music/inserts/grade above. A missing/bad SFX plan degrades to
+    // "no SFX applied"; a single bad cue (unoffered clip/anchor id, cut-away anchor, bad file)
+    // drops THAT cue and keeps the rest — the cut is always the primary deliverable.
+    // ---------------------------------------------------------------------
+
+    private static JsonObject DroppedSfxNode(string reason, string? sfxId, string? anchorId = null) => new()
+    {
+        ["reason"] = reason,
+        ["sfxId"] = sfxId ?? "",
+        ["anchorId"] = anchorId ?? ""
+    };
+
+    private async Task<(List<ResolvedSfxCue> Cues, JsonObject SfxNode)> ResolveSfxAsync(
+        StepExecutionContext context,
+        VideoCompileStepConfig config,
+        VideoAnalysisArtifact artifact,
+        OutputTimeline timeline,
+        VideoScratchSpace scratch,
+        bool hasBaseAudio,
+        CancellationToken ct)
+    {
+        var sfx = new JsonObject { ["enabled"] = true, ["applied"] = false, ["unavailable"] = false };
+        List<JsonObject> dropped = new();
+        var cueNodes = new JsonArray();
+        List<ResolvedSfxCue> resolved = [];
+
+        (List<ResolvedSfxCue>, JsonObject) Finish()
+        {
+            sfx["appliedCueCount"] = resolved.Count;
+            sfx["applied"] = resolved.Count > 0;
+            sfx["cues"] = cueNodes;
+            sfx["dropped"] = ToJsonArray(dropped);
+            return (resolved, sfx);
+        }
+
+        // ---- 1. Resolve + parse the plan. Unlike music, there is no deterministic
+        // config-supplied fallback to fall through to — no plan simply means no SFX. ----
+        if (config.SfxPlan is null)
+        {
+            sfx["reason"] = "no_plan_configured";
+            return Finish();
+        }
+
+        (string? planJson, string? planError) = ResolveDecisionJson(context, config.SfxPlan, "SfxPlan");
+        if (planJson is null)
+        {
+            _logger.LogInformation(
+                "VideoCompile step {StepOrder}: SfxPlan unresolved: {Error}", context.Step.StepOrder, planError);
+            sfx["reason"] = "plan_unresolved";
+            return Finish();
+        }
+
+        SfxPlanOutput? plan = null;
+        try
+        {
+            plan = JsonSerializer.Deserialize<SfxPlanOutput>(planJson, DecisionJsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogInformation(
+                ex, "VideoCompile step {StepOrder}: SfxPlan is not valid JSON.", context.Step.StepOrder);
+        }
+
+        if (plan is null)
+        {
+            sfx["reason"] = "plan_invalid_json";
+            return Finish();
+        }
+
+        // An empty cue list is a fully VALID plan (the sound designer judged no effect is
+        // needed) — reported distinctly from every failure reason, mirroring the color grade
+        // path's own first-class look_none decision.
+        if (plan.Cues.Count == 0)
+        {
+            sfx["reason"] = "empty_plan";
+            return Finish();
+        }
+
+        // ---- 2. A cue is layered over the base audio mix, so it needs one to exist. SFX-only
+        // audio (synthesizing a track for an otherwise-audio-less output) is deliberately not
+        // built — see docs/video-editing.md "Sound effects". ----
+        if (!hasBaseAudio)
+        {
+            sfx["reason"] = "no_base_audio";
+            foreach (SfxCue cue in plan.Cues)
+                dropped.Add(DroppedSfxNode("no_base_audio", cue.SfxId, cue.AnchorId));
+            return Finish();
+        }
+
+        // ---- 3. amix normalize-option probe — the same hard requirement (and the same cached
+        // probe) music has: without normalize=0, amix would quietly reduce the dialogue level. ----
+        if (!await IsAmixNormalizeAvailableAsync(ct))
+        {
+            sfx["unavailable"] = true;
+            sfx["reason"] = "The ffmpeg build in this container's amix filter does not expose a normalize option.";
+            return Finish();
+        }
+
+        // ---- 4. Per-cue resolution. Every id check is against the OFFERED sets, not merely
+        // "exists in the artifact" — the same stricter-than-exists discipline Keep spans get. ----
+        HashSet<string> offeredSfxIds = new(artifact.OfferedSfxIds ?? [], StringComparer.Ordinal);
+        HashSet<string> offeredAnchorIds = new(artifact.OfferedIds ?? [], StringComparer.Ordinal);
+        Dictionary<string, (double Start, double End, int SourceIndex)> idTimes = BuildIdTimeIndex(artifact);
+
+        IReadOnlyList<ProjectWorkspaceFile>? files = null;
+        // One local file per DISTINCT clip — several cues may replay the same clip, which must
+        // not cost several downloads (each still becomes its own ffmpeg input below, since each
+        // cue's branch has its own trim/gain/delay).
+        Dictionary<Guid, (string LocalPath, MediaProbeResult Probe)> clipCache = new();
+
+        double maxCueSeconds = Math.Max(0.25, config.MaxSfxCueSeconds);
+        double leadSec = Math.Max(0, config.SfxLeadMs) / 1000.0;
+        double lagSec = Math.Max(0, config.SfxLagMs) / 1000.0;
+        double fadeOutSec = Math.Max(0, config.SfxFadeOutMs) / 1000.0;
+        int maxCues = Math.Max(0, config.MaxSfxCues);
+
+        foreach (SfxCue cue in plan.Cues)
+        {
+            if (resolved.Count >= maxCues)
+            {
+                dropped.Add(DroppedSfxNode("max_cues_exceeded", cue.SfxId, cue.AnchorId));
+                continue;
+            }
+
+            VideoAnalysisSfxCandidate? candidate = artifact.SfxCandidates?.FirstOrDefault(c => c.Id == cue.SfxId);
+            if (string.IsNullOrWhiteSpace(cue.SfxId) || !offeredSfxIds.Contains(cue.SfxId) || candidate is null)
+            {
+                dropped.Add(DroppedSfxNode("unknown_sfx_id", cue.SfxId, cue.AnchorId));
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(cue.AnchorId) || !offeredAnchorIds.Contains(cue.AnchorId) ||
+                !idTimes.TryGetValue(cue.AnchorId, out (double Start, double End, int SourceIndex) anchor))
+            {
+                dropped.Add(DroppedSfxNode("unknown_anchor_id", cue.SfxId, cue.AnchorId));
+                continue;
+            }
+
+            // The anchor's START moment, mapped through the cut to the output timeline — the
+            // same MapToOutputSec machinery graphics overlays and music lift windows already
+            // trust. Null means the moment was cut away by the edit decision: the cue is
+            // dropped, never relocated to some other moment the model did not choose.
+            double? mappedStart = timeline.MapToOutputSec(anchor.Start, anchor.SourceIndex);
+            if (mappedStart is null)
+            {
+                dropped.Add(DroppedSfxNode("anchor_cut_away", cue.SfxId, cue.AnchorId));
+                continue;
+            }
+
+            // Timing/Volume words normalize exactly like music's Intensity/Ducking words —
+            // unknown words fall back to the neutral value rather than dropping the cue. The
+            // Lead/Lag shift is applied ON THE OUTPUT TIMELINE (after mapping), so a shifted cue
+            // can never land inside a cut region the anchor's own moment survived.
+            string timing = cue.Timing is "OnCut" or "Lead" or "Lag" ? cue.Timing : "OnCut";
+            string volume = cue.Volume is "Subtle" or "Normal" or "Strong" ? cue.Volume : "Normal";
+
+            double outputStart = timing switch
+            {
+                "Lead" => mappedStart.Value - leadSec,
+                "Lag" => mappedStart.Value + lagSec,
+                _ => mappedStart.Value
+            };
+            outputStart = Math.Clamp(outputStart, 0, Math.Max(0, timeline.TotalSec));
+
+            // ---- Clip file: project-scope + audio-mime allowlist + download + probe, exactly
+            // the ResolveMusicAsync discipline (a corrupt clip would otherwise fail the ENTIRE
+            // ffmpeg invocation as an extra -i input). ----
+            if (!clipCache.TryGetValue(candidate.ProjectFileId, out (string LocalPath, MediaProbeResult Probe) clip))
+            {
+                files ??= await _workspace.ListFilesAsync(context.Execution.ProjectId, ct);
+                ProjectWorkspaceFile? file = files.FirstOrDefault(f => f.Id == candidate.ProjectFileId);
+                if (file is null)
+                {
+                    dropped.Add(DroppedSfxNode("sfx_not_in_project", cue.SfxId, cue.AnchorId));
+                    continue;
+                }
+
+                if (!file.MimeType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase))
+                {
+                    dropped.Add(DroppedSfxNode("sfx_not_audio", cue.SfxId, cue.AnchorId));
+                    continue;
+                }
+
+                string ext = Path.GetExtension(file.StorageKey) switch { "" => ".wav", var e => e };
+                string localPath = scratch.GetPath($"sfx-{candidate.Id}{ext}");
+                try
+                {
+                    await _workspace.DownloadStorageKeyToFileAsync(context.Execution.ProjectId, file.StorageKey, localPath, ct);
+                    MediaProbeResult probe = await _mediaProbe.ProbeAsync(localPath, ct);
+                    if (probe.DurationSec <= 0 || probe.AudioCodec is null)
+                        throw new InvalidOperationException("SFX clip has no audio stream or zero duration.");
+                    clip = (localPath, probe);
+                    clipCache[candidate.ProjectFileId] = clip;
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(
+                        ex, "VideoCompile step {StepOrder}: SFX clip download/probe failed; dropping cue {SfxId}.",
+                        context.Step.StepOrder, cue.SfxId);
+                    dropped.Add(DroppedSfxNode("sfx_download_or_probe_failed", cue.SfxId, cue.AnchorId));
+                    continue;
+                }
+            }
+
+            // Play window: the clip's own length, capped by MaxSfxCueSeconds (a long file
+            // misused as a cue must never become a de-facto bed) and by the remaining output.
+            double playDuration = Math.Min(clip.Probe.DurationSec, maxCueSeconds);
+            playDuration = Math.Min(playDuration, Math.Max(0, timeline.TotalSec - outputStart));
+            if (playDuration < 0.05)
+            {
+                dropped.Add(DroppedSfxNode("cue_window_empty", cue.SfxId, cue.AnchorId));
+                continue;
+            }
+
+            int gainDb = Math.Clamp(volume switch
+            {
+                "Subtle" => config.SfxSubtleDb,
+                "Strong" => config.SfxStrongDb,
+                _ => config.SfxNormalDb
+            }, -40, 0);
+            double gainLinear = Math.Round(Math.Pow(10, gainDb / 20.0), 5);
+            double cueFadeOut = Math.Min(fadeOutSec, playDuration / 2.0);
+
+            resolved.Add(new ResolvedSfxCue(
+                SfxId: cue.SfxId,
+                AnchorId: cue.AnchorId,
+                ProjectFileId: candidate.ProjectFileId,
+                ClipName: candidate.FileName,
+                LocalPath: clip.LocalPath,
+                OutputStartSec: outputStart,
+                PlayDurationSec: playDuration,
+                GainLinear: gainLinear,
+                FadeOutSec: cueFadeOut));
+
+            cueNodes.Add(new JsonObject
+            {
+                ["sfxId"] = cue.SfxId,
+                ["anchorId"] = cue.AnchorId,
+                ["clipName"] = candidate.FileName,
+                ["timing"] = timing,
+                ["volume"] = volume,
+                ["gainDb"] = gainDb,
+                ["outputStartSec"] = Math.Round(outputStart, 3),
+                ["playDurationSec"] = Math.Round(playDuration, 3)
+            });
+        }
+
+        return Finish();
+    }
+
     /// <summary>
     /// Probes whether the ffmpeg build's <c>amix</c> filter exposes a <c>normalize</c> option,
     /// caching the result for the process lifetime — mirrors <see cref="IsDrawtextAvailableAsync"/>
@@ -2787,7 +3103,10 @@ public class VideoCompileStepExecutor : IStepExecutor
         // Color grading (see docs/video-editing.md "Color grading"): a fully-built, first-party
         // filter chain from ColorGradeFilterBuilder, or null on every pre-grade call path — the
         // cut stage below is then byte-identical to before this addition.
-        string? colorGradeFilter = null)
+        string? colorGradeFilter = null,
+        // Sound effects (see docs/video-editing.md "Sound effects"): null/empty on every pre-SFX
+        // call path — the audio label plumbing below is then untouched.
+        IReadOnlyList<ResolvedSfxCue>? sfx = null)
     {
         // Half-open [SnappedStart, SnappedEnd) per span, matching ToStartFrame(floor)/ToEndFrame
         // (ceiling)'s own semantics (EndFrame is the first EXCLUDED frame — see MapSourceToOutputSec's
@@ -2833,6 +3152,16 @@ public class VideoCompileStepExecutor : IStepExecutor
         // test asserting it) completely untouched by this addition.
         int musicInputIndex = 1 + assetOverlays.Count + screenInserts.Count;
 
+        // Sound effects (see docs/video-editing.md "Sound effects"): each cue's clip is its own
+        // extra ffmpeg input, added AFTER the music input (so musicInputIndex — and every
+        // existing filter-string test asserting it — stays completely untouched by this
+        // addition). A cue needs a base audio chain to be layered over; ResolveSfxAsync already
+        // guarantees zero cues when neither dialogue nor music exists, so the guard here is
+        // defensive symmetry, not a second decision point.
+        List<ResolvedSfxCue> sfxCues = sfx?.ToList() ?? [];
+        bool hasSfx = sfxCues.Count > 0 && (sourceHasAudio || music is not null);
+        int sfxInputBase = musicInputIndex + (music is not null ? 1 : 0);
+
         // ---- Cut transitions (see docs/video-editing.md "Cut transitions"): this select-path
         // encoder only ever sees non-overlapping seam treatments (HardCut/AudioOnly/DipCut — any
         // overlapping seam routes the whole compile to EncodeReencodeSegmentedAsync instead), so
@@ -2876,17 +3205,36 @@ public class VideoCompileStepExecutor : IStepExecutor
         // at all (map/-c:a below become conditional on this). With music, there is nothing to
         // duck against, so the music branch's own output becomes the audio final label directly —
         // it is the entire output audio, not mixed with anything.
-        string audioCutLabel = music is not null ? "[adial]" : audioFinalLabelInner;
-        string musicAwareAudioFilter = music is not null
+        // Sound effects: when cues are present, the pre-SFX audio chain (the plain dialogue cut,
+        // the dialogue+music mix, or the music-only branch) ends at an internal [abase] label
+        // instead of the audio final label directly, and the SFX mix stage appended below becomes
+        // the new audio final label — the exact [aout]->[adial] label-chaining convention music
+        // itself established. When hasSfx is false, audioBaseLabel IS audioFinalLabelInner and
+        // every string below is byte-identical to the pre-SFX path.
+        string audioBaseLabel = hasSfx ? "[abase]" : audioFinalLabelInner;
+        string audioCutLabel = music is not null ? "[adial]" : audioBaseLabel;
+        // aformat on the dialogue cut is needed by BOTH mixes (music's and SFX's) — amix
+        // requires matching sample rate/channel layout across its inputs.
+        string musicAwareAudioFilter = music is not null || hasSfx
             ? $"{audioFilter},aformat=sample_rates=48000:channel_layouts=stereo"
             : audioFilter;
         string? audioPart = !sourceHasAudio
-            ? (music is null ? null : MusicMixFilterBuilder.BuildMusicBranch(musicInputIndex, music, outLabel: audioFinalLabelInner))
+            ? (music is null ? null : MusicMixFilterBuilder.BuildMusicBranch(musicInputIndex, music, outLabel: audioBaseLabel))
             : (music is null
-                ? $"[0:a]{audioFilter}{audioFinalLabelInner}"
+                ? $"[0:a]{musicAwareAudioFilter}{audioBaseLabel}"
                 : $"[0:a]{musicAwareAudioFilter}{audioCutLabel};" +
                   MusicMixFilterBuilder.BuildMusicBranch(musicInputIndex, music) + ";" +
-                  MusicMixFilterBuilder.BuildMixStage(audioCutLabel, finalLabel: audioFinalLabelInner));
+                  MusicMixFilterBuilder.BuildMixStage(audioCutLabel, finalLabel: audioBaseLabel));
+
+        if (hasSfx && audioPart is not null)
+        {
+            var sfxParts = new List<string> { audioPart };
+            for (int k = 0; k < sfxCues.Count; k++)
+                sfxParts.Add(SfxMixFilterBuilder.BuildCueBranch(sfxInputBase + k, k, sfxCues[k]));
+            sfxParts.Add(SfxMixFilterBuilder.BuildMixStage(audioBaseLabel, sfxCues.Count, finalLabel: audioFinalLabelInner));
+            audioPart = string.Join(";", sfxParts);
+        }
+
         bool hasAudioOutput = audioPart is not null;
 
         // Tail stage(s) — appended after the existing cut/overlay/music filterComplex below.
@@ -3040,6 +3388,20 @@ public class VideoCompileStepExecutor : IStepExecutor
             args.Add(music.LocalPath);
         }
 
+        // Sound effects: one extra -i per cue, AFTER the music input, in the same order the
+        // BuildCueBranch calls above assumed (input index sfxInputBase + k). Several cues
+        // replaying the same clip repeat the same local path — each cue's branch still needs
+        // its own input stream to trim/gain/delay independently. Every path was downloaded to
+        // local scratch AND ffprobe-validated by ResolveSfxAsync before this method ever saw it.
+        if (hasSfx)
+        {
+            foreach (ResolvedSfxCue cue in sfxCues)
+            {
+                args.Add("-i");
+                args.Add(cue.LocalPath);
+            }
+        }
+
         // R20, extended for Phase 3: overlays can make one long filter string even with very few
         // spans (many drawbox/drawtext/overlay filters chained), so the script-file threshold now
         // also accounts for filter STRING LENGTH, not just segment count — but ONLY when overlays
@@ -3053,7 +3415,7 @@ public class VideoCompileStepExecutor : IStepExecutor
         // safety net.
         bool hasOverlays = textOverlays.Count > 0 || assetOverlays.Count > 0;
         bool hasMusic = music is not null;
-        if (spans.Count > FilterComplexScriptThreshold || ((hasOverlays || hasMusic || hasInserts) && filterComplex.Length > 4000))
+        if (spans.Count > FilterComplexScriptThreshold || ((hasOverlays || hasMusic || hasInserts || hasSfx) && filterComplex.Length > 4000))
         {
             string scriptPath = scratch.GetPath("filter_complex.txt");
             await File.WriteAllTextAsync(scriptPath, filterComplex, ct);
@@ -3137,7 +3499,13 @@ public class VideoCompileStepExecutor : IStepExecutor
         // filter chain from ColorGradeFilterBuilder, applied as its own stage directly after the
         // concat/transition stage (before overlays), or null on every pre-grade call path — the
         // label plumbing below is then untouched.
-        string? colorGradeFilter = null)
+        string? colorGradeFilter = null,
+        // Sound effects (see docs/video-editing.md "Sound effects"): null/empty on every pre-SFX
+        // call path — the audio label plumbing below is then untouched. Cue timing is pure
+        // output-timeline adelay, so cues work identically on this segmented path (multi-source
+        // and crossfade-overlap compiles included) — unlike screen inserts, there is no per-span
+        // timeline bookkeeping for a cue to disagree with.
+        IReadOnlyList<ResolvedSfxCue>? sfx = null)
     {
         // Deterministic ffmpeg -i order: sorted distinct source indices actually referenced. Input
         // 0 is not necessarily "the" primary source here (that's canonicalMedia's own index,
@@ -3267,12 +3635,19 @@ public class VideoCompileStepExecutor : IStepExecutor
         bool hasGrade = colorGradeFilter is not null;
         string videoConcatLabel = hasOverlays || hasGrade ? "[vcat]" : videoFinalLabel;
 
+        // Sound effects (see docs/video-editing.md "Sound effects"): mirrors the single-source
+        // path's own [abase] convention exactly — when cues are present, the pre-SFX audio chain
+        // ends at [abase] and the SFX mix stage appended below becomes the audio final label.
+        List<ResolvedSfxCue> sfxCues = sfx?.ToList() ?? [];
+        bool hasSfx = sfxCues.Count > 0 && (anySourceHasAudio || music is not null);
+        string audioBaseLabel = hasSfx ? "[abase]" : audioFinalLabelInner;
+
         // Background music (see docs/video-editing.md "Background music"): mirrors
         // EncodeReencodeAsync's own [aout]-vs-[adial] flip. No extra aformat is needed here on the
         // dialogue side — every per-span atrim branch above already ends in
         // aformat=sample_rates=48000:channel_layouts=stereo, so the concat output already matches
         // the music branch's own format by construction.
-        string? audioConcatLabel = anySourceHasAudio ? (music is not null ? "[adial]" : audioFinalLabelInner) : null;
+        string? audioConcatLabel = anySourceHasAudio ? (music is not null ? "[adial]" : audioBaseLabel) : null;
 
         // Cut transitions: groups spans into maximal non-overlapping "blocks" (each one plain
         // concat), chained pairwise via xfade/acrossfade at every seam with OverlapSec > 0 — see
@@ -3354,14 +3729,28 @@ public class VideoCompileStepExecutor : IStepExecutor
             if (anySourceHasAudio)
             {
                 filterParts.Add(MusicMixFilterBuilder.BuildMusicBranch(musicInputIndex, music));
-                filterParts.Add(MusicMixFilterBuilder.BuildMixStage(audioConcatLabel!, finalLabel: audioFinalLabelInner));
+                filterParts.Add(MusicMixFilterBuilder.BuildMixStage(audioConcatLabel!, finalLabel: audioBaseLabel));
             }
             else
             {
                 // No dialogue anywhere in this compile to duck against — the music branch's own
-                // output becomes the audio final label directly, exactly as the single-source path does.
-                filterParts.Add(MusicMixFilterBuilder.BuildMusicBranch(musicInputIndex, music, outLabel: audioFinalLabelInner));
+                // output becomes the audio base/final label directly, exactly as the single-source
+                // path does.
+                filterParts.Add(MusicMixFilterBuilder.BuildMusicBranch(musicInputIndex, music, outLabel: audioBaseLabel));
             }
+        }
+
+        // Sound effects: cue branches + the SFX mix stage, layered over whatever base audio the
+        // stages above produced ([abase] — the dialogue concat, the dialogue+music mix, or the
+        // music-only branch). Cue input index: after every SOURCE input, every asset-overlay
+        // input, AND the music input, mirroring the single-source path's own "cues are the last
+        // inputs" rule with this path's own multi-source offsets.
+        if (hasSfx)
+        {
+            int sfxInputBase = orderedSourceIndices.Count + assetOverlays.Count + (music is not null ? 1 : 0);
+            for (int k = 0; k < sfxCues.Count; k++)
+                filterParts.Add(SfxMixFilterBuilder.BuildCueBranch(sfxInputBase + k, k, sfxCues[k]));
+            filterParts.Add(SfxMixFilterBuilder.BuildMixStage(audioBaseLabel, sfxCues.Count, finalLabel: audioFinalLabelInner));
         }
 
         bool hasAudioOutput = anySourceHasAudio || music is not null;
@@ -3413,6 +3802,18 @@ public class VideoCompileStepExecutor : IStepExecutor
 
             args.Add("-i");
             args.Add(music.LocalPath);
+        }
+
+        // Sound effects: one extra -i per cue, AFTER the music input, in the same order the
+        // BuildCueBranch calls above assumed (input index sfxInputBase + k) — every path was
+        // downloaded to local scratch AND ffprobe-validated by ResolveSfxAsync.
+        if (hasSfx)
+        {
+            foreach (ResolvedSfxCue cue in sfxCues)
+            {
+                args.Add("-i");
+                args.Add(cue.LocalPath);
+            }
         }
 
         // Always scripted to a file rather than passed inline via -filter_complex: a multi-source
@@ -3681,7 +4082,8 @@ public class VideoCompileStepExecutor : IStepExecutor
         JsonObject? programFade = null,
         double? transitionOverlapSec = null,
         JsonObject? inserts = null,
-        JsonObject? colorGrade = null)
+        JsonObject? colorGrade = null,
+        JsonObject? sfx = null)
     {
         var segmentsArray = new JsonArray();
         for (int i = 0; i < spans.Count; i++)
@@ -3739,6 +4141,10 @@ public class VideoCompileStepExecutor : IStepExecutor
         // Color grading: same discipline — only present when EnableColorGrade=true.
         if (colorGrade is not null)
             edl["colorGrade"] = colorGrade;
+
+        // Sound effects: same discipline — only present when EnableSfx=true.
+        if (sfx is not null)
+            edl["sfx"] = sfx;
 
         // Bug group C: unlike graphics/music, always present — audio isn't opt-in the way those
         // phases are, so a dropped audio stream is never silently unreported.

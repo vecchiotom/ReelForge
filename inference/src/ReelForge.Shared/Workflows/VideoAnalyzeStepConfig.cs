@@ -292,4 +292,23 @@ public sealed record VideoAnalyzeStepConfig(
     /// <summary>Tracks shorter than this are dropped — a sub-second plate is not a useful compositing target.</summary>
     double MinInsertRegionSeconds = 1.0,
     /// <summary>Cap on offered insert-region tracks across the whole artifact (longest kept).</summary>
-    int MaxInsertRegions = 8);
+    int MaxInsertRegions = 8,
+    // -- Sound effects (see docs/video-editing.md "Sound effects"). Off by default, purely
+    //    additive — a false/default OfferSfxClips produces a byte-identical view/artifact to
+    //    before this addition. Project-level (not per-source), exactly like OfferMusicTracks:
+    //    every audio/* project file is an SFX candidate regardless of which source clip(s) this
+    //    step analyzed. Appended AFTER MaxInsertRegions so every existing positional-construction
+    //    call site and JSON payload keeps compiling/deserializing unchanged. --
+    /// <summary>
+    /// When <c>true</c>, enumerates every <c>audio/*</c> project file as an <c>x{n}</c> SFX-clip
+    /// candidate (<c>view.sfxClips</c>) for a downstream <c>AgentType.SoundDesigner</c> step. No
+    /// ffprobe of the candidates (the same rationale as <see cref="OfferMusicTracks"/>: the cue's
+    /// play window is resolved server-side at compile time regardless of the clip's exact length,
+    /// so probing every candidate here would only cost N downloads for a list the agent picks a
+    /// few items from). The candidate pool deliberately overlaps <see cref="OfferMusicTracks"/>'
+    /// — both enumerate <c>audio/*</c> files, under independent id namespaces — since nothing
+    /// structural distinguishes an uploaded stinger from an uploaded bed; the sound-designer
+    /// agent's prompt tells it to choose short one-shot clips by file name.
+    /// </summary>
+    bool OfferSfxClips = false,
+    int MaxSfxClips = 40);

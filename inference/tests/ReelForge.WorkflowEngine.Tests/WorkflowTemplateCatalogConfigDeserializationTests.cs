@@ -574,4 +574,89 @@ public class WorkflowTemplateCatalogConfigDeserializationTests
         config.Expect.Should().NotBeNull();
         config.Expect!.MinItems.Should().Be(1);
     }
+
+    // =======================================================================
+    // video-derush-edit-sfx (see docs/video-editing.md "Sound effects")
+    // =======================================================================
+
+    [Fact]
+    public void VideoAnalyze_sfx_step_literal_deserializes_against_the_real_config_type()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-sfx", 0);
+        step.StepType.Should().Be(StepType.VideoAnalyze);
+        step.VideoAnalyzeConfigJson.Should().NotBeNullOrWhiteSpace();
+
+        VideoAnalyzeStepConfig? config = JsonSerializer.Deserialize<VideoAnalyzeStepConfig>(
+            step.VideoAnalyzeConfigJson!, ConfigJsonOptions);
+
+        config.Should().NotBeNull();
+        config!.Version.Should().Be(1);
+        config.Source.Kind.Should().Be(VideoSourceKind.ProjectFile);
+        config.OfferSfxClips.Should().BeTrue();
+
+        // Defaults not set by the literal — confirm they fall back to sane values rather than
+        // being silently nulled/zeroed by a future property-name mismatch. OfferMusicTracks must
+        // stay off: this template offers SFX clips only, and the two candidate lists are
+        // independent features.
+        config.MaxSfxClips.Should().Be(40);
+        config.OfferMusicTracks.Should().BeFalse();
+    }
+
+    [Fact]
+    public void The_third_video_derush_edit_sfx_step_is_the_sound_designer_agent_with_no_deterministic_config()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-sfx", 2);
+        step.AgentType.Should().Be(AgentType.SoundDesigner);
+        step.StepType.Should().Be(StepType.Agent);
+        step.VideoAnalyzeConfigJson.Should().BeNull();
+        step.VideoCompileConfigJson.Should().BeNull();
+        step.ExtractConfigJson.Should().BeNull();
+        step.AgentInputContextMode.Should().Be(AgentInputContextMode.FullWorkflow);
+    }
+
+    [Fact]
+    public void VideoCompile_sfx_step_literal_deserializes_against_the_real_config_type()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-sfx", 3);
+        step.StepType.Should().Be(StepType.VideoCompile);
+        step.VideoCompileConfigJson.Should().NotBeNullOrWhiteSpace();
+
+        VideoCompileStepConfig? config = JsonSerializer.Deserialize<VideoCompileStepConfig>(
+            step.VideoCompileConfigJson!, ConfigJsonOptions);
+
+        config.Should().NotBeNull();
+        config!.Version.Should().Be(1);
+        config.Decision.From.Should().Be(ExtractInputSource.Step);
+        config.Decision.StepOrder.Should().Be(2);
+        config.AnalysisStepOrder.Should().Be(1);
+        config.EnableSfx.Should().BeTrue();
+        config.SfxPlan.Should().NotBeNull();
+        config.SfxPlan!.From.Should().Be(ExtractInputSource.Step);
+        config.SfxPlan.StepOrder.Should().Be(3);
+
+        // Untouched defaults — confirm they really landed rather than being silently
+        // nulled/zeroed by a future property-name mismatch.
+        config.MaxSfxCues.Should().Be(8);
+        config.MaxSfxCueSeconds.Should().Be(4.0);
+        config.SfxSubtleDb.Should().Be(-18);
+        config.SfxNormalDb.Should().Be(-12);
+        config.SfxStrongDb.Should().Be(-6);
+        config.SfxLeadMs.Should().Be(150);
+        config.SfxLagMs.Should().Be(150);
+        config.SfxFadeOutMs.Should().Be(120);
+        config.EnableMusic.Should().BeFalse();
+        config.MinSegmentMs.Should().Be(800);
+    }
+
+    [Fact]
+    public void The_fifth_video_derush_edit_sfx_step_is_a_ReviewLoop_looping_back_to_the_story_editor()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-sfx", 4);
+        step.AgentType.Should().Be(AgentType.VideoReviewAgent);
+        step.StepType.Should().Be(StepType.ReviewLoop);
+        step.LoopTargetStepOrder.Should().Be(2, "must loop back to the story-editor step so the story editor, sound designer, and compile all re-run");
+        step.MaxIterations.Should().Be(3);
+        step.MinScore.Should().Be(8);
+        step.AgentInputContextMode.Should().Be(AgentInputContextMode.FullWorkflow);
+    }
 }

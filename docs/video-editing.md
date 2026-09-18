@@ -30,6 +30,7 @@ executors, agents in general) see `CLAUDE.md`.
 - [The shared room infrastructure](#the-shared-room-infrastructure)
 - [The graphics room](#the-graphics-room)
 - [Color grading](#color-grading)
+- [Sound effects](#sound-effects)
 - [Security: why ffmpeg is not in the sandbox](#security-why-ffmpeg-is-not-in-the-sandbox)
 - [Explicitly not built](#explicitly-not-built)
 
@@ -300,6 +301,8 @@ before chunking it — wasted compute at best, a very large in-memory string at 
 | `MaxSharpnessShots` | `24` | Phase 4: step-wide ceiling on sharpness measurements when `DetectSharpness` is on — genuinely step-wide like `MaxCaptionedShots`, not per source. Costs one extra ffmpeg invocation per measured shot |
 | `OfferMusicTracks` | `false` | Enumerates every `audio/*` project file as an `m{n}` music-track candidate (`view.musicTracks`) for a downstream `AgentType.MusicSupervisor` step — project-level, not per-source. See [Background music](#background-music) |
 | `MaxMusicTracks` | `20` | Caps `view.musicTracks` |
+| `OfferSfxClips` | `false` | Enumerates every `audio/*` project file as an `x{n}` SFX-clip candidate (`view.sfxClips`) for a downstream `AgentType.SoundDesigner` step — project-level, sharing one `ListFilesAsync` call with `OfferMusicTracks` when both are on. See [Sound effects](#sound-effects) |
+| `MaxSfxClips` | `40` | Caps `view.sfxClips` |
 | `DetectInsertRegions` | `false` | Phase 5: chroma-plate quad tracking for tracked screen inserts — one extra medium-res grid ffmpeg pass per source + pure C# (`ChromaQuadTracker`); tracks offered as `r{n}` ids (`view.insertRegions`) — see [Tracked screen inserts (Phase 5)](#tracked-screen-inserts-phase-5) |
 | `InsertRegionColor` | `"green"` | `"green"`/`"blue"`/`"magenta"` — matched entirely in C# channel-ratio space, NEVER an ffmpeg value; unknown values fall back to green |
 | `InsertSampleFps` | `10.0` | Sample rate of the dedicated tracking pass (clamped 0.5..30); denser than Phase 1's 2.0 because a moving plate needs temporally dense corners |
@@ -369,6 +372,13 @@ before chunking it — wasted compute at best, a very large in-memory string at 
 | `MaxInserts` | `3` | Cap on applied inserts; excess dropped in plan order |
 | `MaxInsertExprKeyframes` | `96` | Per-insert cap on corner keyframes baked into the `perspective` expressions (uniform downsample; clamped 2..500) |
 | `InsertOverscan` | `0.02` | Fractional outward expansion of the tracked quad about its centroid, hiding the plate's edge fringe under the insert (clamped 0..0.1) |
+| `SfxPlan` | `null` | Sound effects: `ExtractInputRef` (`Previous`/`Step` only) — which step's resolved `SfxPlanOutput` to apply. `null` = no SFX looked up. Unlike music, deliberately NO deterministic no-agent fallback field — see [Sound effects](#sound-effects) |
+| `EnableSfx` | `false` | Mixes the resolved SFX cues into the output audio during the same encode. `false` (default) is byte-identical to the pre-SFX compile path. Requires `Mode = Reencode` and `AudioCodec != "copy"` (`SFX_REQUIRES_REENCODE`/`SFX_REQUIRES_AUDIO_REENCODE`) |
+| `MaxSfxCues` | `8` | Cap on applied cues; excess dropped in plan order (`max_cues_exceeded`) |
+| `MaxSfxCueSeconds` | `4.0` | Hard cap on any single cue's play window — a long file misused as a cue is trimmed, never a de-facto bed |
+| `SfxSubtleDb` / `SfxNormalDb` / `SfxStrongDb` | `-18` / `-12` / `-6` | Cue gain (dBFS), keyed by the model's `Volume` word. Clamped `[-40, 0]` |
+| `SfxLeadMs` / `SfxLagMs` | `150` / `150` | How far a `Timing: "Lead"`/`"Lag"` cue fires before/after its anchor's output-timeline start moment |
+| `SfxFadeOutMs` | `120` | Declick fade-out at the end of each cue's play window, capped at half the window |
 | `ColorGradePlan` | `null` | Color grading: `ExtractInputRef` (`Previous`/`Step` only) — which step's resolved `ColorGradePlanOutput` to apply (a solo `Agent(Colorist)` step or a `ColorGradeRoom` step; both emit the same shape). `null` = no grade looked up. See [Color grading](#color-grading) |
 | `EnableColorGrade` | `false` | Applies the resolved colour grade (a first-party `eq`/`colorbalance`/`colorlevels`/`hue` chain keyed by the plan's enum words — `ColorGradeFilterBuilder`) during the same encode, before overlays/inserts. `false` (default) is byte-identical to the pre-grade compile path. Requires `Mode = Reencode` (`COLOR_GRADE_REQUIRES_REENCODE`); every plan-level failure degrades to "no grade applied" |
 | `Expect` | `null` | Optional structural checks (`MinOutputSeconds`, `MaxOutputSeconds`, `MinRetainedRatio` default `0.15`, `MaxRetainedRatio`) |
@@ -2328,6 +2338,206 @@ Deserialization-tested in `WorkflowTemplateCatalogConfigDeserializationTests.cs`
 
 ---
 
+## Sound effects
+
+Optional discrete sound-effect cues — whooshes, clicks, dings, transition stingers, UI sounds —
+mixed over the compiled edit's audio during `VideoCompile`'s encode, each fired at the moment an
+offered cut-anchor item begins in the OUTPUT timeline. The same structural shape
+[Background music](#background-music) established: a deterministic candidate list from
+`VideoAnalyze`, an agent that chooses among opaque offered ids plus a handful of enum words, and
+`VideoCompileStepExecutor` alone resolving those words to real ffmpeg behavior. **Off by
+default** (`VideoAnalyzeStepConfig.OfferSfxClips = false`, `VideoCompileStepConfig.EnableSfx =
+false`) — `EnableSfx = false` leaves the compile path byte-identical to the pre-SFX behavior.
+
+### Why SFX is not music with a different name
+
+Music and SFX share the "pick among uploaded `audio/*` files by opaque id" mechanics but are
+deliberately DIFFERENT shapes, because the use cases are inverses of each other:
+
+| | Background music | Sound effects |
+|---|---|---|
+| Cardinality | At most ONE track for the whole program | Zero or more discrete cues |
+| Duration | Continuous bed, loops/fades to fit the edit | Short one-shot, hard-capped by `MaxSfxCueSeconds` (default 4s) |
+| Placement | Program-wide — no moment to choose | THE decision: an offered cut-anchor id per cue |
+| Ducking | Keyframed speech-envelope ducking under dialogue | **None, deliberately** — see below |
+| No-agent path | `MusicTrackProjectFileId` (a fixed bed is a complete feature) | **None, deliberately** — see below |
+
+**No ducking for cues:** a cue is a short, deliberately-audible accent — ducking a 300ms whoosh
+under dialogue would defeat its purpose, and a duck/lift envelope per cue would multiply
+filtergraph complexity for negative benefit. Loudness control is the `Volume` word plus
+conservative default gains (`SfxSubtleDb`/`SfxNormalDb`/`SfxStrongDb`, defaults -18/-12/-6 dBFS,
+clamped `[-40, 0]`), and the sound-designer prompt steers toward `Subtle`/`Normal` over dialogue.
+
+**No deterministic no-agent config path** (rejected alternative): music's
+`MusicTrackProjectFileId` works because "one fixed bed under everything" is a complete feature
+with zero editorial judgment. The SFX equivalent would be "the same stinger at every cut" — a
+well-known bad pattern that would ship as an attractive footgun, while any more selective
+deterministic rule ("only section breaks", "only after long silences") smuggles editorial
+judgment into config. Cue placement — WHICH clip at WHICH moment, and whether any moment
+deserves one at all — is the whole decision, so the agent IS the feature here. A plan whose
+`cues` list is EMPTY is a fully valid outcome (`sfx.reason = "empty_plan"`), the same first-class
+no-op grace the graphics room's empty plan and the colorist's `Look: "None"` get.
+
+### Candidate discovery (`VideoAnalyze`)
+
+When `OfferSfxClips = true`, `VideoAnalyzeStepExecutor` enumerates every `audio/*` project file
+as an `x{n}` SFX-clip candidate (`view.sfxClips`, one `{id, name}` entry each), capped by
+`MaxSfxClips` (default 40). Project-level, not per-source, and never ffprobed at analyze time —
+the exact `OfferMusicTracks` rationale. When both `OfferMusicTracks` and `OfferSfxClips` are on,
+ONE `ListFilesAsync` call feeds both candidate lists (and one listing failure degrades both to
+zero candidates, never failing the step); the same file can legitimately appear under both an
+`m{n}` and an `x{n}` id, since nothing structural distinguishes an uploaded stinger from an
+uploaded bed — the sound-designer prompt tells the model to choose short one-shot clips by file
+name and leave bed-like names to the music layer. `view.sfxClips` follows the exact
+musicTracks budget discipline: shown as ONE ATOMIC ARRAY, not gated on `VisualDetail`, suppressed
+as a whole (after `musicTracks`, before `insertRegions`) only once detail has fully degraded, and
+always before any offered item is dropped. "Offered" means exactly "the whole array survived to
+the final view" — `VideoAnalysisArtifact.OfferedSfxIds` is empty whenever it was suppressed.
+
+### `x{n}` id isolation — and the one namespace SFX deliberately shares
+
+SFX-clip ids (`x{n}`) are their own namespace: never resolvable by
+`VideoCompileStepExecutor.BuildIdTimeIndex` (an `x{n}` id names a FILE, never a moment), and a
+`Keep` span naming one fails `UNKNOWN_ID` exactly like a placement/music/look id would. The
+novel bit is the cue's ANCHOR: `SfxCue.AnchorId` deliberately IS a cut-anchor id
+(`s{n}`/`g{n}`/`t{n}`) drawn from the same `OfferedIds` a `Keep` span may name — "this sound
+fires when this shot/gap/segment begins" is the whole anchoring model, reusing the one id
+vocabulary the model already reasons about instead of inventing per-moment SFX-placement ids.
+Anchor validation is against `OfferedIds` (offered, not merely present in the artifact), and the
+anchor's start is mapped through `OutputTimeline.MapToOutputSec` — an anchor whose moment was
+cut away by the edit decision drops that cue (`anchor_cut_away`), never relocates it.
+
+### `AgentType.SoundDesigner` and `SfxPlanOutput`
+
+An ordinary solo `StepType.Agent` step — deliberately NOT a room. The edit/graphics/grade rooms
+exist because those decisions have genuine multi-perspective tension across a whole program (one
+grade must suit every shot; overlays compete for placements and attention). An SFX cue is a
+small, local decision over a small candidate list, made a handful of times; multiple
+sound-designer personas deliberating each whoosh would multiply model calls for no perspective a
+single well-prompted pass lacks. If a room ever proves warranted, the shared
+`RoomStepExecutorBase` infrastructure makes it an additive follow-up, not a rewrite.
+
+```csharp
+public class SfxCue
+{
+    public string SfxId { get; set; } = "";     // must be in OfferedSfxIds; e.g. "x0"
+    public string AnchorId { get; set; } = "";  // must be in OfferedIds; e.g. "s2"/"g1"/"t3"
+    public string Timing { get; set; } = "";    // OnCut | Lead | Lag — never a number
+    public string Volume { get; set; } = "";    // Subtle | Normal | Strong — never a dB number
+    public string Reason { get; set; } = "";
+}
+
+public class SfxPlanOutput
+{
+    public List<SfxCue> Cues { get; set; } = new();  // empty = a valid "no effects" decision
+    public string PlanRationale { get; set; } = "";
+}
+```
+
+The rushcut invariant, extended a fifth time: every property is a plain string, pinned by
+`SfxPlanOutputInvariantTests` (no numeric/time-bearing property anywhere; every `SfxCue` property
+a string; both property sets pinned exactly, so a future `OffsetMs`-style addition fails CI).
+Same minimal read-only tool scope as `VideoStoryEditor`/`MusicSupervisor` — every cue plays an
+EXISTING uploaded clip, so there is no rendered-asset escape hatch and no sandbox grant in any
+role. Reasoning disabled, temperature 0.3, same rationale as the other bounded
+pick-from-offered-lists deciders.
+
+### Resolution: `ResolveSfxAsync`, soft-failure throughout
+
+Runs only when `EnableSfx = true`. Two HARD config errors up front (`SFX_REQUIRES_REENCODE`,
+`SFX_REQUIRES_AUDIO_REENCODE` — the exact music pair); everything else degrades:
+
+| Situation | Outcome |
+|---|---|
+| No `SfxPlan` configured / unresolvable / not valid JSON | No SFX (`no_plan_configured` / `plan_unresolved` / `plan_invalid_json`) |
+| Plan's `cues` list is empty | No SFX, reported as the VALID `empty_plan` outcome, distinct from every failure |
+| Output has no base audio at all (no dialogue and no applied music bed) | Every cue dropped `no_base_audio` — a cue is layered OVER base audio; synthesizing an SFX-only track for an otherwise-silent output is deliberately not built |
+| This ffmpeg build's `amix` has no `normalize` option | `sfx.unavailable = true`, no SFX (the same cached probe music uses — `normalize=0` protects the dialogue level) |
+| Cue's `SfxId` not in `OfferedSfxIds` / `AnchorId` not in `OfferedIds` | That cue dropped (`unknown_sfx_id` / `unknown_anchor_id`), the rest proceed |
+| Anchor's start maps to no output moment (cut away) | That cue dropped (`anchor_cut_away`) — never relocated |
+| Clip not in project / not `audio/*` / download or probe fails | That cue dropped (`sfx_not_in_project` / `sfx_not_audio` / `sfx_download_or_probe_failed`) |
+| More cues than `MaxSfxCues` (default 8) | Excess dropped in plan order (`max_cues_exceeded`) |
+
+Word resolution mirrors music's exactly: unknown `Timing`/`Volume` words normalize to
+`OnCut`/`Normal`. `Timing` shifts the cue by `SfxLeadMs`/`SfxLagMs` (defaults 150ms) — applied
+ON THE OUTPUT TIMELINE, after the anchor mapping, so a shifted cue can never land inside a cut
+region its anchor's own moment survived — then clamps to `[0, TotalSec]`. Each cue's play window
+is `min(clip duration, MaxSfxCueSeconds, remaining output)` — a long file misused as a cue is
+trimmed, never allowed to become a de-facto bed — with a `SfxFadeOutMs` declick fade at its end
+(capped at half the window). Distinct clips are downloaded/probed ONCE even when several cues
+replay them (each cue still gets its own ffmpeg input, since each branch trims/gains/delays
+independently).
+
+### The mix: `SfxMixFilterBuilder`
+
+Pure static filter-fragment builder (`Services/Video/SfxMixFilterBuilder.cs`, exact-string-tested
+by `SfxMixFilterBuilderTests` — the `MusicMixFilterBuilder` role). Each cue becomes one extra
+`-i` input — always the LAST inputs, after every asset-overlay/screen-insert/music input, so
+every existing input-index mapping (and every filter-string test asserting one) stays untouched —
+and one branch:
+
+```
+[N:a]atrim=end={dur},asetpts=N/SR/TB,aformat=…48000…stereo,volume={gain},afade=t=out:…,adelay={ms}|{ms}[sfx{k}]
+```
+
+`adelay` (integer milliseconds, computed entirely server-side from the anchor mapping) is the one
+and only place a cue's timing enters the filtergraph. The mix stage layers every cue over the
+pre-SFX audio chain — which ends at an internal `[abase]` label when cues are present (the exact
+`[aout]`→`[adial]` label-flip convention music established), whether that base is the plain
+dialogue cut, the dialogue+music `amix`, or a music-only branch:
+
+```
+[abase][sfx0][sfx1]amix=inputs=3:duration=first:dropout_transition=0:normalize=0[aout]
+```
+
+Same three load-bearing `amix` options as music: `normalize=0` (never quietly divide the
+dialogue's level), `duration=first` (the base pins the output length — a cue near the end can
+never extend the file), `dropout_transition=0` (no gain re-ramp when a cue's short branch ends
+early, which every cue's does). The SFX mix runs AFTER the music mix and BEFORE the seam-ramp/
+program-fade tail stage, so an end-of-program cue fades out with the program envelope. Unlike
+screen inserts (single-source-only in v1), cues work identically on BOTH encode paths —
+multi-source and crossfade-overlap compiles included — since `adelay` against the output
+timeline has no per-span bookkeeping to disagree with.
+
+### EDL / output JSON shape
+
+Present only when `EnableSfx = true` (byte-identical to the pre-SFX compile path otherwise):
+
+```jsonc
+{
+  "sfx": {
+    "enabled": true, "applied": true, "unavailable": false,
+    "appliedCueCount": 2,
+    "cues": [
+      { "sfxId": "x0", "anchorId": "s4", "clipName": "whoosh.wav", "timing": "OnCut",
+        "volume": "Normal", "gainDb": -12, "outputStartSec": 12.4, "playDurationSec": 1.8 }
+    ],
+    "dropped": [ { "reason": "anchor_cut_away", "sfxId": "x1", "anchorId": "s2" } ]
+  }
+}
+```
+
+### The `video-derush-edit-sfx` template
+
+A ninth opt-in template (`AutoCreateOnProject: false`): `VideoAnalyze` (`Source: ProjectFile`,
+`OfferSfxClips: true`) → `Agent(VideoStoryEditor)` → `Agent(SoundDesigner)` → `VideoCompile`
+(`Decision: Step 2`, `AnalysisStepOrder: 1`, `EnableSfx: true`, `SfxPlan: Step 3`) →
+`ReviewLoop(VideoReviewAgent)` looping back to step 2. Same explicit-`StepOrder` rationale as
+`video-derush-edit-music` (`Previous` relative to the compile step would resolve to the
+`SoundDesigner` step's own output, not the story editor's decision). Deserialization-tested in
+`WorkflowTemplateCatalogConfigDeserializationTests.cs` like every other template.
+
+### Explicitly not built (sound effects)
+
+- **A deterministic no-agent cue path** — see the rejected alternative above.
+- **SFX-only audio for silent outputs** — a cue is an accent OVER something; `no_base_audio`
+  degrades instead.
+- **Per-cue ducking/sidechaining** — see "no ducking for cues" above.
+- **Beat-matching, auto-selected libraries, generated/synthesized effects** — every cue plays an
+  uploaded project file the model was offered by id, nothing else.
+
+---
+
 ## Security: why ffmpeg is not in the sandbox
 
 **ffmpeg and ffprobe run as first-party, non-AI-authored C# code inside the WorkflowEngine
@@ -2401,7 +2611,9 @@ normalization (`loudnorm` is measured and reported only, never applied); no subt
 SRT/VTT export (the transcript exists, so this is the most obvious phase-2 add); no speaker
 diarization. Background music IS built — see [Background music](#background-music) — but it is a
 deterministic bed/ducking mix only: no auto-composed score, no beat-matching to cuts, no per-section
-music cues.
+music cues. Discrete sound-effect cues ARE built — see [Sound effects](#sound-effects) — but only
+as agent-planned, id-anchored playback of uploaded clips: no generated/synthesized effects, no
+deterministic cue-at-every-cut path, no per-cue ducking.
 
 **Interchange:** no EDL/AAF/FCPXML/OTIO export. The internal EDL JSON is an audit artifact, not an
 interchange format.

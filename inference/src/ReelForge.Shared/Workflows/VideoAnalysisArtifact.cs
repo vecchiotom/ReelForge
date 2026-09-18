@@ -115,7 +115,23 @@ public sealed record VideoAnalysisArtifact(
     /// <see cref="OfferedPlacementIds"/>/<see cref="OfferedMusicIds"/>, but its OWN separate list:
     /// an insert-region id must never be validated against any of those, and vice versa.
     /// </summary>
-    IReadOnlyList<string>? OfferedInsertRegionIds = null);
+    IReadOnlyList<string>? OfferedInsertRegionIds = null,
+    /// <summary>
+    /// Sound-effects addition (see docs/video-editing.md "Sound effects") — populated only when
+    /// <c>VideoAnalyzeStepConfig.OfferSfxClips</c> is set. One entry per <c>audio/*</c> project
+    /// file, project-level (not per-source), exactly like <see cref="MusicCandidates"/>. A
+    /// SEPARATE id namespace (<c>x{n}</c>) from every other id family — deliberately NOT
+    /// resolvable by <c>VideoCompileStepExecutor.BuildIdTimeIndex</c>: an SFX-clip id names a
+    /// FILE, never a moment; the MOMENT a cue fires at is a separate, offered cut-anchor id.
+    /// </summary>
+    IReadOnlyList<VideoAnalysisSfxCandidate>? SfxCandidates = null,
+    /// <summary>
+    /// Exactly which SFX-clip ids were actually included in the bounded view shown to the
+    /// sound-designer agent — the sound-effects analogue of <see cref="OfferedMusicIds"/>, but
+    /// its OWN separate list: an SFX-clip id must never be validated against any other offered-id
+    /// list, and vice versa.
+    /// </summary>
+    IReadOnlyList<string>? OfferedSfxIds = null);
 
 /// <summary>
 /// One tracked frame (or keyframe) of a chroma-plate insert region's deforming quadrilateral —
@@ -187,6 +203,22 @@ public sealed record VideoAnalysisLookGroup(
 /// itself once a track is actually chosen, so the model never sees or needs one.
 /// </summary>
 public sealed record VideoAnalysisMusicCandidate(
+    string Id,
+    Guid ProjectFileId,
+    string FileName,
+    string MimeType,
+    long SizeBytes);
+
+/// <summary>
+/// One candidate sound-effect clip — an <c>audio/*</c> project file offered to
+/// <c>AgentType.SoundDesigner</c>. Id: <c>x{n}</c> — a SEPARATE namespace from
+/// <c>s{n}</c>/<c>g{n}</c>/<c>t{n}</c>/<c>p{n}</c>/<c>m{n}</c>, never resolvable by
+/// <c>VideoCompileStepExecutor.BuildIdTimeIndex</c>. Deliberately identical in shape to
+/// <see cref="VideoAnalysisMusicCandidate"/> and just as small: no storage key, no duration —
+/// <c>VideoCompileStepExecutor</c> resolves <see cref="ProjectFileId"/> back to a storage key
+/// itself once a cue actually names this clip, so the model never sees or needs one.
+/// </summary>
+public sealed record VideoAnalysisSfxCandidate(
     string Id,
     Guid ProjectFileId,
     string FileName,
