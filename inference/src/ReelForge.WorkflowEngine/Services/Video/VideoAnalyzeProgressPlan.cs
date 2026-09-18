@@ -16,7 +16,7 @@ public sealed class VideoAnalyzeProgressPlan
         // ---- per-source (repeated once per analyzed clip, in clip order) ----
         DownloadSource, ProbeSource, DetectSilence, DetectShots,
         ResolveTranscription, Transcribe, SampleAudioLevels,
-        SampleFrameGrid, AnalyzeShots, SampleSharpness, GroupDuplicates,
+        SampleFrameGrid, AnalyzeShots, SampleSharpness, GroupDuplicates, TrackInsertRegions,
         // ---- step-scope (run once, after every source finished) ----
         MatchLooks, ListMusicCandidates, ExtractKeyframes, CaptionShots,
         BuildView, UploadArtifact
@@ -26,7 +26,8 @@ public sealed class VideoAnalyzeProgressPlan
     {
         Stage.DownloadSource, Stage.ProbeSource, Stage.DetectSilence, Stage.DetectShots,
         Stage.ResolveTranscription, Stage.Transcribe, Stage.SampleAudioLevels,
-        Stage.SampleFrameGrid, Stage.AnalyzeShots, Stage.SampleSharpness, Stage.GroupDuplicates
+        Stage.SampleFrameGrid, Stage.AnalyzeShots, Stage.SampleSharpness, Stage.GroupDuplicates,
+        Stage.TrackInsertRegions
     };
 
     private static readonly Stage[] StepStagesInOrder =
@@ -53,6 +54,7 @@ public sealed class VideoAnalyzeProgressPlan
         [Stage.AnalyzeShots] = 10,
         [Stage.SampleSharpness] = 4,
         [Stage.GroupDuplicates] = 2,
+        [Stage.TrackInsertRegions] = 6,
         [Stage.MatchLooks] = 2,
         [Stage.ListMusicCandidates] = 1,
         [Stage.ExtractKeyframes] = 5,

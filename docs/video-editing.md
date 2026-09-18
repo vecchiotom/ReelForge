@@ -25,6 +25,7 @@ executors, agents in general) see `CLAUDE.md`.
 - [Background music](#background-music)
 - [Seam transitions and the program envelope](#seam-transitions-and-the-program-envelope)
 - [Semantic visual dimensions (Phase 4)](#semantic-visual-dimensions-phase-4)
+- [Tracked screen inserts (Phase 5)](#tracked-screen-inserts-phase-5)
 - [The edit room](#the-edit-room)
 - [Security: why ffmpeg is not in the sandbox](#security-why-ffmpeg-is-not-in-the-sandbox)
 - [Explicitly not built](#explicitly-not-built)
@@ -296,6 +297,14 @@ before chunking it — wasted compute at best, a very large in-memory string at 
 | `MaxSharpnessShots` | `24` | Phase 4: step-wide ceiling on sharpness measurements when `DetectSharpness` is on — genuinely step-wide like `MaxCaptionedShots`, not per source. Costs one extra ffmpeg invocation per measured shot |
 | `OfferMusicTracks` | `false` | Enumerates every `audio/*` project file as an `m{n}` music-track candidate (`view.musicTracks`) for a downstream `AgentType.MusicSupervisor` step — project-level, not per-source. See [Background music](#background-music) |
 | `MaxMusicTracks` | `20` | Caps `view.musicTracks` |
+| `DetectInsertRegions` | `false` | Phase 5: chroma-plate quad tracking for tracked screen inserts — one extra medium-res grid ffmpeg pass per source + pure C# (`ChromaQuadTracker`); tracks offered as `r{n}` ids (`view.insertRegions`) — see [Tracked screen inserts (Phase 5)](#tracked-screen-inserts-phase-5) |
+| `InsertRegionColor` | `"green"` | `"green"`/`"blue"`/`"magenta"` — matched entirely in C# channel-ratio space, NEVER an ffmpeg value; unknown values fall back to green |
+| `InsertSampleFps` | `10.0` | Sample rate of the dedicated tracking pass (clamped 0.5..30); denser than Phase 1's 2.0 because a moving plate needs temporally dense corners |
+| `InsertGridWidth` / `InsertGridHeight` | `320` / `180` | Tracking grid resolution (clamped 64..640 / 36..360) — ~0.3% corner precision at the default |
+| `MaxInsertSampleFrames` | `3000` | Clamps effective tracking fps downward for long videos, exactly like `MaxVisualSampleFrames` |
+| `MinInsertRegionAreaRatio` | `0.004` | Minimum fraction of frame area a chroma component must cover to count as a plate |
+| `MinInsertRegionSeconds` | `1.0` | Tracks shorter than this are dropped |
+| `MaxInsertRegions` | `8` | Cap on offered tracks across the whole artifact (longest kept) |
 | `Expect` | `null` | Optional structural checks (`MinShots`, `MinTranscriptSegments`, `MaxSilenceRatio`, `MinShotsWithVisuals`) |
 
 ### `VideoCompileStepConfig`
@@ -352,6 +361,11 @@ before chunking it — wasted compute at best, a very large in-memory string at 
 | `SectionBreakGapMs` | — | Minimum silence-gap duration at a seam for the rule table to treat it as a section break rather than an ordinary mid-sentence cut |
 | `ProgramFadeInMs` / `ProgramFadeOutMs` | — | Video fade-in/fade-out duration at the very start/end of the whole compiled program (distinct from any inter-cut transition) |
 | `ProgramAudioFadeInMs` / `ProgramAudioFadeOutMs` | — | Audio fade-in/fade-out duration at the very start/end of the whole compiled program, tracked independently of the video program fade |
+| `EnableInserts` | `false` | Phase 5: composites the plan's chosen screen inserts (corner-pinned via ffmpeg's per-frame-animated `perspective` filter) during the same encode. `false` (default) is byte-identical to the pre-inserts compile path. Requires `Mode = Reencode` (`INSERTS_REQUIRE_REENCODE`); inserts are read from the SAME `GraphicsPlan`-referenced `MotionGraphicsPlanOutput` (`EnableGraphics` itself need not be on) — see [Tracked screen inserts (Phase 5)](#tracked-screen-inserts-phase-5) |
+| `MinInsertConfidence` | `0.5` | Tracks below this confidence are dropped (`confidence_below_threshold`) rather than composited badly |
+| `MaxInserts` | `3` | Cap on applied inserts; excess dropped in plan order |
+| `MaxInsertExprKeyframes` | `96` | Per-insert cap on corner keyframes baked into the `perspective` expressions (uniform downsample; clamped 2..500) |
+| `InsertOverscan` | `0.02` | Fractional outward expansion of the tracked quad about its centroid, hiding the plate's edge fringe under the insert (clamped 0..0.1) |
 | `Expect` | `null` | Optional structural checks (`MinOutputSeconds`, `MaxOutputSeconds`, `MinRetainedRatio` default `0.15`, `MaxRetainedRatio`) |
 
 \* `TransitionPolicy` and the twelve fields above it (`AudioSeamRampMs` through
@@ -1664,6 +1678,148 @@ documented alongside Phase 2 rather than duplicated here.
 
 ---
 
+## Tracked screen inserts (Phase 5)
+
+Compositing a Remotion-rendered scene INTO a moving region of the source footage — the canonical
+case: a commercial shot with a phone held in frame against a green screen, where an app UI
+(rendered as its own Remotion composition) is inserted into the phone's screen area and moves and
+warps with the phone as the hand moves, not as a static overlay. Off by default at both ends
+(`VideoAnalyzeStepConfig.DetectInsertRegions = false`, `VideoCompileStepConfig.EnableInserts =
+false`); `EnableInserts = false` leaves the compile path byte-identical to before this phase.
+
+**The invariant this phase exists to protect:** a motion-tracking transform is inherently
+per-frame numeric data — positions, corner coordinates, times. Every one of those numbers is
+computed by deterministic C# and consumed by deterministic C#. The model's entire contribution is
+(1) an opaque `r{n}` region id drawn from the set it was actually offered
+(`VideoAnalysisArtifact.OfferedInsertRegionIds` — a separate id namespace, never resolvable by
+`BuildIdTimeIndex`, "offered is stricter than exists" like every other id family) and (2) a
+rendered asset it produced itself via a real `RenderVideoAndUploadToStorage` call, validated
+against this execution's own `outputFiles` prefix — the exact `RenderedAssetStorageKey` precedent.
+`ScreenInsert` (on `MotionGraphicsPlanOutput`) has exactly three string properties — `RegionId`,
+`RenderedAssetStorageKey`, `Reason` — locked by `MotionGraphicsPlanOutputInvariantTests`, which
+also pins the exact property set so even a new *string* property is a visible, reviewed decision.
+
+### The tracking decision: chroma-plate quads, not general feature tracking
+
+`ChromaQuadTracker` (`WorkflowEngine/Services/Video/ChromaQuadTracker.cs`) is a pure, unit-tested
+static class. It runs over a dedicated, medium-resolution raw-RGB grid pass (the same
+`IFrameGridSampler` machinery Phase 1 uses, at `320x180`/`10fps` defaults instead of `32x18`/`2fps`)
+and, per frame: builds a chroma mask by relative channel dominance (brightness-robust —
+`g*10 > r*13+100` etc., for green/blue/magenta), finds the largest 4-connected component (BFS),
+fits a quadrilateral via the extreme-point method (TL=min(x+y), BR=max(x+y), TR=max(x−y),
+BL=min(x−y)), and gates on area ratio and component-vs-quad fill ratio (rejecting L-shapes and
+scattered noise). Per-frame quads assemble into tracks (dropout gaps ≤ 3 frames bridged by linear
+interpolation; larger gaps or implausible centroid jumps split the track), corners get a small
+centered moving-average smooth, and each track carries a confidence
+(detection coverage × mean fill ratio) plus qualitative size/motion/aspect descriptors.
+
+**Why marker/chroma-based, and what was rejected.** General markerless planar tracking
+(KLT/feature-correspondence homography estimation) was evaluated and rejected for v1, in the same
+cost-benefit style as the "why ffmpeg is not in the sandbox" decision:
+
+- **OpenCV via OpenCvSharp** would be the honest way to do markerless tracking, but it is a large
+  native dependency with no musl/Alpine binaries the WorkflowEngine image could consume without
+  building OpenCV from source — hundreds of MB of image growth, a large native attack surface
+  parsing untrusted media (the same class of risk the existing ffmpeg-hardening flags exist for),
+  and a build pipeline burden, for a capability whose robustness could not be validated here
+  against real footage anyway.
+- **A from-scratch C# feature tracker** could not honestly be claimed robust — pyramidal
+  Lucas-Kanade plus RANSAC homography fitting is a genuine CV subsystem, not a helper class.
+- **A chroma plate is the one target pure pixel statistics detect reliably** — and it matches how
+  this shot is actually produced in practice (a phone screen displaying solid green IS the
+  standard on-set practice for exactly this composite). The constraint is stated plainly: **the
+  source footage must contain a uniform-color plate** (green by default; blue/magenta
+  configurable). Footage without one gets zero offered regions, and the agent is prompted to plan
+  zero inserts.
+
+The tracker's precision is bounded by the tracking grid (~0.3% of frame dimension at the default
+`320x180` — ±6px at 1080p), softened by corner smoothing and by `InsertOverscan` expanding the
+insert slightly past the plate's edge. Raise `InsertGridWidth`/`InsertGridHeight` when tighter
+registration matters more than the larger grid buffer.
+
+The full numeric track (`VideoInsertRegionTrack.Keyframes` — per-sampled-frame normalized corner
+quads on the source timeline) lives ONLY in the analysis artifact. The bounded view offers
+`view.insertRegions`: `{id, shotId, startSec, endSec, conf, size, motion, aspect, color}` (+`src`
+when multi-source) — the window is READ-ONLY input exactly like `view.placements`'
+`startSec`/`endSec`, `conf`/`size` are bucketed words, and `aspect` is the one number the agent
+genuinely needs as *input* (to render suitably-proportioned content). The array follows the
+`musicTracks` budget discipline (unconditional, atomically suppressible — deliberately NOT the
+detail-gated `placements` discipline, since insert regions come from their own grid pass and are
+independent of Phase 1 visual analysis).
+
+### Agent surface
+
+No new agent: `AgentType.MotionGraphicsPlanner` gained an `Inserts` list on its existing
+`MotionGraphicsPlanOutput` (additive — every pre-existing plan deserializes with zero inserts),
+and its prompt (fallback + seeded, verbatim-locked by `VideoStoryEditorPromptConsistencyTests`)
+gained a "Tracked screen inserts" section. The agent renders the insert content itself through the
+same sandbox+Remotion pipeline it already uses for rendered-asset overlays — but OPAQUE (a normal
+mp4, no alpha), since the whole rectangular frame is warped to fill the plate.
+
+### Compile: the corner-pin recipe
+
+`VideoCompileStepExecutor.ResolveInsertsAsync` (soft-failure throughout) validates each insert,
+maps the track's source window through the cut (`OutputTimeline.MapWindowToOutput` — clipped to
+the FIRST kept portion, like overlays), converts each surviving tracked keyframe to an
+output-frame-indexed pixel quad (`BuildInsertKeyframes`: per-keyframe `MapToOutputSec`, uniform
+downsample to `MaxInsertExprKeyframes`, centroid overscan expansion), downloads + ffprobe-validates
+the asset, and hands `ScreenInsertFilterBuilder` a fully-resolved numeric description. The
+filtergraph per insert — validated end-to-end against a real ffmpeg run during design:
+
+```
+[N:v] scale=(W-2)x(H-2), fps=canonical, pad to WxH with a 1px black border,
+      perspective sense=destination eval=frame  (corner exprs piecewise-linear in `in`),
+      setpts +outputStart                                    -> warped content
+color=white (W-2)x(H-2), pad 1px black border, format=gray,
+      the SAME perspective exprs, the same setpts            -> warped mask
+alphamerge(content, mask) ; overlay at 0:0, enable='between(t,start,end)'
+```
+
+The 1px border is load-bearing: `perspective` edge-clamps out-of-range source coordinates, so an
+unbordered warp smears content across the whole frame outside the quad; bordering both the content
+and an all-white mask makes everything outside the warped quad black, which `alphamerge` turns
+into transparency (`perspective` itself supports no alpha format — that is why the mask branch
+exists). The insert stage renders BEFORE text/asset overlays (screen content is scene content;
+lower-thirds paint on top), its inputs sit between the asset-overlay inputs and the music input
+(preserving both existing index mappings), and corner expressions are piecewise-linear
+`if(lt(in,f),a+(in-f0)*s,...)` chains over the filter's per-frame `in` variable — every literal
+through `FfmpegArgvFormat.Number`. Not one model-originated character reaches the filter string.
+
+### Soft-failure table
+
+| Situation | Outcome |
+|---|---|
+| `EnableInserts=true` with `Mode=StreamCopy` | Step FAILS `INSERTS_REQUIRE_REENCODE` — pure config error, mirrors `GRAPHICS_REQUIRE_REENCODE` |
+| No `GraphicsPlan` configured / plan unresolvable / invalid JSON | No inserts applied; `inserts.reason` records why |
+| `RegionId` not in `OfferedInsertRegionIds` | That insert dropped (`unknown_region_id`) |
+| Same region chosen twice | Second dropped (`duplicate_region_id`) |
+| More inserts than `MaxInserts` | Excess dropped (`max_inserts_exceeded`) |
+| Track confidence below `MinInsertConfidence` | Dropped (`confidence_below_threshold`) |
+| Asset key missing or outside this execution's `outputFiles` prefix | Dropped (`invalid_asset_storage_key`) |
+| Asset download/probe fails | Dropped (`asset_download_or_probe_failed`) |
+| Track window entirely inside a cut gap | Dropped (`cut_away`) |
+| `perspective`/`alphamerge` missing from the ffmpeg build | ALL inserts skipped; `inserts.unavailable = true` |
+| Multi-source compile, or overlapping seam transitions | ALL inserts skipped with a recorded reason — the v1 keyframe math is only wired into the single-source select-path encode |
+
+The EDL/output summary gains an `inserts` block (present only when `EnableInserts=true`):
+`{enabled, applied, appliedInsertCount, droppedInserts: [{regionId, reason}], unavailable}`.
+
+### v1 scope, stated plainly
+
+**What works:** a chroma plate (green/blue/magenta) tracked as a deforming quadrilateral —
+translation, scale, rotation, and perspective skew all follow the plate, since all four corners
+are tracked independently and the warp re-evaluates per frame. Single-source compiles only.
+
+**Deferred, deliberately:** markerless tracking of arbitrary regions (needs a real CV dependency —
+see the decision record above); multi-plate-per-frame tracking (the tracker takes the largest
+component per frame, so two simultaneous phones become one track each only when temporally
+separated); occlusion recovery beyond 3-frame gap bridging (a hand passing fully over the plate
+splits the track); sub-pixel corner refinement at native resolution; inserts on multi-source or
+crossfade-transition compiles; lighting/color match of the insert to the scene (the content is
+composited as rendered — no ambient wrap, no relight); motion blur on fast plate movement.
+
+---
+
 ## The edit room
 
 `StepType.EditRoom` replaces the single `AgentType.VideoStoryEditor` decision step with a
@@ -1926,7 +2082,10 @@ spans within one clip); no arbitrary unanalyzed asset/image insertion (cutting a
 pre-declared, analyzed `Sources` clips — including B-roll — is supported, see
 [Multiple source clips](#multiple-source-clips), but inserting an image or a clip that was never
 fed in as a `Source` is not); no multicam (no automatic multi-angle sync/switching); no
-picture-in-picture; no speed ramps; no agent-requested or agent-authored transitions — only the
+free-floating picture-in-picture (tracked screen inserts ARE built — a rendered scene composited
+into a tracked chroma-plate region, see
+[Tracked screen inserts (Phase 5)](#tracked-screen-inserts-phase-5) — but an arbitrary
+un-tracked inset window is not); no speed ramps; no agent-requested or agent-authored transitions — only the
 deterministic, measurement-driven seam treatments and program fade described in
 [Seam transitions and the program envelope](#seam-transitions-and-the-program-envelope).
 

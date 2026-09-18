@@ -1055,20 +1055,27 @@ public class VideoCompileStepExecutorTests
         Mock<IProjectFileWorkspace> workspace, Action<JsonElement>? edlCaptured = null, bool drawtextAvailable = true,
         Action<IReadOnlyList<string>>? ffmpegArgsCaptured = null,
         Action<Mock<IMediaProbe>>? configureMediaProbe = null,
-        bool amixNormalizeAvailable = true)
+        bool amixNormalizeAvailable = true,
+        bool insertFiltersAvailable = true)
     {
         // The drawtext-availability probe is a process-lifetime static cache in the executor
         // (see ResolveGraphicsAsync/IsDrawtextAvailableAsync) — reset it per test case so each
         // test's own mocked IVideoToolRunner is actually consulted. Same for the amix
-        // normalize-option probe (background music — see ResolveMusicAsync/IsAmixNormalizeAvailableAsync).
+        // normalize-option probe (background music — see ResolveMusicAsync/IsAmixNormalizeAvailableAsync)
+        // and the perspective/alphamerge probe (tracked screen inserts — see
+        // ResolveInsertsAsync/IsPerspectiveAvailableAsync).
         VideoCompileStepExecutor.ResetDrawtextAvailabilityCacheForTests();
         VideoCompileStepExecutor.ResetAmixNormalizeCacheForTests();
+        VideoCompileStepExecutor.ResetPerspectiveAvailabilityCacheForTests();
 
+        string filtersStdOut =
+            (drawtextAvailable ? "... drawtext ..." : "... (nothing here) ...") +
+            (insertFiltersAvailable ? " perspective alphamerge" : "");
         var toolRunner = new Mock<IVideoToolRunner>();
         toolRunner
             .Setup(t => t.RunFfmpegAsync(
                 It.Is<IReadOnlyList<string>>(a => a.Contains("-filters")), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new VideoToolResult(0, drawtextAvailable ? "... drawtext ..." : "... (no drawtext) ...", string.Empty, false));
+            .ReturnsAsync(new VideoToolResult(0, filtersStdOut, string.Empty, false));
         toolRunner
             .Setup(t => t.RunFfmpegAsync(
                 It.Is<IReadOnlyList<string>>(a => !a.Contains("-filters")), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
@@ -2694,5 +2701,434 @@ public class VideoCompileStepExecutorTests
             actual!.Value.Should().BeApproximately(expectedOutputStartSec, 1e-9,
                 $"span {i}'s output-timeline start must reflect the exact frame count of every prior span, not an off-by-one-frame-per-span drift");
         }
+    }
+
+    // =======================================================================
+    // Tracked screen inserts (see docs/video-editing.md "Tracked screen inserts (Phase 5)")
+    // =======================================================================
+
+    /// <summary>A well-formed, high-confidence static insert-region track spanning [2, 8]s of shot s0 with two corner keyframes.</summary>
+    private static VideoInsertRegionTrack BuildInsertTrack(
+        string id = "r0", double startSec = 2.0, double endSec = 8.0, double confidence = 0.9)
+        => new(
+            Id: id, ShotId: "s0", StartSec: startSec, EndSec: endSec,
+            Keyframes:
+            [
+                new VideoInsertQuadKeyframe(startSec, 0.30, 0.20, 0.60, 0.22, 0.31, 0.70, 0.61, 0.72),
+                new VideoInsertQuadKeyframe(endSec, 0.35, 0.20, 0.65, 0.22, 0.36, 0.70, 0.66, 0.72)
+            ],
+            Confidence: confidence, MeanAreaRatio: 0.12, MeanAspectRatio: 0.6,
+            MotionClass: "Slow", ColorName: "green");
+
+    private static string BuildInsertsPlanJson(string regionId, string assetKey) =>
+        JsonSerializer.Serialize(new
+        {
+            overlays = Array.Empty<object>(),
+            inserts = new[] { new { regionId, renderedAssetStorageKey = assetKey, reason = "screen content" } },
+            planRationale = "test"
+        });
+
+    private static string InsertAssetKey(string name = "screen.mp4") =>
+        $"projects/{ProjectId}/outputFiles/{GraphicsExecutionId:D}/{name}";
+
+    private static void MockAssetDownload(Mock<IProjectFileWorkspace> workspace, string assetKey) =>
+        workspace
+            .Setup(w => w.DownloadStorageKeyToFileAsync(It.IsAny<Guid>(), assetKey, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<Guid, string, string, CancellationToken>((_, _, destPath, _) =>
+            {
+                File.WriteAllBytes(destPath, new byte[] { 0x00, 0x01, 0x02 });
+                return Task.CompletedTask;
+            });
+
+    [Fact]
+    public async Task EnableInserts_false_produces_no_inserts_key_at_all_byte_identical_to_pre_inserts()
+    {
+        // The load-bearing backward-compatibility guarantee — mirrors EnableGraphics/EnableMusic
+        // exactly: even with tracked regions in the artifact AND a plan containing inserts,
+        // EnableInserts=false must leave the EDL/output shape completely untouched.
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" });
+        artifact = artifact with
+        {
+            InsertRegions = [BuildInsertTrack()],
+            OfferedInsertRegionIds = ["r0"]
+        };
+
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateGraphicsContext(
+            artifact, decisionJson, BuildInsertsPlanJson("r0", InsertAssetKey()),
+            out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with { EnableGraphics = false, EnableInserts = false });
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(workspace, edlCaptured: e => edl = e).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        edl.TryGetProperty("inserts", out _).Should().BeFalse("EDL must have no inserts key when EnableInserts=false");
+        using JsonDocument outputDoc = JsonDocument.Parse(result.Output);
+        outputDoc.RootElement.TryGetProperty("inserts", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task EnableInserts_true_with_StreamCopy_fails_INSERTS_REQUIRE_REENCODE()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" });
+
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateContext(
+            artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with
+            {
+                EnableInserts = true,
+                Mode = VideoCompileMode.StreamCopy,
+                AllowKeyframeSnapping = true
+            });
+
+        StepExecutionResult result = await CreateExecutor(workspace).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Failed);
+        ErrorCode(result).Should().Be("INSERTS_REQUIRE_REENCODE");
+    }
+
+    [Fact]
+    public async Task Keep_span_naming_an_insert_region_id_fails_UNKNOWN_ID_since_regions_are_a_separate_namespace()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" });
+        artifact = artifact with
+        {
+            InsertRegions = [BuildInsertTrack()],
+            OfferedInsertRegionIds = ["r0"]
+        };
+
+        // A Keep span naming "r0" — an insert-region id, not a cut-anchor id — must fail
+        // UNKNOWN_ID exactly like a placement/music/look id does (BuildIdTimeIndex excludes it).
+        string decisionJson = BuildDecisionJson(("r0", "r0", "wrong namespace"));
+        StepExecutionContext context = CreateContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        StepExecutionResult result = await CreateExecutor(workspace).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Failed);
+        ErrorCode(result).Should().Be("UNKNOWN_ID");
+    }
+
+    [Fact]
+    public async Task Insert_naming_unknown_region_id_is_dropped_not_a_step_failure()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" });
+        artifact = artifact with
+        {
+            InsertRegions = [BuildInsertTrack()],
+            OfferedInsertRegionIds = ["r0"]
+        };
+
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateGraphicsContext(
+            artifact, decisionJson, BuildInsertsPlanJson("r99", InsertAssetKey()),
+            out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with { EnableGraphics = false, EnableInserts = true });
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(workspace, edlCaptured: e => edl = e).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        JsonElement inserts = edl.GetProperty("inserts");
+        inserts.GetProperty("applied").GetBoolean().Should().BeFalse();
+        JsonElement dropped = inserts.GetProperty("droppedInserts");
+        dropped.GetArrayLength().Should().Be(1);
+        dropped[0].GetProperty("regionId").GetString().Should().Be("r99");
+        dropped[0].GetProperty("reason").GetString().Should().Be("unknown_region_id");
+    }
+
+    [Fact]
+    public async Task Insert_on_a_tracked_but_unoffered_region_is_dropped_offered_is_stricter_than_exists()
+    {
+        // The region EXISTS in the artifact but was never OFFERED (e.g. suppressed for view
+        // budget) — same "offered is a stricter check than exists" discipline as Keep-span ids.
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" });
+        artifact = artifact with
+        {
+            InsertRegions = [BuildInsertTrack()],
+            OfferedInsertRegionIds = []
+        };
+
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateGraphicsContext(
+            artifact, decisionJson, BuildInsertsPlanJson("r0", InsertAssetKey()),
+            out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with { EnableGraphics = false, EnableInserts = true });
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(workspace, edlCaptured: e => edl = e).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        JsonElement dropped = edl.GetProperty("inserts").GetProperty("droppedInserts");
+        dropped.GetArrayLength().Should().Be(1);
+        dropped[0].GetProperty("reason").GetString().Should().Be("unknown_region_id");
+    }
+
+    [Fact]
+    public async Task Insert_on_low_confidence_region_is_dropped_confidence_below_threshold()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" });
+        artifact = artifact with
+        {
+            InsertRegions = [BuildInsertTrack(confidence: 0.3)],
+            OfferedInsertRegionIds = ["r0"]
+        };
+
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateGraphicsContext(
+            artifact, decisionJson, BuildInsertsPlanJson("r0", InsertAssetKey()),
+            out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with { EnableGraphics = false, EnableInserts = true });
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(workspace, edlCaptured: e => edl = e).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        JsonElement dropped = edl.GetProperty("inserts").GetProperty("droppedInserts");
+        dropped.GetArrayLength().Should().Be(1);
+        dropped[0].GetProperty("reason").GetString().Should().Be("confidence_below_threshold");
+    }
+
+    [Fact]
+    public async Task Insert_whose_region_window_is_entirely_cut_away_is_dropped()
+    {
+        // Track spans [12, 18]s of s1, but only s0 = [0, 10] is kept — the whole window falls in
+        // the cut region, so this insert must drop as cut_away, never fail the compile.
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0), ("s1", 10.0, 20.0) },
+            offeredIds: new[] { "s0", "s1" });
+        artifact = artifact with
+        {
+            InsertRegions = [BuildInsertTrack(startSec: 12.0, endSec: 18.0)],
+            OfferedInsertRegionIds = ["r0"]
+        };
+
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateGraphicsContext(
+            artifact, decisionJson, BuildInsertsPlanJson("r0", InsertAssetKey()),
+            out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with { EnableGraphics = false, EnableInserts = true, PrePaddingMs = 0, PostPaddingMs = 0 });
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(workspace, edlCaptured: e => edl = e).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        JsonElement dropped = edl.GetProperty("inserts").GetProperty("droppedInserts");
+        dropped.GetArrayLength().Should().Be(1);
+        dropped[0].GetProperty("reason").GetString().Should().Be("cut_away");
+    }
+
+    [Fact]
+    public async Task Insert_with_asset_key_outside_this_executions_prefix_is_dropped()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" });
+        artifact = artifact with
+        {
+            InsertRegions = [BuildInsertTrack()],
+            OfferedInsertRegionIds = ["r0"]
+        };
+
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        string foreignKey = $"projects/{ProjectId}/outputFiles/{Guid.NewGuid():D}/other.mp4";
+        StepExecutionContext context = CreateGraphicsContext(
+            artifact, decisionJson, BuildInsertsPlanJson("r0", foreignKey),
+            out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with { EnableGraphics = false, EnableInserts = true });
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(workspace, edlCaptured: e => edl = e).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        JsonElement dropped = edl.GetProperty("inserts").GetProperty("droppedInserts");
+        dropped.GetArrayLength().Should().Be(1);
+        dropped[0].GetProperty("reason").GetString().Should().Be("invalid_asset_storage_key");
+    }
+
+    [Fact]
+    public async Task Perspective_filters_unavailable_skips_all_inserts_but_still_compiles()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" });
+        artifact = artifact with
+        {
+            InsertRegions = [BuildInsertTrack()],
+            OfferedInsertRegionIds = ["r0"]
+        };
+
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateGraphicsContext(
+            artifact, decisionJson, BuildInsertsPlanJson("r0", InsertAssetKey()),
+            out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with { EnableGraphics = false, EnableInserts = true });
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, edlCaptured: e => edl = e, insertFiltersAvailable: false).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, "a missing filter must never fail the compile — the cut is the primary deliverable");
+        JsonElement inserts = edl.GetProperty("inserts");
+        inserts.GetProperty("applied").GetBoolean().Should().BeFalse();
+        inserts.GetProperty("unavailable").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Applied_insert_adds_its_own_input_and_an_animated_perspective_alphamerge_filtergraph()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" });
+        artifact = artifact with
+        {
+            InsertRegions = [BuildInsertTrack()],
+            OfferedInsertRegionIds = ["r0"]
+        };
+
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        string assetKey = InsertAssetKey();
+        StepExecutionContext context = CreateGraphicsContext(
+            artifact, decisionJson, BuildInsertsPlanJson("r0", assetKey),
+            out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with { EnableGraphics = false, EnableInserts = true, PrePaddingMs = 0, PostPaddingMs = 0 });
+        MockAssetDownload(workspace, assetKey);
+
+        JsonElement edl = default;
+        List<string>? capturedArgs = null;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, edlCaptured: e => edl = e, ffmpegArgsCaptured: a => capturedArgs = a.ToList())
+            .ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        JsonElement inserts = edl.GetProperty("inserts");
+        inserts.GetProperty("applied").GetBoolean().Should().BeTrue();
+        inserts.GetProperty("appliedInsertCount").GetInt32().Should().Be(1);
+        inserts.GetProperty("droppedInserts").GetArrayLength().Should().Be(0);
+
+        capturedArgs.Should().NotBeNull();
+        string filterComplex = ExtractFilterComplexValue(capturedArgs!);
+        filterComplex.Should().Contain("perspective=", "the insert must be corner-pinned via the perspective filter");
+        filterComplex.Should().Contain("sense=destination:eval=frame", "corners animate per-frame toward the tracked quad");
+        filterComplex.Should().Contain("alphamerge", "the warped white-plate mask is what keeps the outside of the quad transparent");
+        filterComplex.Should().Contain("overlay=x=0:y=0", "the warped, masked content overlays the base at the origin");
+        capturedArgs!.Count(a => a == "-i").Should().Be(2, "the main source video AND the insert asset must each be their own -i input");
+    }
+
+    [Fact]
+    public void BuildInsertKeyframes_maps_keyframes_through_the_cut_and_skips_those_in_gaps()
+    {
+        // Spans keep [0,4) and [6,10) of a 30fps source: output timeline is [0,4)+[4,8).
+        var spans = new List<VideoCompileStepExecutor.ResolvedSpan>
+        {
+            new(0, 4, 0, 4, 0, 120),
+            new(6, 10, 6, 10, 180, 300)
+        };
+        OutputTimeline timeline = OutputTimeline.Build(spans, VideoCompileStepExecutor.BuildHardCutSeamsForFallback(spans.Count));
+        var media = new VideoAnalysisMedia(10, 30, 1, 1920, 1080);
+
+        // Track [2, 8] with keyframes at t=2 (kept, output 2.0), t=5 (in the cut gap — skipped),
+        // t=8 (kept but OUTSIDE the first-overlap window [2,4) the insert is clipped to — skipped).
+        VideoInsertRegionTrack track = new(
+            "r0", "s0", 2.0, 8.0,
+            Keyframes:
+            [
+                new VideoInsertQuadKeyframe(2.0, 0.3, 0.2, 0.6, 0.2, 0.3, 0.7, 0.6, 0.7),
+                new VideoInsertQuadKeyframe(5.0, 0.4, 0.2, 0.7, 0.2, 0.4, 0.7, 0.7, 0.7),
+                new VideoInsertQuadKeyframe(8.0, 0.5, 0.2, 0.8, 0.2, 0.5, 0.7, 0.8, 0.7)
+            ],
+            Confidence: 0.9, MeanAreaRatio: 0.1, MeanAspectRatio: 0.6, MotionClass: "Slow", ColorName: "green");
+
+        (double Start, double End)? window = timeline.MapWindowToOutput(track.StartSec, track.EndSec, 0);
+        window.Should().NotBeNull();
+        window!.Value.Start.Should().BeApproximately(2.0, 1e-9);
+        window.Value.End.Should().BeApproximately(4.0, 1e-9, "the insert is clipped to the FIRST kept portion");
+
+        IReadOnlyList<InsertQuadFrame> keyframes = VideoCompileStepExecutor.BuildInsertKeyframes(
+            track, timeline, media, window.Value, maxKeyframes: 96, overscan: 0);
+
+        keyframes.Should().HaveCount(1, "only the t=2 keyframe survives the cut AND the clipped window");
+        keyframes[0].FrameIndex.Should().Be(0, "the surviving keyframe sits exactly at the insert's own start");
+        keyframes[0].X0.Should().BeApproximately(0.3 * 1920, 1e-6);
+        keyframes[0].Y3.Should().BeApproximately(0.7 * 1080, 1e-6);
+    }
+
+    [Fact]
+    public void BuildInsertKeyframes_overscan_expands_corners_outward_about_the_centroid()
+    {
+        var spans = new List<VideoCompileStepExecutor.ResolvedSpan> { new(0, 10, 0, 10, 0, 300) };
+        OutputTimeline timeline = OutputTimeline.Build(spans, VideoCompileStepExecutor.BuildHardCutSeamsForFallback(spans.Count));
+        var media = new VideoAnalysisMedia(10, 30, 1, 1000, 1000);
+
+        // A centered square quad [0.4..0.6]^2 — centroid (0.5, 0.5).
+        VideoInsertRegionTrack track = new(
+            "r0", "s0", 2.0, 8.0,
+            Keyframes: [new VideoInsertQuadKeyframe(2.0, 0.4, 0.4, 0.6, 0.4, 0.4, 0.6, 0.6, 0.6)],
+            Confidence: 0.9, MeanAreaRatio: 0.04, MeanAspectRatio: 1.0, MotionClass: "Static", ColorName: "green");
+
+        IReadOnlyList<InsertQuadFrame> keyframes = VideoCompileStepExecutor.BuildInsertKeyframes(
+            track, timeline, media, (2.0, 8.0), maxKeyframes: 96, overscan: 0.10);
+
+        // TL corner: 0.5 + (0.4 - 0.5) * 1.1 = 0.39 -> 390px.
+        keyframes[0].X0.Should().BeApproximately(390, 1e-6);
+        keyframes[0].Y0.Should().BeApproximately(390, 1e-6);
+        // BR corner: 0.5 + (0.6 - 0.5) * 1.1 = 0.61 -> 610px.
+        keyframes[0].X3.Should().BeApproximately(610, 1e-6);
+    }
+
+    [Fact]
+    public async Task Second_insert_beyond_MaxInserts_is_dropped_max_inserts_exceeded()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" });
+        artifact = artifact with
+        {
+            InsertRegions = [BuildInsertTrack("r0", 1.0, 4.0), BuildInsertTrack("r1", 5.0, 9.0)],
+            OfferedInsertRegionIds = ["r0", "r1"]
+        };
+
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        string assetKey = InsertAssetKey();
+        string planJson = JsonSerializer.Serialize(new
+        {
+            overlays = Array.Empty<object>(),
+            inserts = new[]
+            {
+                new { regionId = "r0", renderedAssetStorageKey = assetKey, reason = "a" },
+                new { regionId = "r1", renderedAssetStorageKey = assetKey, reason = "b" }
+            },
+            planRationale = "test"
+        });
+
+        StepExecutionContext context = CreateGraphicsContext(
+            artifact, decisionJson, planJson,
+            out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with { EnableGraphics = false, EnableInserts = true, MaxInserts = 1, PrePaddingMs = 0, PostPaddingMs = 0 });
+        MockAssetDownload(workspace, assetKey);
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(workspace, edlCaptured: e => edl = e).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        JsonElement inserts = edl.GetProperty("inserts");
+        inserts.GetProperty("appliedInsertCount").GetInt32().Should().Be(1);
+        JsonElement dropped = inserts.GetProperty("droppedInserts");
+        dropped.GetArrayLength().Should().Be(1);
+        dropped[0].GetProperty("regionId").GetString().Should().Be("r1");
+        dropped[0].GetProperty("reason").GetString().Should().Be("max_inserts_exceeded");
     }
 }

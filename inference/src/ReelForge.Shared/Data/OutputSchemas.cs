@@ -500,13 +500,59 @@ public class MotionGraphicsOverlay
 }
 
 /// <summary>
+/// One planned tracked screen insert: a Remotion-rendered scene composited INTO a tracked
+/// chroma-plate region of the source footage (e.g. an app UI inserted into a phone's green-screen
+/// area, warping with the phone as the hand moves) — see docs/video-editing.md "Tracked screen
+/// inserts (Phase 5)".
+/// </summary>
+/// <remarks>
+/// THE SAME RUSHCUT INVARIANT, extended to tracked compositing: this class must never gain a
+/// numeric, time-bearing, or coordinate-bearing property. Motion tracking is inherently per-frame
+/// numeric data — every one of those numbers is computed by deterministic C#
+/// (<c>ChromaQuadTracker</c>) and consumed by deterministic C#
+/// (<c>VideoCompileStepExecutor</c>/<c>ScreenInsertFilterBuilder</c>); the model's only
+/// contribution is an opaque <see cref="RegionId"/> drawn from the set it was actually offered
+/// (<c>VideoAnalysisArtifact.OfferedInsertRegionIds</c>) plus a rendered asset it produced itself
+/// via a real <c>RenderVideoAndUploadToStorage</c> call (the exact
+/// <see cref="MotionGraphicsOverlay.RenderedAssetStorageKey"/> precedent, validated the same way).
+/// See <c>MotionGraphicsPlanOutputInvariantTests</c>.
+/// </remarks>
+public class ScreenInsert
+{
+    /// <summary>Must be one of the ids in <c>VideoAnalysisArtifact.OfferedInsertRegionIds</c> (e.g. "r0") — never invented.</summary>
+    public string RegionId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// REQUIRED (unlike an overlay, an insert has no plain-text fallback): the storage key of the
+    /// rendered scene to composite into the tracked region, produced by a real
+    /// <c>RenderVideoAndUploadToStorage</c> call in THIS run. Validated against this execution's
+    /// own <c>projects/{projectId}/outputFiles/{executionId}/...</c> prefix before anything is
+    /// downloaded or composited — same discipline as
+    /// <see cref="MotionGraphicsOverlay.RenderedAssetStorageKey"/>.
+    /// </summary>
+    public string RenderedAssetStorageKey { get; set; } = string.Empty;
+
+    /// <summary>Why this insert was chosen. Prose only.</summary>
+    public string Reason { get; set; } = string.Empty;
+}
+
+/// <summary>
 /// Structured output for <c>MotionGraphicsPlannerAgent</c>. Zero or more overlays, each anchored
 /// only to a placement id offered by a <c>StepType.VideoAnalyze</c> step
-/// (<c>view.placements</c>) — never a timestamp or pixel coordinate anywhere in this type.
+/// (<c>view.placements</c>) — never a timestamp or pixel coordinate anywhere in this type — plus
+/// zero or more tracked screen inserts anchored only to offered insert-region ids
+/// (<c>view.insertRegions</c>).
 /// </summary>
 public class MotionGraphicsPlanOutput
 {
     public List<MotionGraphicsOverlay> Overlays { get; set; } = new();
+
+    /// <summary>
+    /// Tracked screen inserts (docs/video-editing.md "Tracked screen inserts (Phase 5)"). Empty by
+    /// default and for every plan produced before this field existed — additive, never required.
+    /// Only applied when <c>VideoCompileStepConfig.EnableInserts</c> is on.
+    /// </summary>
+    public List<ScreenInsert> Inserts { get; set; } = new();
 
     public string PlanRationale { get; set; } = string.Empty;
 }

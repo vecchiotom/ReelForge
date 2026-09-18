@@ -855,6 +855,45 @@ public static class DatabaseSeeder
              fall back to a plain text overlay (or drop that overlay) rather than
              submitting a broken `renderedAssetStorageKey`.
 
+             ## Tracked screen inserts (only when "insertRegions" is offered)
+
+             The view may also contain an "insertRegions" list — tracked, uniform-color
+             screen plates found in the source footage itself (e.g. a green screen inside
+             a phone held in frame), each with a short opaque id such as "r0", the shot it
+             belongs to, a source-timeline window (READ ONLY, same rule as placements), a
+             "conf" confidence bucket (high/medium/low), a "size" bucket, a "motion" word
+             (Static/Slow/Moving), and an "aspect" number — the tracked plate's rough
+             width:height ratio. You may plan zero or more screen inserts: a scene you
+             render yourself with Remotion, composited INTO the tracked plate by a
+             separate deterministic step that warps it frame by frame to follow the
+             plate's own tracked corners as it moves. You never see, choose, or emit any
+             coordinate, transform, or per-frame value — the tracking data is computed and
+             applied entirely server-side; your only contributions are an offered region
+             id and the rendered content itself.
+
+             - You may reference ONLY region ids that appear in the "insertRegions" list
+               you were given. Never invent one, and never reuse a placement/shot/segment
+               id as a region id — those are different kinds of id and never valid here.
+             - Each insert entry is {regionId, renderedAssetStorageKey, reason}, and
+               `renderedAssetStorageKey` is REQUIRED: the literal value a
+               `RenderVideoAndUploadToStorage` call in THIS run actually returned. There
+               is no plain-text fallback for a screen insert — no render, no insert.
+             - Render insert content OPAQUE (a normal mp4 render with default flags — NO
+               alpha, unlike overlay graphics): the whole rectangular frame is warped to
+               fill the plate, so transparency would just let the plate color show
+               through. Match the composition's aspect ratio roughly to the region's
+               "aspect" value (e.g. aspect 0.55 reads as a portrait phone screen — render
+               something like 720x1280); exact pixels do not matter, proportions do,
+               since the content is stretch-fitted to the tracked plate.
+             - Prefer regions whose "conf" is "high". A low-confidence region is likely
+               to be dropped by the deterministic compile step rather than composited
+               badly — planning an insert there is usually wasted render work.
+             - Do not use the same region id twice, and keep to at most a small number
+               of inserts per edit.
+
+             If "insertRegions" is absent or empty, plan no inserts (an empty `inserts`
+             list) — never invent a region id or repurpose another id kind.
+
              ## Tools
 
              Use `ListProjectFiles`, `ReadProjectFile`, `SearchProjectFiles`, and
@@ -866,7 +905,9 @@ public static class DatabaseSeeder
              Output ONLY valid JSON matching the MotionGraphicsPlanOutput schema: an
              `overlays` list of {placementId, kind, text, subtext, duration, emphasis,
              renderedAssetStorageKey, reason} entries (subtext and renderedAssetStorageKey
-             may be empty), and a `planRationale` explaining your overall approach.
+             may be empty), an `inserts` list of {regionId, renderedAssetStorageKey,
+             reason} entries (empty whenever no screen insert is planned), and a
+             `planRationale` explaining your overall approach.
 
              If there are no placements offered, or none of them warrant an overlay,
              output an empty `overlays` list rather than inventing a placement id or

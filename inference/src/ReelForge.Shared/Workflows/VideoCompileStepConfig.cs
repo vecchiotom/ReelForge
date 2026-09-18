@@ -224,4 +224,34 @@ public sealed record VideoCompileStepConfig(
     /// <summary>A same-source removed gap at least this long (ms) is eligible to read as a deliberate section break (rule R4) rather than an ordinary trimmed pause.</summary>
     int SectionBreakGapMs = 8000,
     /// <summary>Reserved no-op flag for a future span-motion phase (speed ramps/Ken Burns at cuts) — deliberately unimplemented in this addition; always behaves as if <c>false</c>.</summary>
-    bool EnableSpanMotion = false);
+    bool EnableSpanMotion = false,
+    // -- Tracked screen inserts (see docs/video-editing.md "Tracked screen inserts (Phase 5)").
+    //    EnableInserts=false (default) is byte-identical to the pre-inserts compile path — the
+    //    same load-bearing backward-compatibility guarantee as EnableGraphics/EnableMusic. --
+    /// <summary>
+    /// Composites the motion-graphics plan's chosen screen inserts (a Remotion-rendered scene
+    /// corner-pinned into a tracked chroma-plate region via ffmpeg's per-frame-animated
+    /// <c>perspective</c> filter) during the same encode. Inserts are read from the SAME resolved
+    /// <c>MotionGraphicsPlanOutput</c> that <see cref="GraphicsPlan"/> references (the planner
+    /// emits overlays and inserts in one output), so <see cref="GraphicsPlan"/> must be configured
+    /// for inserts to resolve — but <see cref="EnableGraphics"/> itself need not be on. Requires
+    /// <c>Mode = Reencode</c>. v1 limitation: skipped (soft, reported) on a multi-source compile or
+    /// one with overlapping seam transitions — see docs/video-editing.md.
+    /// </summary>
+    bool EnableInserts = false,
+    /// <summary>Tracks whose <c>VideoInsertRegionTrack.Confidence</c> falls below this are dropped (<c>confidence_below_threshold</c>) rather than composited badly.</summary>
+    double MinInsertConfidence = 0.5,
+    /// <summary>Cap on applied screen inserts; excess dropped in plan order (<c>max_inserts_exceeded</c>).</summary>
+    int MaxInserts = 3,
+    /// <summary>
+    /// Cap on the per-insert count of corner keyframes baked into the ffmpeg <c>perspective</c>
+    /// expressions (the full track is uniformly downsampled to at most this many). Bounds
+    /// filtergraph-expression size; the filtergraph is written to a script file when long, so this
+    /// is a per-frame-evaluation-cost knob, not a correctness one. Clamped 2..500.
+    /// </summary>
+    int MaxInsertExprKeyframes = 96,
+    /// <summary>
+    /// Fractional outward expansion of the tracked quad (about its centroid) before compositing,
+    /// hiding the plate's own edge fringe under the inserted content. Clamped 0..0.1. Default 0.02.
+    /// </summary>
+    double InsertOverscan = 0.02);
