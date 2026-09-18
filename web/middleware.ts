@@ -1,7 +1,22 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-const publicPaths = ['/login', '/api/'];
+const publicPaths = [
+  '/login',
+  '/api/',
+  // PWA assets: must be reachable without auth. The manifest's <link> tag is emitted on every
+  // page including /login, and the service worker precaches /offline at install time — both need
+  // to resolve to real content rather than a 307 to /login for the auth-gating to not silently
+  // break installability/precaching.
+  '/offline',
+  '/sw.js',
+  '/manifest.webmanifest',
+  '/icon.svg',
+  '/apple-icon.png',
+  '/favicon-192.png',
+  '/favicon-512.png',
+  '/favicon-512-maskable.png',
+];
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
