@@ -126,6 +126,36 @@ export interface WorkflowStepResult {
   artifactStorageKey?: string | null;
 }
 
+/**
+ * One turn published by an `EditRoom` step's multi-agent discussion. Mirrors the backend
+ * `WorkflowStepChatTurn` integration event field-for-field in camelCase. Delivered live over the
+ * execution SSE stream as a `step.chat-turn` event (see `use-execution-stream.ts`); `text` is
+ * truncated to ~600 chars at a word boundary (`truncated` flags this) — the full turn lives in the
+ * step's transcript artifact (`WorkflowStepResult.artifactStorageKey`).
+ */
+export interface WorkflowStepChatTurn {
+  executionId: string;
+  stepId: string;
+  stepResultId: string;
+  projectId: string;
+  workflowDefinitionId: string;
+  stepOrder: number;
+  stepLabel: string;
+  correlationId: string;
+  /** 0-based turn index within the room's discussion. */
+  turnIndex: number;
+  /** Configured turn ceiling, when known. */
+  totalTurns?: number | null;
+  /** Seat/persona name, e.g. "PacingEditor", "StoryEditor", "CraftEditor", or "Director". */
+  speaker: string;
+  speakerRole: 'editor' | 'director';
+  text: string;
+  truncated: boolean;
+  /** Offered shot/silence/segment ids this turn referenced, e.g. ["s2", "t7"]. */
+  idsMentioned: string[];
+  occurredAt: string;
+}
+
 export interface ReviewScore {
   id: string;
   iterationNumber: number;
