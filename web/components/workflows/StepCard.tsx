@@ -1,10 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { Card, Group, Text, ActionIcon, TextInput, Stack, Textarea, Collapse, Button } from '@mantine/core';
-import { IconGripVertical, IconTrash, IconSettings } from '@tabler/icons-react';
-import { useSortable } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
+import { Card, Group, Text, ActionIcon, TextInput, Stack, Textarea, Collapse, Button, Tooltip } from '@mantine/core';
+import { IconChevronUp, IconChevronDown, IconTrash, IconSettings } from '@tabler/icons-react';
 import { AgentPicker } from './AgentPicker';
 import { StepTypeSelector } from './StepTypeSelector';
 import { StepTypeBadge } from './StepTypeBadge';
@@ -19,19 +17,31 @@ import type { StepData } from './WorkflowStepList';
 interface StepCardProps {
   step: StepData;
   stepNumber: number;
+  allSteps: StepData[];
+  currentStepIndex: number;
+  projectId?: string;
   onChange: (updates: Partial<StepData>) => void;
   onRemove: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
 }
 
-export function StepCard({ step, stepNumber, onChange, onRemove }: StepCardProps) {
+export function StepCard({
+  step,
+  stepNumber,
+  allSteps,
+  currentStepIndex,
+  projectId,
+  onChange,
+  onRemove,
+  onMoveUp,
+  onMoveDown,
+  canMoveUp,
+  canMoveDown,
+}: StepCardProps) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: step.id });
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : 1,
-  };
 
   const showAgentPicker =
     step.stepType !== 'Conditional' &&
@@ -40,12 +50,33 @@ export function StepCard({ step, stepNumber, onChange, onRemove }: StepCardProps
     step.stepType !== 'VideoCompile';
 
   return (
-    <Card ref={setNodeRef} style={style} withBorder padding="sm" radius="md">
+    <Card withBorder padding="sm" radius="md">
       <Stack gap="sm">
         <Group gap="sm" wrap="nowrap">
-          <ActionIcon variant="subtle" {...attributes} {...listeners} style={{ cursor: 'grab' }}>
-            <IconGripVertical size={16} />
-          </ActionIcon>
+          <Stack gap={2}>
+            <Tooltip label="Move up">
+              <ActionIcon
+                variant="subtle"
+                size="sm"
+                disabled={!canMoveUp}
+                onClick={onMoveUp}
+                aria-label="Move step up"
+              >
+                <IconChevronUp size={14} />
+              </ActionIcon>
+            </Tooltip>
+            <Tooltip label="Move down">
+              <ActionIcon
+                variant="subtle"
+                size="sm"
+                disabled={!canMoveDown}
+                onClick={onMoveDown}
+                aria-label="Move step down"
+              >
+                <IconChevronDown size={14} />
+              </ActionIcon>
+            </Tooltip>
+          </Stack>
           <Text size="sm" fw={700} c="dimmed" w={24} ta="center">{stepNumber}</Text>
           <StepTypeBadge stepType={step.stepType} />
           <TextInput
@@ -55,7 +86,7 @@ export function StepCard({ step, stepNumber, onChange, onRemove }: StepCardProps
             style={{ flex: 1 }}
             size="sm"
           />
-          <ActionIcon color="red" variant="subtle" onClick={onRemove}>
+          <ActionIcon color="red" variant="subtle" onClick={onRemove} aria-label="Delete step">
             <IconTrash size={16} />
           </ActionIcon>
         </Group>
@@ -73,6 +104,8 @@ export function StepCard({ step, stepNumber, onChange, onRemove }: StepCardProps
             trueBranchStepOrder={step.trueBranchStepOrder}
             falseBranchStepOrder={step.falseBranchStepOrder}
             onChange={onChange}
+            previousSteps={allSteps}
+            currentStepIndex={currentStepIndex}
           />
         )}
 
@@ -81,6 +114,8 @@ export function StepCard({ step, stepNumber, onChange, onRemove }: StepCardProps
             loopSourceExpression={step.loopSourceExpression}
             maxIterations={step.maxIterations}
             onChange={onChange}
+            previousSteps={allSteps}
+            currentStepIndex={currentStepIndex}
           />
         )}
 
@@ -90,6 +125,8 @@ export function StepCard({ step, stepNumber, onChange, onRemove }: StepCardProps
             maxIterations={step.maxIterations}
             loopTargetStepOrder={step.loopTargetStepOrder}
             onChange={onChange}
+            previousSteps={allSteps}
+            currentStepIndex={currentStepIndex}
           />
         )}
 
@@ -97,6 +134,8 @@ export function StepCard({ step, stepNumber, onChange, onRemove }: StepCardProps
           <ExtractStepConfig
             config={step.extractConfig ?? createDefaultExtractStepConfig()}
             onChange={(extractConfig) => onChange({ extractConfig })}
+            allSteps={allSteps}
+            currentStepIndex={currentStepIndex}
           />
         )}
 
@@ -104,6 +143,9 @@ export function StepCard({ step, stepNumber, onChange, onRemove }: StepCardProps
           <VideoAnalyzeStepConfig
             config={step.videoAnalyzeConfig ?? createDefaultVideoAnalyzeStepConfig()}
             onChange={(videoAnalyzeConfig) => onChange({ videoAnalyzeConfig })}
+            allSteps={allSteps}
+            currentStepIndex={currentStepIndex}
+            projectId={projectId}
           />
         )}
 
@@ -111,6 +153,8 @@ export function StepCard({ step, stepNumber, onChange, onRemove }: StepCardProps
           <VideoCompileStepConfig
             config={step.videoCompileConfig ?? createDefaultVideoCompileStepConfig()}
             onChange={(videoCompileConfig) => onChange({ videoCompileConfig })}
+            allSteps={allSteps}
+            currentStepIndex={currentStepIndex}
           />
         )}
 

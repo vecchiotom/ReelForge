@@ -1,9 +1,9 @@
 'use client';
 
-import { memo, useState } from 'react';
+import { memo } from 'react';
 import { Handle, Position } from '@xyflow/react';
-import { Card, Group, Text, ActionIcon, Badge, Stack, TextInput, Tooltip } from '@mantine/core';
-import { IconTrash, IconWaveSine } from '@tabler/icons-react';
+import { Card, Group, Text, ActionIcon, Badge, Stack, TextInput, Tooltip, Collapse } from '@mantine/core';
+import { IconTrash, IconWaveSine, IconChevronDown, IconChevronUp } from '@tabler/icons-react';
 import { motion } from 'framer-motion';
 import { VideoAnalyzeStepConfig, createDefaultVideoAnalyzeStepConfig } from '../VideoAnalyzeStepConfig';
 import type { StepData } from '../WorkflowStepList';
@@ -14,13 +14,17 @@ interface VideoAnalyzeNodeData {
   allSteps: StepData[];
   currentStepIndex: number;
   projectId?: string;
+  expanded: boolean;
+  pinned: boolean;
+  onExpandChange: (stepId: string | null) => void;
+  onTogglePin: (stepId: string) => void;
   onChange: (updates: Partial<StepData>) => void;
   onRemove: () => void;
 }
 
 export const VideoAnalyzeNode = memo(({ data }: { data: VideoAnalyzeNodeData }) => {
-  const { step, stepNumber, allSteps, currentStepIndex, projectId, onChange, onRemove } = data;
-  const [expanded, setExpanded] = useState(false);
+  const { step, stepNumber, allSteps, currentStepIndex, projectId, expanded, pinned, onExpandChange, onTogglePin, onChange, onRemove } = data;
+  const isOpen = expanded || pinned;
 
   const config = step.videoAnalyzeConfig ?? createDefaultVideoAnalyzeStepConfig();
 
@@ -40,11 +44,11 @@ export const VideoAnalyzeNode = memo(({ data }: { data: VideoAnalyzeNodeData }) 
           style={{
             width: 360,
             border: '2px solid #3b82f6',
-            background: 'linear-gradient(135deg, #ffffff 0%, #eff6ff 100%)',
+            background: 'linear-gradient(135deg, light-dark(#ffffff, var(--mantine-color-dark-7)) 0%, light-dark(#eff6ff, var(--mantine-color-dark-6)) 100%)',
             cursor: 'pointer',
           }}
-          onMouseEnter={() => setExpanded(true)}
-          onMouseLeave={() => setExpanded(false)}
+          onMouseEnter={() => onExpandChange(step.id)}
+          onMouseLeave={() => onExpandChange(null)}
         >
           <Stack gap="sm">
             {/* Header */}
@@ -83,18 +87,32 @@ export const VideoAnalyzeNode = memo(({ data }: { data: VideoAnalyzeNodeData }) 
                   ASR: {config.transcription}
                 </Badge>
               </Group>
-              <Tooltip label="Delete Step">
-                <ActionIcon
-                  color="red"
-                  variant="subtle"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onRemove();
-                  }}
-                >
-                  <IconTrash size={16} />
-                </ActionIcon>
-              </Tooltip>
+              <Group gap="xs">
+                <Tooltip label={pinned ? 'Collapse' : 'Expand'}>
+                  <ActionIcon
+                    color="gray"
+                    variant="subtle"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onTogglePin(step.id);
+                    }}
+                  >
+                    {pinned ? <IconChevronUp size={16} /> : <IconChevronDown size={16} />}
+                  </ActionIcon>
+                </Tooltip>
+                <Tooltip label="Delete Step">
+                  <ActionIcon
+                    color="red"
+                    variant="subtle"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRemove();
+                    }}
+                  >
+                    <IconTrash size={16} />
+                  </ActionIcon>
+                </Tooltip>
+              </Group>
             </Group>
 
             {/* Label */}
@@ -112,7 +130,7 @@ export const VideoAnalyzeNode = memo(({ data }: { data: VideoAnalyzeNodeData }) 
             </Text>
 
             {/* Expanded: full config form */}
-            {expanded && (
+            <Collapse in={isOpen}>
               <VideoAnalyzeStepConfig
                 config={config}
                 onChange={(next) => onChange({ videoAnalyzeConfig: next })}
@@ -120,7 +138,7 @@ export const VideoAnalyzeNode = memo(({ data }: { data: VideoAnalyzeNodeData }) 
                 currentStepIndex={currentStepIndex}
                 projectId={projectId}
               />
-            )}
+            </Collapse>
           </Stack>
         </Card>
       </motion.div>

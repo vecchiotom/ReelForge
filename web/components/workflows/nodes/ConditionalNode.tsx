@@ -2,8 +2,8 @@
 
 import { memo, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
-import { Card, Group, Text, ActionIcon, Badge, Stack, Textarea, Tooltip, Modal, Button } from '@mantine/core';
-import { IconTrash, IconGitBranch, IconSettings } from '@tabler/icons-react';
+import { Card, Group, Text, ActionIcon, Badge, Stack, Textarea, Tooltip, Modal, Button, Collapse } from '@mantine/core';
+import { IconTrash, IconGitBranch, IconSettings, IconChevronDown, IconChevronUp } from '@tabler/icons-react';
 import { motion } from 'framer-motion';
 import { ConditionalStepConfig } from '../ConditionalStepConfig';
 import type { StepData } from '../WorkflowStepList';
@@ -13,13 +13,17 @@ interface ConditionalNodeData {
   stepNumber: number;
   allSteps: StepData[];
   currentStepIndex: number;
+  expanded: boolean;
+  pinned: boolean;
+  onExpandChange: (stepId: string | null) => void;
+  onTogglePin: (stepId: string) => void;
   onChange: (updates: Partial<StepData>) => void;
   onRemove: () => void;
 }
 
 export const ConditionalNode = memo(({ data }: { data: ConditionalNodeData }) => {
-  const { step, stepNumber, allSteps, currentStepIndex, onChange, onRemove } = data;
-  const [expanded, setExpanded] = useState(false);
+  const { step, stepNumber, allSteps, currentStepIndex, expanded, pinned, onExpandChange, onTogglePin, onChange, onRemove } = data;
+  const isOpen = expanded || pinned;
   const [configModalOpen, setConfigModalOpen] = useState(false);
 
   return (
@@ -38,11 +42,11 @@ export const ConditionalNode = memo(({ data }: { data: ConditionalNodeData }) =>
           style={{
             width: 320,
             border: '2px solid #f59e0b',
-            background: 'linear-gradient(135deg, #ffffff 0%, #fffbeb 100%)',
+            background: 'linear-gradient(135deg, light-dark(#ffffff, var(--mantine-color-dark-7)) 0%, light-dark(#fffbeb, var(--mantine-color-dark-6)) 100%)',
             cursor: 'pointer',
           }}
-          onMouseEnter={() => setExpanded(true)}
-          onMouseLeave={() => setExpanded(false)}
+          onMouseEnter={() => onExpandChange(step.id)}
+          onMouseLeave={() => onExpandChange(null)}
         >
           <Stack gap="sm">
             {/* Header */}
@@ -86,6 +90,18 @@ export const ConditionalNode = memo(({ data }: { data: ConditionalNodeData }) =>
                     <IconSettings size={16} />
                   </ActionIcon>
                 </Tooltip>
+                <Tooltip label={pinned ? 'Collapse' : 'Expand'}>
+                  <ActionIcon
+                    color="gray"
+                    variant="subtle"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onTogglePin(step.id);
+                    }}
+                  >
+                    {pinned ? <IconChevronUp size={16} /> : <IconChevronDown size={16} />}
+                  </ActionIcon>
+                </Tooltip>
                 <Tooltip label="Delete Step">
                   <ActionIcon
                     color="red"
@@ -107,12 +123,7 @@ export const ConditionalNode = memo(({ data }: { data: ConditionalNodeData }) =>
             </Text>
 
             {/* Expanded Content */}
-            <motion.div
-              initial={false}
-              animate={{ height: expanded ? 'auto' : 0, opacity: expanded ? 1 : 0 }}
-              transition={{ duration: 0.2 }}
-              style={{ overflow: 'hidden' }}
-            >
+            <Collapse in={isOpen}>
               <Stack gap="xs">
                 <Textarea
                   label="Condition Expression"
@@ -133,7 +144,7 @@ export const ConditionalNode = memo(({ data }: { data: ConditionalNodeData }) =>
                   </div>
                 </Group>
               </Stack>
-            </motion.div>
+            </Collapse>
           </Stack>
         </Card>
       </motion.div>

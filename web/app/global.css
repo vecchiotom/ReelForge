@@ -5,15 +5,19 @@
 
 /* ReactFlow custom styling */
 .react-flow {
-    background: #fafafa;
+    background: var(--mantine-color-body);
 }
 
 .react-flow__node {
-    transition: all 0.2s ease;
+    transition: box-shadow 0.2s ease;
 }
 
+/* Cheap fallback so a hovered node's expanding body paints above its siblings even before
+   FlowchartBuilder's pin/expand state promotes node.zIndex. Do NOT set `transform` here —
+   React Flow writes the node's actual position into `transform`, so overriding it fights the
+   library's own positioning and causes jitter (especially mid-drag). */
 .react-flow__node:hover {
-    transform: translateY(-2px);
+    z-index: 10;
 }
 
 .react-flow__edge {

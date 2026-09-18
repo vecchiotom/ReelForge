@@ -2,8 +2,8 @@
 
 import { memo, useState } from 'react';
 import { Handle, Position } from '@xyflow/react';
-import { Card, Group, Text, ActionIcon, Badge, Stack, NumberInput, Tooltip, Modal, Button } from '@mantine/core';
-import { IconTrash, IconStarFilled, IconSettings } from '@tabler/icons-react';
+import { Card, Group, Text, ActionIcon, Badge, Stack, NumberInput, Tooltip, Modal, Button, Collapse } from '@mantine/core';
+import { IconTrash, IconStarFilled, IconSettings, IconChevronDown, IconChevronUp } from '@tabler/icons-react';
 import { motion } from 'framer-motion';
 import { ReviewLoopStepConfig } from '../ReviewLoopStepConfig';
 import type { StepData } from '../WorkflowStepList';
@@ -13,13 +13,17 @@ interface ReviewLoopNodeData {
   stepNumber: number;
   allSteps: StepData[];
   currentStepIndex: number;
+  expanded: boolean;
+  pinned: boolean;
+  onExpandChange: (stepId: string | null) => void;
+  onTogglePin: (stepId: string) => void;
   onChange: (updates: Partial<StepData>) => void;
   onRemove: () => void;
 }
 
 export const ReviewLoopNode = memo(({ data }: { data: ReviewLoopNodeData }) => {
-  const { step, stepNumber, allSteps, currentStepIndex, onChange, onRemove } = data;
-  const [expanded, setExpanded] = useState(false);
+  const { step, stepNumber, allSteps, currentStepIndex, expanded, pinned, onExpandChange, onTogglePin, onChange, onRemove } = data;
+  const isOpen = expanded || pinned;
   const [configModalOpen, setConfigModalOpen] = useState(false);
 
   return (
@@ -39,12 +43,12 @@ export const ReviewLoopNode = memo(({ data }: { data: ReviewLoopNodeData }) => {
           style={{
             width: 320,
             border: '2px solid #ec4899',
-            background: 'linear-gradient(135deg, #ffffff 0%, #fdf2f8 100%)',
+            background: 'linear-gradient(135deg, light-dark(#ffffff, var(--mantine-color-dark-7)) 0%, light-dark(#fdf2f8, var(--mantine-color-dark-6)) 100%)',
             cursor: 'pointer',
             boxShadow: '0 8px 16px rgba(236, 72, 153, 0.2)',
           }}
-          onMouseEnter={() => setExpanded(true)}
-          onMouseLeave={() => setExpanded(false)}
+          onMouseEnter={() => onExpandChange(step.id)}
+          onMouseLeave={() => onExpandChange(null)}
         >
           <Stack gap="sm">
             {/* Header */}
@@ -88,6 +92,18 @@ export const ReviewLoopNode = memo(({ data }: { data: ReviewLoopNodeData }) => {
                     }}
                   >
                     <IconSettings size={16} />
+                  </ActionIcon>
+                </Tooltip>
+                <Tooltip label={pinned ? 'Collapse' : 'Expand'}>
+                  <ActionIcon
+                    color="gray"
+                    variant="subtle"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onTogglePin(step.id);
+                    }}
+                  >
+                    {pinned ? <IconChevronUp size={16} /> : <IconChevronDown size={16} />}
                   </ActionIcon>
                 </Tooltip>
                 <Tooltip label="Delete Step">
@@ -137,12 +153,7 @@ export const ReviewLoopNode = memo(({ data }: { data: ReviewLoopNodeData }) => {
             </Group>
 
             {/* Expanded Content */}
-            <motion.div
-              initial={false}
-              animate={{ height: expanded ? 'auto' : 0, opacity: expanded ? 1 : 0 }}
-              transition={{ duration: 0.2 }}
-              style={{ overflow: 'hidden' }}
-            >
+            <Collapse in={isOpen}>
               <Stack gap="xs">
                 <NumberInput
                   label="Minimum Score (1-10)"
@@ -200,7 +211,7 @@ export const ReviewLoopNode = memo(({ data }: { data: ReviewLoopNodeData }) => {
                   </Text>
                 </div>
               </Stack>
-            </motion.div>
+            </Collapse>
           </Stack>
         </Card>
       </motion.div>

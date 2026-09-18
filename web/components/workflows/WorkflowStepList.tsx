@@ -2,9 +2,6 @@
 
 import { Stack, Button } from '@mantine/core';
 import { IconPlus } from '@tabler/icons-react';
-import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
-import type { DragEndEvent } from '@dnd-kit/core';
-import { SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
 import { StepCard } from './StepCard';
 import type {
   AgentInputContextMode,
@@ -42,25 +39,22 @@ export interface StepData {
 interface WorkflowStepListProps {
   steps: StepData[];
   onChange: (steps: StepData[]) => void;
+  /** Threaded into StepCard's VideoAnalyzeStepConfig so its VideoSourceRef picker can list this project's video files. */
+  projectId?: string;
 }
 
 let nextId = 1;
 
-export function WorkflowStepList({ steps, onChange }: WorkflowStepListProps) {
-  const sensors = useSensors(
-    useSensor(PointerSensor),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-  );
+/** Returns a new array with the item at `from` moved to `to`. Mirrors dnd-kit's `arrayMove` utility
+ * without depending on it — this mobile fallback list is reorderable by button tap, not drag. */
+function arrayMove<T>(array: T[], from: number, to: number): T[] {
+  const next = [...array];
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  return next;
+}
 
-  const handleDragEnd = (event: DragEndEvent) => {
-    const { active, over } = event;
-    if (over && active.id !== over.id) {
-      const oldIndex = steps.findIndex((s) => s.id === active.id);
-      const newIndex = steps.findIndex((s) => s.id === over.id);
-      onChange(arrayMove(steps, oldIndex, newIndex));
-    }
-  };
-
+export function WorkflowStepList({ steps, onChange, projectId }: WorkflowStepListProps) {
   const addStep = () => {
     onChange([
       ...steps,
@@ -97,21 +91,30 @@ export function WorkflowStepList({ steps, onChange }: WorkflowStepListProps) {
     onChange(steps.filter((_, i) => i !== index));
   };
 
+  const moveStep = (index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    if (target < 0 || target >= steps.length) return;
+    onChange(arrayMove(steps, index, target));
+  };
+
   return (
     <Stack gap="sm">
-      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-        <SortableContext items={steps.map((s) => s.id)} strategy={verticalListSortingStrategy}>
-          {steps.map((step, index) => (
-            <StepCard
-              key={step.id}
-              step={step}
-              stepNumber={index + 1}
-              onChange={(updates) => updateStep(index, updates)}
-              onRemove={() => removeStep(index)}
-            />
-          ))}
-        </SortableContext>
-      </DndContext>
+      {steps.map((step, index) => (
+        <StepCard
+          key={step.id}
+          step={step}
+          stepNumber={index + 1}
+          allSteps={steps}
+          currentStepIndex={index}
+          projectId={projectId}
+          onChange={(updates) => updateStep(index, updates)}
+          onRemove={() => removeStep(index)}
+          onMoveUp={() => moveStep(index, -1)}
+          onMoveDown={() => moveStep(index, 1)}
+          canMoveUp={index > 0}
+          canMoveDown={index < steps.length - 1}
+        />
+      ))}
       <Button variant="outline" leftSection={<IconPlus size={16} />} onClick={addStep}>
         Add Step
       </Button>
