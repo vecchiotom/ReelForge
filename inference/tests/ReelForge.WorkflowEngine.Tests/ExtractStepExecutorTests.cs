@@ -290,7 +290,8 @@ public class ExtractStepExecutorTests
             logger: NullLogger<WorkflowExecutorService>.Instance,
             executors: Array.Empty<IStepExecutor>(),
             rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()),
-            hardeningOptions: Options.Create(new WorkflowHardeningOptions { MaxStepRetries = 3 }));
+            hardeningOptions: Options.Create(new WorkflowHardeningOptions { MaxStepRetries = 3 }),
+            cancellationRegistry: new ReelForge.WorkflowEngine.Execution.ExecutionCancellationRegistry());
 
         MethodInfo method = typeof(WorkflowExecutorService).GetMethod(
             "ResolveMaxRetries", BindingFlags.NonPublic | BindingFlags.Instance)!;

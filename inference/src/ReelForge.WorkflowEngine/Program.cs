@@ -146,6 +146,11 @@ builder.Services.AddSingleton<IStepExecutor, VideoAnalyzeStepExecutor>();
 builder.Services.AddSingleton<IStepExecutor, VideoCompileStepExecutor>();
 
 // --- Workflow Executor ---
+// Singleton: WorkflowExecutorService is Scoped (a new instance per consumed message), so the
+// running-execution's cancellation tokens must live somewhere every scope can reach, or a stop
+// request handled by a separate consumer instance silently cancels nothing — see
+// ExecutionCancellationRegistry's doc comment.
+builder.Services.AddSingleton<ExecutionCancellationRegistry>();
 builder.Services.AddScoped<WorkflowExecutorService>();
 builder.Services.AddScoped<IWorkflowEventPublisher, WorkflowEventPublisher>();
 

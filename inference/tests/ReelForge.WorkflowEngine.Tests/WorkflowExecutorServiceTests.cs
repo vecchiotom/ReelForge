@@ -59,7 +59,8 @@ namespace ReelForge.WorkflowEngine.Tests
                 logger: NullLogger<WorkflowExecutorService>.Instance,
                 executors: new[] { new ThrowingExecutor() },
                 rabbitHelper: fakeHelper,
-                hardeningOptions: Options.Create(new WorkflowHardeningOptions()));
+                hardeningOptions: Options.Create(new WorkflowHardeningOptions()),
+                cancellationRegistry: new ReelForge.WorkflowEngine.Execution.ExecutionCancellationRegistry());
 
             await service.CancelExecutionAsync(id, Guid.NewGuid());
             fakeHelper.Called.Should().BeTrue();
@@ -75,7 +76,8 @@ namespace ReelForge.WorkflowEngine.Tests
                 logger: NullLogger<WorkflowExecutorService>.Instance,
                 executors: new[] { executor },
                 rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()),
-                hardeningOptions: Options.Create(new WorkflowHardeningOptions()));
+                hardeningOptions: Options.Create(new WorkflowHardeningOptions()),
+                cancellationRegistry: new ReelForge.WorkflowEngine.Execution.ExecutionCancellationRegistry());
 
             var step = new WorkflowStep { StepOrder = 1, StepType = StepType.Agent };
             var context = new StepExecutionContext
@@ -103,24 +105,169 @@ namespace ReelForge.WorkflowEngine.Tests
         [Fact]
         public async Task CancelExecutionAsync_cancels_token_when_present()
         {
+            var registry = new ReelForge.WorkflowEngine.Execution.ExecutionCancellationRegistry();
             var service = new WorkflowExecutorService(
                 scopeFactory: null!,
                 eventPublisher: null!,
                 logger: NullLogger<WorkflowExecutorService>.Instance,
                 executors: new[] { new ThrowingExecutor() },
                 rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()),
-                hardeningOptions: Options.Create(new WorkflowHardeningOptions()));
+                hardeningOptions: Options.Create(new WorkflowHardeningOptions()),
+                cancellationRegistry: registry);
 
-            // inject a fake cancellation token source
-            var field = typeof(WorkflowExecutorService).GetField("_executionCts",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var dict = (System.Collections.Concurrent.ConcurrentDictionary<System.Guid, CancellationTokenSource>)field.GetValue(service);
             var id = Guid.NewGuid();
             var cts = new CancellationTokenSource();
-            dict[id] = cts;
+            registry.Register(id, cts);
 
             await service.CancelExecutionAsync(id, Guid.NewGuid());
             cts.IsCancellationRequested.Should().BeTrue();
+        }
+
+        [Fact]
+        public async Task CancelExecutionAsync_finds_nothing_to_cancel_when_the_registry_never_saw_the_execution()
+        {
+            // The exact shape of the real bug this whole registry exists to fix: a second,
+            // unrelated WorkflowExecutorService instance (e.g. one constructed for a different
+            // consumed message) has never seen this execution id at all if it's given its OWN
+            // registry rather than the shared one — TryCancel must report that honestly (false),
+            // not throw or silently succeed.
+            var service = new WorkflowExecutorService(
+                scopeFactory: null!,
+                eventPublisher: null!,
+                logger: NullLogger<WorkflowExecutorService>.Instance,
+                executors: new[] { new ThrowingExecutor() },
+                rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()),
+                hardeningOptions: Options.Create(new WorkflowHardeningOptions()),
+                cancellationRegistry: new ReelForge.WorkflowEngine.Execution.ExecutionCancellationRegistry());
+
+            Func<Task> act = () => service.CancelExecutionAsync(Guid.NewGuid(), Guid.NewGuid());
+
+            await act.Should().NotThrowAsync();
+        }
+
+        private sealed class NoOpEventPublisher : IWorkflowEventPublisher
+        {
+            public Task PublishExecutionRunningAsync(WorkflowExecution execution, CancellationToken ct) => Task.CompletedTask;
+            public Task PublishStepStartedAsync(
+                WorkflowExecution execution, WorkflowStep step, WorkflowStepResult stepResult, string? inputPreview, CancellationToken ct) =>
+                Task.CompletedTask;
+            public Task PublishStepCompletedAsync(
+                WorkflowExecution execution, WorkflowStep step, WorkflowStepResult stepResult,
+                StepExecutionResult stepExecutionResult, CancellationToken ct) => Task.CompletedTask;
+            public Task PublishStepProgressAsync(
+                WorkflowExecution execution, WorkflowStep step, WorkflowStepResult stepResult,
+                string stage, int? percentComplete, CancellationToken ct) => Task.CompletedTask;
+            public Task PublishStepDiagnosticsAsync(
+                WorkflowExecution execution, WorkflowStep step, WorkflowStepResult stepResult,
+                StepExecutionResult stepExecutionResult, CancellationToken ct) => Task.CompletedTask;
+            public Task PublishExecutionCompletedAsync(WorkflowExecution execution, CancellationToken ct) => Task.CompletedTask;
+            public Task PublishExecutionFailedAsync(WorkflowExecution execution, CancellationToken ct) => Task.CompletedTask;
+        }
+
+        // Simulates the real-run regression as faithfully as an in-process test can: a SEPARATE
+        // WorkflowExecutorService instance (standing in for the separate DI-scoped
+        // WorkflowExecutionStopRequestedConsumer instance that handles a stop request in
+        // production) calls CancelExecutionAsync WHILE the step is "in flight" — modeled here as a
+        // call made from inside the step executor itself, since a real second thread isn't needed
+        // to prove the fix. The step then reports success normally (no OperationCanceledException
+        // ever thrown or observed — exactly what was seen live: a long-running chat completion ran
+        // to a natural, successful conclusion without honoring the token in time), reproducing
+        // "cancel requested mid-step, step finishes successfully anyway" against two instances that
+        // must still agree because they share one ExecutionCancellationRegistry.
+        private sealed class SucceedsAfterExternalCancellationExecutor : IStepExecutor
+        {
+            private readonly Guid _executionId;
+            private readonly WorkflowExecutorService _canceller;
+            public StepType StepType => StepType.Agent;
+
+            public SucceedsAfterExternalCancellationExecutor(Guid executionId, WorkflowExecutorService canceller)
+            {
+                _executionId = executionId;
+                _canceller = canceller;
+            }
+
+            public async Task<StepExecutionResult> ExecuteAsync(StepExecutionContext context)
+            {
+                await _canceller.CancelExecutionAsync(_executionId, Guid.NewGuid());
+
+                // The step itself never observes the cancellation (its own awaited HTTP call ran to
+                // completion first, matching the SDK-internal-timeout behavior observed live) — it
+                // reports success exactly as if nothing had happened.
+                return new StepExecutionResult
+                {
+                    Output = "{}",
+                    NextStepIndex = context.CurrentStepIndex + 1,
+                    NewIterationCount = context.IterationCount,
+                    Status = StepStatus.Completed
+                };
+            }
+        }
+
+        [Fact]
+        public async Task ExecuteAsync_does_not_overwrite_a_mid_run_cancellation_with_Passed()
+        {
+            var options = new DbContextOptionsBuilder<WorkflowEngineDbContext>()
+                .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
+            using var db = new WorkflowEngineDbContext(options);
+
+            Guid projectId = Guid.NewGuid();
+            Guid workflowDefId = Guid.NewGuid();
+            Guid executionId = Guid.NewGuid();
+
+            AgentDefinition agent = new() { Id = Guid.NewGuid(), Name = "Agent", AgentType = AgentType.VideoStoryEditor, SystemPrompt = "" };
+            WorkflowStep step1 = new()
+            {
+                Id = Guid.NewGuid(), StepOrder = 1, StepType = StepType.Agent,
+                AgentDefinitionId = agent.Id, AgentDefinition = agent
+            };
+            WorkflowDefinition definition = new()
+            {
+                Id = workflowDefId, Name = "test", ProjectId = projectId,
+                Steps = new List<WorkflowStep> { step1 }
+            };
+            WorkflowExecution execution = new()
+            {
+                Id = executionId, WorkflowDefinitionId = workflowDefId, ProjectId = projectId,
+                Status = ExecutionStatus.Queued, WorkflowDefinition = definition
+            };
+
+            db.AgentDefinitions.Add(agent);
+            db.WorkflowDefinitions.Add(definition);
+            db.WorkflowExecutions.Add(execution);
+            await db.SaveChangesAsync();
+
+            var scopeFactory = new FakeScopeFactory(db);
+            // The one piece that must be SHARED for the fix to matter — exactly the singleton
+            // registration in Program.cs, standing in for two DI scopes that would otherwise never
+            // see each other's cancellation tokens.
+            var sharedRegistry = new ReelForge.WorkflowEngine.Execution.ExecutionCancellationRegistry();
+
+            var canceller = new WorkflowExecutorService(
+                scopeFactory: scopeFactory,
+                eventPublisher: new NoOpEventPublisher(),
+                logger: NullLogger<WorkflowExecutorService>.Instance,
+                executors: Array.Empty<IStepExecutor>(),
+                rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()),
+                hardeningOptions: Options.Create(new WorkflowHardeningOptions()),
+                cancellationRegistry: sharedRegistry);
+
+            var runner = new WorkflowExecutorService(
+                scopeFactory: scopeFactory,
+                eventPublisher: new NoOpEventPublisher(),
+                logger: NullLogger<WorkflowExecutorService>.Instance,
+                executors: new IStepExecutor[] { new SucceedsAfterExternalCancellationExecutor(executionId, canceller) },
+                rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()),
+                hardeningOptions: Options.Create(new WorkflowHardeningOptions()),
+                cancellationRegistry: sharedRegistry);
+
+            await runner.ExecuteAsync(executionId, "corr-1", CancellationToken.None);
+
+            WorkflowExecution? final = await db.WorkflowExecutions.FindAsync(executionId);
+            final.Should().NotBeNull();
+            final!.Status.Should().Be(ExecutionStatus.Cancelled,
+                "a cancellation requested by a separate consumer instance while the last step was " +
+                "in flight must win even though that step itself completed successfully afterward, " +
+                "and even though the two instances never talk to each other directly");
         }
 
         [Fact(Skip = "Depends on reference tables excluded from test harness migrations and provider-specific DDL.")]
@@ -191,7 +338,8 @@ namespace ReelForge.WorkflowEngine.Tests
                 logger: NullLogger<WorkflowExecutorService>.Instance,
                 executors: Array.Empty<IStepExecutor>(),
                 rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()),
-                hardeningOptions: Options.Create(new WorkflowHardeningOptions { MaxStepRetries = 3 }));
+                hardeningOptions: Options.Create(new WorkflowHardeningOptions { MaxStepRetries = 3 }),
+                cancellationRegistry: new ReelForge.WorkflowEngine.Execution.ExecutionCancellationRegistry());
 
             System.Reflection.MethodInfo method = typeof(WorkflowExecutorService).GetMethod(
                 "ResolveMaxRetries", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
@@ -254,7 +402,8 @@ namespace ReelForge.WorkflowEngine.Tests
                 logger: NullLogger<WorkflowExecutorService>.Instance,
                 executors: new[] { (IStepExecutor)executor },
                 rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()),
-                hardeningOptions: Options.Create(new WorkflowHardeningOptions()));
+                hardeningOptions: Options.Create(new WorkflowHardeningOptions()),
+                cancellationRegistry: new ReelForge.WorkflowEngine.Execution.ExecutionCancellationRegistry());
 
             var step = new WorkflowStep { StepOrder = 3, StepType = StepType.VideoCompile };
             var context = new StepExecutionContext
@@ -295,7 +444,8 @@ namespace ReelForge.WorkflowEngine.Tests
                 logger: NullLogger<WorkflowExecutorService>.Instance,
                 executors: new IStepExecutor[] { agentStub, analyzeStub, compileStub },
                 rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()),
-                hardeningOptions: Options.Create(new WorkflowHardeningOptions()));
+                hardeningOptions: Options.Create(new WorkflowHardeningOptions()),
+                cancellationRegistry: new ReelForge.WorkflowEngine.Execution.ExecutionCancellationRegistry());
 
             System.Reflection.FieldInfo field = typeof(WorkflowExecutorService).GetField(
                 "_executors", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;

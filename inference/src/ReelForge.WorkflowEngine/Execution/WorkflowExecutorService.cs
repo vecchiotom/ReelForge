@@ -24,9 +24,13 @@ public class WorkflowExecutorService
     private readonly RabbitMqHelper _rabbitHelper;
     private readonly WorkflowHardeningOptions _hardeningOptions;
 
-    // track cancellation tokens for running executions so external requests can abort them
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, CancellationTokenSource> _executionCts
-        = new();
+    // Cancellation tokens for running executions live in a separate SINGLETON
+    // (ExecutionCancellationRegistry — see its doc comment for why), not as an instance field
+    // here: this service is registered Scoped (it depends on the Scoped IWorkflowEventPublisher),
+    // so a stop request arriving in its own DI scope/consumer instance would otherwise get a
+    // brand-new WorkflowExecutorService with its own empty dictionary, sharing nothing with the
+    // instance actually running the execution it's trying to cancel.
+    private readonly ExecutionCancellationRegistry _cancellationRegistry;
 
     public WorkflowExecutorService(
         IServiceScopeFactory scopeFactory,
@@ -34,7 +38,8 @@ public class WorkflowExecutorService
         ILogger<WorkflowExecutorService> logger,
         IEnumerable<IStepExecutor> executors,
         RabbitMqHelper rabbitHelper,
-        IOptions<WorkflowHardeningOptions> hardeningOptions)
+        IOptions<WorkflowHardeningOptions> hardeningOptions,
+        ExecutionCancellationRegistry cancellationRegistry)
     {
         _scopeFactory = scopeFactory;
         _eventPublisher = eventPublisher;
@@ -42,6 +47,7 @@ public class WorkflowExecutorService
         _executors = executors.ToDictionary(e => e.StepType);
         _rabbitHelper = rabbitHelper;
         _hardeningOptions = hardeningOptions.Value;
+        _cancellationRegistry = cancellationRegistry;
     }
 
     public async Task ExecuteAsync(Guid executionId, string correlationId, CancellationToken ct)
@@ -55,7 +61,7 @@ public class WorkflowExecutorService
         // create a linked cancellation token source so we can cancel from outside via CancelExecutionAsync
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         ct = linkedCts.Token;
-        _executionCts[executionId] = linkedCts;
+        _cancellationRegistry.Register(executionId, linkedCts);
 
         using IServiceScope scope = _scopeFactory.CreateScope();
         WorkflowEngineDbContext db = scope.ServiceProvider.GetRequiredService<WorkflowEngineDbContext>();
@@ -70,7 +76,7 @@ public class WorkflowExecutorService
         {
             _logger.LogError("Workflow execution {ExecutionId} not found", executionId);
             ReelForgeDiagnostics.ActiveWorkflows.Add(-1);
-            _executionCts.TryRemove(executionId, out _);
+            _cancellationRegistry.Remove(executionId);
             return;
         }
 
@@ -83,7 +89,7 @@ public class WorkflowExecutorService
                 executionId,
                 execution.Status);
             ReelForgeDiagnostics.ActiveWorkflows.Add(-1);
-            _executionCts.TryRemove(executionId, out _);
+            _cancellationRegistry.Remove(executionId);
             return;
         }
 
@@ -375,6 +381,20 @@ public class WorkflowExecutorService
 
             await EnsureAuthorArtifactProducedAsync(execution.Id, steps, db, ct);
 
+            // Defense in depth, on top of the ExecutionCancellationRegistry fix (see that class's
+            // doc comment for the actual root cause this whole mechanism guards against): even
+            // with the token now genuinely reaching a concurrent CancelExecutionAsync call, a stop
+            // request racing the exact moment the last step naturally finishes could still slip
+            // through without ever causing an awaited call to throw. Check the flag explicitly
+            // here, at the one place a "successful" completion is about to be written, so a
+            // request to stop always wins regardless of whether anything deeper in the call chain
+            // happened to observe and throw on it in time.
+            if (ct.IsCancellationRequested)
+            {
+                await MarkCancelledAsync(execution, db, executionId);
+                return;
+            }
+
             execution.Status = ExecutionStatus.Passed;
             execution.ResultJson = EnsureJsonForJsonbColumn(accumulatedOutput);
             execution.CompletedAt = DateTime.UtcNow;
@@ -414,16 +434,7 @@ public class WorkflowExecutorService
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            _logger.LogInformation("Workflow execution {ExecutionId} was cancelled", executionId);
-            execution.Status = ExecutionStatus.Cancelled;
-            execution.ErrorMessage = "Cancelled by user request";
-            execution.CompletedAt = DateTime.UtcNow;
-            await db.SaveChangesAsync(CancellationToken.None);
-            // publish as failed so existing consumers treat it similarly
-            await _eventPublisher.PublishExecutionFailedAsync(execution, CancellationToken.None);
-
-            ReelForgeDiagnostics.CompletedWorkflows.Add(1,
-                new KeyValuePair<string, object?>("status", "cancelled"));
+            await MarkCancelledAsync(execution, db, executionId);
             // do not rethrow; cancellation is expected
         }
         catch (Exception ex)
@@ -470,9 +481,30 @@ public class WorkflowExecutorService
         finally
         {
             ReelForgeDiagnostics.ActiveWorkflows.Add(-1);
-            // remove from cancellation map
-            _executionCts.TryRemove(executionId, out _);
+            _cancellationRegistry.Remove(executionId);
         }
+    }
+
+    /// <summary>
+    /// Persists a Cancelled result and publishes it as a failure (existing consumers treat the two
+    /// the same way). Shared by the two places <see cref="ExecuteAsync"/> can discover a stop
+    /// request was honored: an <see cref="OperationCanceledException"/> actually observed and
+    /// thrown from within the step-execution loop, and the defensive check right before writing a
+    /// "successful" completion — for exactly why that second path exists and is not redundant, see
+    /// the comment at its call site.
+    /// </summary>
+    private async Task MarkCancelledAsync(WorkflowExecution execution, WorkflowEngineDbContext db, Guid executionId)
+    {
+        _logger.LogInformation("Workflow execution {ExecutionId} was cancelled", executionId);
+        execution.Status = ExecutionStatus.Cancelled;
+        execution.ErrorMessage = "Cancelled by user request";
+        execution.CompletedAt = DateTime.UtcNow;
+        await db.SaveChangesAsync(CancellationToken.None);
+        // publish as failed so existing consumers treat it similarly
+        await _eventPublisher.PublishExecutionFailedAsync(execution, CancellationToken.None);
+
+        ReelForgeDiagnostics.CompletedWorkflows.Add(1,
+            new KeyValuePair<string, object?>("status", "cancelled"));
     }
 
     /// <summary>
@@ -485,10 +517,9 @@ public class WorkflowExecutorService
         _logger.LogInformation("Cancellation requested for execution {ExecutionId} by user {UserId}", executionId, requestedByUserId);
 
         // cancel any running token
-        if (_executionCts.TryGetValue(executionId, out var cts))
+        if (_cancellationRegistry.TryCancel(executionId))
         {
-            _logger.LogInformation("Triggering cancellation token for running execution {ExecutionId}", executionId);
-            cts.Cancel();
+            _logger.LogInformation("Triggered cancellation token for running execution {ExecutionId}", executionId);
         }
 
         // if we have no scope factory (e.g. running in unit tests) just return

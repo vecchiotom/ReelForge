@@ -194,7 +194,8 @@ public class WorkflowExecutorServiceReviewLoopTests
             logger: NullLogger<WorkflowExecutorService>.Instance,
             executors: executors,
             rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()),
-            hardeningOptions: Options.Create(new WorkflowHardeningOptions()));
+            hardeningOptions: Options.Create(new WorkflowHardeningOptions()),
+                cancellationRegistry: new ReelForge.WorkflowEngine.Execution.ExecutionCancellationRegistry());
 
         await service.ExecuteAsync(executionId, "corr-1", CancellationToken.None);
 
