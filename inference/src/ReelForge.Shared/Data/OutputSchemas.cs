@@ -596,6 +596,70 @@ public class MusicPlanOutput
 }
 
 // ============================================================================
+// SOUND EFFECTS AGENT OUTPUT SCHEMA (see docs/video-editing.md "Sound effects")
+// ============================================================================
+
+/// <summary>
+/// One planned sound-effect cue: an offered SFX clip played at the moment an offered cut-anchor
+/// item begins in the compiled output. Structured output element for <c>SoundDesignerAgent</c> —
+/// see docs/video-editing.md "Sound effects".
+/// </summary>
+/// <remarks>
+/// THE SAME RUSHCUT INVARIANT, extended to sound effects: this class, and
+/// <see cref="SfxPlanOutput"/> as a whole, must never gain a numeric or time-bearing property —
+/// every property is a plain string (guarded by <c>SfxPlanOutputInvariantTests</c>), so the model
+/// is physically incapable of emitting a timestamp, an offset in milliseconds, a dB value, or a
+/// duration. Its only contributions are an opaque <see cref="SfxId"/> drawn from the set it was
+/// actually offered (<c>VideoAnalysisArtifact.OfferedSfxIds</c>), an opaque <see cref="AnchorId"/>
+/// drawn from the CUT-ANCHOR set it was offered (<c>VideoAnalysisArtifact.OfferedIds</c> —
+/// deliberately the same ids a Keep span may name, since "this sound fires when this shot/gap/
+/// segment begins" is the whole anchoring model), and enum-word <see cref="Timing"/>/
+/// <see cref="Volume"/> choices that <c>VideoCompileStepExecutor</c> alone resolves to a concrete
+/// output-timeline offset and gain.
+/// </remarks>
+public class SfxCue
+{
+    /// <summary>Must be one of the ids in <c>VideoAnalysisArtifact.OfferedSfxIds</c> (e.g. "x0") — never invented, never a music-track/placement id.</summary>
+    public string SfxId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Must be one of the CUT-ANCHOR ids in <c>VideoAnalysisArtifact.OfferedIds</c> (a shot
+    /// "s{n}", silence gap "g{n}", or transcript segment "t{n}"). The cue fires at the moment
+    /// this item BEGINS in the compiled output — an anchor whose start was cut away by the edit
+    /// decision is dropped server-side, never guessed at.
+    /// </summary>
+    public string AnchorId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// One of: OnCut | Lead | Lag — never a number. OnCut fires exactly at the anchor's start
+    /// moment; Lead slightly before it; Lag slightly after it. The actual offsets are
+    /// server-side config (<c>VideoCompileStepConfig.SfxLeadMs</c>/<c>SfxLagMs</c>).
+    /// </summary>
+    public string Timing { get; set; } = string.Empty;
+
+    /// <summary>One of: Subtle | Normal | Strong — never a dB number. Mapped to a gain entirely server-side.</summary>
+    public string Volume { get; set; } = string.Empty;
+
+    /// <summary>Why this cue, here. Prose only.</summary>
+    public string Reason { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Structured output for <c>SoundDesignerAgent</c>: zero or more discrete sound-effect cues.
+/// Unlike <see cref="MusicPlanOutput"/> (one continuous bed for the whole program, at most one
+/// track), SFX is naturally a LIST of short moments — but each element carries only opaque
+/// offered ids plus enum words, so the rushcut invariant holds by construction (no numeric or
+/// time-bearing CLR type anywhere — see <c>SfxPlanOutputInvariantTests</c>). An EMPTY
+/// <see cref="Cues"/> list is a fully valid outcome: no effect is better than a gratuitous one.
+/// </summary>
+public class SfxPlanOutput
+{
+    public List<SfxCue> Cues { get; set; } = new();
+
+    public string PlanRationale { get; set; } = string.Empty;
+}
+
+// ============================================================================
 // COLOR GRADE AGENT OUTPUT SCHEMA (see docs/video-editing.md "Color grading")
 // ============================================================================
 

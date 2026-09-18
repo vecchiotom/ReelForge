@@ -476,6 +476,61 @@ public static class WorkflowTemplateCatalog
                     MaxIterations: 3,
                     MinScore: 8,
                     AgentInputContextMode: AgentInputContextMode.FullWorkflow)
+            ]),
+        new(
+            Key: "video-derush-edit-sfx",
+            Name: "Video Derush, Edit & SFX",
+            Description: "Opt-in template extending Video Derush & Edit with discrete sound effects: the analyze step also offers candidate audio/* project files as SFX-clip ids, a sound-designer agent plans zero or more cues (an offered clip fired when an offered shot/gap/segment begins, plus timing/volume words), and the compile step mixes each cue over the dialogue at its resolved output-timeline moment during the same ffmpeg encode. Demonstrates OfferSfxClips/EnableSfx end to end.",
+            Version: 1,
+            AutoCreateOnProject: false,
+            RequiresUserInput: false,
+            Steps:
+            [
+                new(
+                    AgentType.VideoTransform,
+                    "Analyze source video",
+                    StepType.VideoAnalyze,
+                    // Same ProjectFile-source rationale as video-derush-edit's first step above
+                    // (this is the first step, so PreviousStepOutput would fail SOURCE_UNRESOLVED
+                    // on every run) — plus offerSfxClips:true to derive the "x{n}" SFX-clip
+                    // candidates the sound designer picks from.
+                    VideoAnalyzeConfigJson: """
+                        {"version":1,"source":{"kind":"ProjectFile"},"offerSfxClips":true}
+                        """),
+                new(
+                    AgentType.VideoStoryEditor,
+                    "Decide which spans to keep",
+                    AgentInputContextMode: AgentInputContextMode.PreviousStepOnly),
+                new(
+                    AgentType.SoundDesigner,
+                    "Plan sound-effect cues",
+                    // FullWorkflow (not PreviousStepOnly): this agent needs BOTH the analyze
+                    // step's view.sfxClips + offered anchor ids (step 1) and the story editor's
+                    // decision (step 2) — a cue anchored to a cut-away moment is silently
+                    // dropped, so knowing what was kept matters.
+                    AgentInputContextMode: AgentInputContextMode.FullWorkflow),
+                new(
+                    AgentType.VideoTransform,
+                    "Compile edited video with sound effects",
+                    StepType.VideoCompile,
+                    // Decision/SfxPlan reference their source steps explicitly by StepOrder —
+                    // "Previous" relative to THIS step would resolve to the SoundDesigner step's
+                    // output (step 3), not the story editor's decision (step 2).
+                    VideoCompileConfigJson: """
+                        {"version":1,"decision":{"from":"Step","stepOrder":2},"analysisStepOrder":1,"enableSfx":true,"sfxPlan":{"from":"Step","stepOrder":3},"transitionPolicy":"Auto","programFadeInMs":500,"programFadeOutMs":800,"programAudioFadeInMs":300,"programAudioFadeOutMs":900,"minSegmentMs":800}
+                        """),
+                new(
+                    AgentType.VideoReviewAgent,
+                    "Review edit quality",
+                    StepType.ReviewLoop,
+                    // Loop back to step 2 so a low score re-runs the story editor, the sound
+                    // designer, and the compile step in sequence — step 1 (VideoAnalyze) is
+                    // deterministic and need not rerun. Same MinScore/MaxIterations/FullWorkflow
+                    // pattern as the other video templates.
+                    LoopTargetStepOrder: 2,
+                    MaxIterations: 3,
+                    MinScore: 8,
+                    AgentInputContextMode: AgentInputContextMode.FullWorkflow)
             ])
     ];
 

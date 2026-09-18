@@ -528,6 +528,163 @@ public class VideoAnalyzeStepExecutorTests
     }
 
     // =======================================================================
+    // Sound effects (see docs/video-editing.md "Sound effects")
+    // =======================================================================
+
+    [Fact]
+    public async Task OfferSfxClips_false_produces_no_sfxClips_key_byte_identical_to_before_this_addition()
+    {
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out _, out _,
+            configOverride: cfg => cfg with { OfferSfxClips = false });
+
+        SetupBasicProbeAndDetectors(probe, silence, shotDetector);
+
+        // ListFilesAsync must never even be called when neither OfferSfxClips nor
+        // OfferMusicTracks is set.
+        workspace
+            .Setup(w => w.ListFilesAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("ListFilesAsync should not be called when OfferSfxClips=false"));
+
+        StepExecutionResult result = await CreateExecutor(workspace, probe, silence, shotDetector, out _, out _).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        doc.RootElement.GetProperty("view").TryGetProperty("sfxClips", out _).Should().BeFalse();
+        // Gated meta key (the insertTracking discipline): absent entirely when the feature is off,
+        // so a pre-SFX run's meta shape stays byte-identical.
+        doc.RootElement.GetProperty("meta").TryGetProperty("offeredSfxClipCount", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task OfferSfxClips_true_lists_audio_files_as_x_ids_in_deterministic_name_order_excluding_non_audio()
+    {
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out _, out _,
+            configOverride: cfg => cfg with { OfferSfxClips = true, MaxSfxClips = 40 });
+
+        SetupBasicProbeAndDetectors(probe, silence, shotDetector);
+
+        Guid whoosh = Guid.NewGuid(), click = Guid.NewGuid(), videoFile = Guid.NewGuid();
+        workspace
+            .Setup(w => w.ListFilesAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new List<ProjectWorkspaceFile>
+            {
+                new(whoosh, ProjectId, "whoosh.wav", null, "userFiles", "k1", "audio/wav", 100, DateTime.UtcNow, null),
+                new(click, ProjectId, "click.mp3", null, "userFiles", "k2", "audio/mpeg", 200, DateTime.UtcNow, null),
+                new(videoFile, ProjectId, "clip.mp4", null, "userFiles", "k3", "video/mp4", 300, DateTime.UtcNow, null)
+            });
+
+        StepExecutionResult result = await CreateExecutor(workspace, probe, silence, shotDetector, out _, out _).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        JsonElement sfxClips = doc.RootElement.GetProperty("view").GetProperty("sfxClips");
+        sfxClips.GetArrayLength().Should().Be(2, "only the two audio/* files, never the video/mp4 one");
+        sfxClips[0].GetProperty("id").GetString().Should().Be("x0");
+        sfxClips[0].GetProperty("name").GetString().Should().Be("click.mp3", "deterministic ordinal name order — 'click' sorts before 'whoosh'");
+        sfxClips[1].GetProperty("id").GetString().Should().Be("x1");
+        sfxClips[1].GetProperty("name").GetString().Should().Be("whoosh.wav");
+        doc.RootElement.GetProperty("meta").GetProperty("offeredSfxClipCount").GetInt32().Should().Be(2);
+        // SFX alone must never surface music-track candidates.
+        doc.RootElement.GetProperty("view").TryGetProperty("musicTracks", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task OfferSfxClips_and_OfferMusicTracks_together_share_one_listing_under_independent_id_namespaces()
+    {
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out _, out _,
+            configOverride: cfg => cfg with { OfferSfxClips = true, OfferMusicTracks = true });
+
+        SetupBasicProbeAndDetectors(probe, silence, shotDetector);
+
+        int listCalls = 0;
+        workspace
+            .Setup(w => w.ListFilesAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Callback(() => listCalls++)
+            .ReturnsAsync(new List<ProjectWorkspaceFile>
+            {
+                new(Guid.NewGuid(), ProjectId, "whoosh.wav", null, "userFiles", "k1", "audio/wav", 100, DateTime.UtcNow, null)
+            });
+
+        StepExecutionResult result = await CreateExecutor(workspace, probe, silence, shotDetector, out _, out _).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        listCalls.Should().Be(1, "both candidate lists must derive from ONE ListFilesAsync call");
+
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        JsonElement view = doc.RootElement.GetProperty("view");
+        view.GetProperty("musicTracks")[0].GetProperty("id").GetString().Should().Be("m0");
+        view.GetProperty("sfxClips")[0].GetProperty("id").GetString().Should().Be("x0",
+            "the same file is offered under BOTH namespaces, each with its own id");
+    }
+
+    [Fact]
+    public async Task OfferSfxClips_true_ListFilesAsync_throwing_degrades_to_zero_candidates_not_a_failed_step()
+    {
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out _, out _,
+            configOverride: cfg => cfg with { OfferSfxClips = true });
+
+        SetupBasicProbeAndDetectors(probe, silence, shotDetector);
+
+        workspace
+            .Setup(w => w.ListFilesAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new IOException("S3 unavailable"));
+
+        StepExecutionResult result = await CreateExecutor(workspace, probe, silence, shotDetector, out _, out _).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, "an SFX-candidate listing failure must degrade, never fail the whole step");
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        doc.RootElement.GetProperty("view").TryGetProperty("sfxClips", out _).Should().BeFalse();
+        doc.RootElement.GetProperty("meta").GetProperty("offeredSfxClipCount").GetInt32().Should().Be(0);
+    }
+
+    [Fact]
+    public async Task OfferSfxClips_true_caps_at_MaxSfxClips()
+    {
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out _, out _,
+            configOverride: cfg => cfg with { OfferSfxClips = true, MaxSfxClips = 2 });
+
+        SetupBasicProbeAndDetectors(probe, silence, shotDetector);
+
+        workspace
+            .Setup(w => w.ListFilesAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Enumerable.Range(0, 5)
+                .Select(i => new ProjectWorkspaceFile(
+                    Guid.NewGuid(), ProjectId, $"fx{i}.wav", null, "userFiles", $"k{i}", "audio/wav", 100, DateTime.UtcNow, null))
+                .ToList());
+
+        StepExecutionResult result = await CreateExecutor(workspace, probe, silence, shotDetector, out _, out _).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        doc.RootElement.GetProperty("view").GetProperty("sfxClips").GetArrayLength().Should().Be(2);
+    }
+
+    // =======================================================================
     // Transcript punctuation reliability (meta.transcription.punctuated) and the per-segment
     // "endsSentence" flag. Both exist because trailing punctuation is the ONLY sentence-boundary
     // signal an ASR transcript carries, and a transcriber that barely punctuates (observed in

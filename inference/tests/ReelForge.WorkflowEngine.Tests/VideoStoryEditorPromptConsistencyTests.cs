@@ -76,6 +76,12 @@ public class VideoStoryEditorPromptConsistencyTests
         AssertFallbackMatchesSeeded(typeof(ColorGradeDirectorAgent), AgentType.ColorGradeDirector);
     }
 
+    [Fact]
+    public void SoundDesigner_fallback_prompt_matches_the_seeded_built_in_agent_prompt_verbatim()
+    {
+        AssertFallbackMatchesSeeded(typeof(SoundDesignerAgent), AgentType.SoundDesigner);
+    }
+
     private static void AssertFallbackMatchesSeeded(System.Type agentType, AgentType builtInAgentType)
     {
         FieldInfo? promptField = agentType.GetField("DefaultPrompt", BindingFlags.NonPublic | BindingFlags.Static);

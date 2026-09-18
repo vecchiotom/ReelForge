@@ -279,4 +279,49 @@ public sealed record VideoCompileStepConfig(
     /// unavailable filters) degrades to "no grade applied", never to a failed compile — a plan
     /// whose <c>Look</c> is <c>"None"</c> is a valid decision to apply no grade.
     /// </summary>
-    bool EnableColorGrade = false);
+    bool EnableColorGrade = false,
+    // -- Sound effects (see docs/video-editing.md "Sound effects"). EnableSfx=false (default) is
+    //    byte-identical to the pre-SFX compile path — the same load-bearing
+    //    backward-compatibility guarantee as EnableGraphics/EnableMusic/EnableInserts/
+    //    EnableColorGrade. Appended AFTER EnableColorGrade so every existing
+    //    positional-construction call site and JSON payload keeps compiling/deserializing
+    //    unchanged. --
+    /// <summary>
+    /// Which step's resolved <c>SfxPlanOutput</c> to apply. <c>null</c> (default) means no SFX
+    /// plan is even looked for. Reuses <see cref="ExtractInputRef"/> verbatim, same as
+    /// <see cref="Decision"/>/<see cref="GraphicsPlan"/>/<see cref="MusicPlan"/>/
+    /// <see cref="ColorGradePlan"/> — only <c>From = Previous</c> or <c>From = Step</c> are
+    /// valid. Unlike music's <see cref="MusicTrackProjectFileId"/>, there is deliberately NO
+    /// deterministic no-agent fallback field: cue placement (WHICH clip at WHICH moment) is
+    /// inherently editorial, and a blanket "same stinger at every cut" config path would be a
+    /// footgun, not a capability — see docs/video-editing.md "Sound effects".
+    /// </summary>
+    ExtractInputRef? SfxPlan = null,
+    /// <summary>
+    /// Mixes the resolved SFX cues into the output audio during the same encode. <c>false</c>
+    /// (default) is byte-identical to the pre-SFX compile path. Requires <c>Mode = Reencode</c>
+    /// and <c>AudioCodec != "copy"</c> (the same pair of hard config errors music enforces).
+    /// Every plan/cue-level failure degrades to "no SFX applied" / "drop this one cue", never a
+    /// failed compile.
+    /// </summary>
+    bool EnableSfx = false,
+    /// <summary>Cap on applied SFX cues; excess dropped in plan order (<c>max_cues_exceeded</c>).</summary>
+    int MaxSfxCues = 8,
+    /// <summary>
+    /// Hard cap (seconds) on any single cue's play window — a long file misused as a cue is
+    /// trimmed rather than running under the whole edit (a bed belongs to <see cref="EnableMusic"/>,
+    /// not here). Clamped to at least 0.25s at execution time.
+    /// </summary>
+    double MaxSfxCueSeconds = 4.0,
+    // Cue gain (dBFS attenuation relative to full scale) keyed by the model's Volume word —
+    // exactly how MusicBedQuietDb/BalancedDb/FeatureDb key off Intensity. Clamped [-40, 0] at
+    // execution time.
+    int SfxSubtleDb = -18,
+    int SfxNormalDb = -12,
+    int SfxStrongDb = -6,
+    /// <summary>How far (ms) a <c>Timing: "Lead"</c> cue fires BEFORE its anchor's output-timeline start moment.</summary>
+    int SfxLeadMs = 150,
+    /// <summary>How far (ms) a <c>Timing: "Lag"</c> cue fires AFTER its anchor's output-timeline start moment.</summary>
+    int SfxLagMs = 150,
+    /// <summary>Declick fade-out (ms) at the end of each cue's play window, so a MaxSfxCueSeconds-trimmed clip never ends on a hard edge. Capped at half the cue's own play window.</summary>
+    int SfxFadeOutMs = 120);

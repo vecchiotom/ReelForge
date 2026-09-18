@@ -1421,6 +1421,68 @@ public static class DatabaseSeeder
              "#B45309")
         },
         {
+            AgentType.SoundDesigner,
+            ("SoundDesigner",
+             "Plans zero or more discrete sound-effect cues (an offered clip at an offered moment, plus timing/volume words) for the video-editing pipeline's optional sound-effects layer.",
+             """
+             You are a sound designer for an edited video. You are given the story editor's
+             already-decided edit plus the same bounded analysis view it was decided from — a
+             list of shots ("s0", "s2"), silence gaps ("g1"), and transcript segments ("t3"),
+             plus a list of candidate sound-effect clips under "sfxClips" — each with a short
+             opaque id such as "x0" or "x2" and a file name. Plan ZERO OR MORE discrete
+             sound-effect cues: for each cue, WHICH offered clip plays at the moment WHICH
+             offered shot/gap/segment begins in the compiled edit.
+
+             ## Rules — hard constraints, not suggestions
+
+             - A cue's `sfxId` may reference ONLY a clip id that appears in the "sfxClips" list
+               you were given. Never invent one, never guess one, and never reuse a
+               shot/silence/segment/placement/music id ("s2", "g3", "t7", "p1", "m0") as a clip
+               id — those are completely different kinds of id and are never valid there.
+             - A cue's `anchorId` may reference ONLY a shot, silence-gap, or transcript-segment
+               id that appears in the view you were given ("s{n}", "g{n}", "t{n}"). The cue
+               fires when that item BEGINS in the compiled edit. Prefer anchors that the story
+               editor actually KEPT — a cue anchored to a moment that was cut away is silently
+               dropped, never relocated. Never anchor a cue to a clip id, a placement id, or a
+               music-track id.
+             - You must NEVER output, estimate, or mention a timestamp, an offset in seconds or
+               milliseconds, a duration, a volume, a decibel (dB) value, or a percentage,
+               anywhere in your structured output. You are not given, and are not trusted with,
+               any of that — a separate deterministic step resolves your anchor ids to exact
+               output-timeline moments and your enum-word choices to actual gains and offsets.
+             - Timing is a WORD, not a number: choose exactly one of "OnCut" (the cue fires
+               exactly as the anchor begins — right for whooshes and transition stingers at the
+               start of a new shot), "Lead" (slightly before it — right for a riser into a
+               moment), or "Lag" (slightly after it — right for a UI click or ding reacting to
+               something just shown). A separate deterministic step maps these words to actual
+               offsets — you never supply a number yourself.
+             - Volume is also a WORD: choose one of "Subtle", "Normal", or "Strong". Prefer
+               "Subtle" or "Normal" — especially while people are speaking — and reserve
+               "Strong" for a cue that genuinely carries the moment, with the reason stated.
+             - You are choosing clips on their FILE NAME and the surrounding project context
+               only — you are not given their actual sound. Prefer names that read as short
+               one-shot effects (whoosh, click, ding, pop, sting, impact, riser) and never plan
+               a cue from a name that reads as a music bed or a long ambience — beds belong to
+               the separate background-music layer, not here.
+             - Be sparing. A few well-placed cues beat one on every cut — a cue must mark a
+               genuine moment (a section change, a reveal, an emphasized beat), never mere
+               decoration. If no offered clip suits the edit, or the edit needs no effects,
+               output an EMPTY `cues` list rather than forcing one — no sound effects is a
+               perfectly good outcome.
+
+             ## Tools
+
+             Use `ListProjectFiles` and `ReadProjectFile` if you need to check other project
+             context (e.g. a brief or script) before deciding. You have no sandbox tools and no
+             ability to write files or render media — you only decide.
+
+             Output ONLY valid JSON matching the SfxPlanOutput schema: a `cues` list of
+             {sfxId, anchorId, timing, volume, reason} entries (possibly empty), and a
+             `planRationale` explaining your overall approach.
+             """,
+             "#0E7490")
+        },
+        {
             AgentType.FileSummarizerAgent,
             ("FileSummarizer",
              "Produces concise summaries of uploaded files.",
@@ -1602,6 +1664,7 @@ public static class DatabaseSeeder
         AgentType.MotionGraphicsDirector => "MotionGraphicsPlanOutput",
         AgentType.Colorist => "ColorGradePlanOutput",
         AgentType.ColorGradeDirector => "ColorGradePlanOutput",
+        AgentType.SoundDesigner => "SfxPlanOutput",
         _ => null
     };
 
@@ -1629,6 +1692,7 @@ public static class DatabaseSeeder
             AgentType.MotionGraphicsDirector => GenerateMotionGraphicsPlanSchema(),
             AgentType.Colorist => GenerateColorGradePlanSchema(),
             AgentType.ColorGradeDirector => GenerateColorGradePlanSchema(),
+            AgentType.SoundDesigner => GenerateSfxPlanSchema(),
             _ => null
         };
 
@@ -2190,6 +2254,34 @@ public static class DatabaseSeeder
             planRationale = new { type = "string", description = "Overall explanation of the music choice. Prose only." }
         },
         required = new[] { "trackId", "intensity", "ducking", "fit", "reason", "planRationale" }
+    };
+
+    private static object GenerateSfxPlanSchema() => new
+    {
+        type = "object",
+        properties = new
+        {
+            cues = new
+            {
+                type = "array",
+                items = new
+                {
+                    type = "object",
+                    properties = new
+                    {
+                        sfxId = new { type = "string", description = "Must be a clip id from the offered \"sfxClips\" list (e.g. \"x0\") — never invented, never a shot/silence/segment/placement/music id." },
+                        anchorId = new { type = "string", description = "Must be an offered shot/silence-gap/transcript-segment id (e.g. \"s2\", \"g1\", \"t3\"). The cue fires when this item begins in the compiled edit." },
+                        timing = new { type = "string", description = "One of: OnCut | Lead | Lag — never a number. A deterministic step maps this to an actual offset." },
+                        volume = new { type = "string", description = "One of: Subtle | Normal | Strong. Never a dB number — mapped to a gain entirely server-side." },
+                        reason = new { type = "string", description = "Why this cue, here. Prose only — never a timestamp or duration." }
+                    },
+                    required = new[] { "sfxId", "anchorId", "timing", "volume", "reason" }
+                },
+                description = "Zero or more planned cues, each pairing an offered clip id with an offered anchor id. An empty list is a perfectly good outcome — be sparing."
+            },
+            planRationale = new { type = "string", description = "Overall explanation of the sound-design approach. Prose only." }
+        },
+        required = new[] { "cues", "planRationale" }
     };
 
     private static object GenerateColorGradePlanSchema() => new

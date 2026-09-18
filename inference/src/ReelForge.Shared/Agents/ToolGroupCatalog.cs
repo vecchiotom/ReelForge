@@ -319,6 +319,22 @@ public static class ToolGroupCatalog
         ],
 
         // ──────────────────────────────────────────────────────────────────
+        // SoundDesigner: read-only project context + FailWorkflow only, identical scope to
+        // VideoStoryEditor/MusicSupervisor above. It only pairs offered "x{n}" clip ids with
+        // offered cut-anchor ids plus enum-word Timing/Volume settings — it never produces or
+        // touches media directly (no render, no sandbox — unlike MotionGraphicsPlanner, there is
+        // no rendered-asset escape hatch here: every cue plays an EXISTING uploaded clip).
+        // Explicitly spelled out rather than left to the default arm below, same reasoning as
+        // VideoStoryEditor's own comment.
+        // ──────────────────────────────────────────────────────────────────
+
+        AgentType.SoundDesigner =>
+        [
+            ToolGroup.ProjectRead,
+            ToolGroup.WorkflowControl
+        ],
+
+        // ──────────────────────────────────────────────────────────────────
         // Custom / unknown / FileSummarizerAgent (Inference-API-only — FileSummarizerAgent is
         // never actually routed through this resolver at runtime, but the switch's default arm
         // covers it defensively rather than throwing): minimal project read access only.
