@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using ReelForge.Shared.Agents;
 using ReelForge.Shared.Data.Models;
 
 namespace ReelForge.WorkflowEngine.Agents.Tools;
@@ -22,277 +23,92 @@ public class AgentToolProvider : IAgentToolProvider
         _remotionSkillsTools = remotionSkillsTools;
     }
 
-    public IReadOnlyList<AIFunction> GetTools(AgentType agentType) =>
-        agentType switch
-        {
-            // ──────────────────────────────────────────────────────────────────
-            // Analysis agents: project read-only access only.
-            // No sandbox access — these agents only inspect source files.
-            // ──────────────────────────────────────────────────────────────────
+    /// <summary>
+    /// Resolves the <see cref="ToolGroup"/>s <see cref="ToolGroupCatalog.GroupsFor"/> grants a
+    /// given <see cref="AgentType"/> into the actual, runnable <see cref="AIFunction"/>s. The
+    /// scoping DECISION (which groups an agent type gets, and why) lives in
+    /// <see cref="ToolGroupCatalog"/> — the single source of truth shared with
+    /// <c>DatabaseSeeder.GetAvailableToolsJson</c> on the Inference API side. This class only
+    /// knows how to turn a group into real <c>AIFunctionFactory.Create(...)</c> calls, since it
+    /// is the one holding the injected tool-implementation instances.
+    /// </summary>
+    public IReadOnlyList<AIFunction> GetTools(AgentType agentType)
+    {
+        IReadOnlyList<ToolGroup> groups = ToolGroupCatalog.GroupsFor(agentType);
 
-            AgentType.CodeStructureAnalyzer =>
-            [
-                AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
-                AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
-                AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
-            ],
+        List<AIFunction> tools = new();
+        foreach (ToolGroup group in groups)
+            tools.AddRange(BuildGroup(group));
 
-            AgentType.DependencyAnalyzer =>
-            [
-                AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
-                AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
-                AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
-            ],
+        return tools;
+    }
 
-            AgentType.ComponentInventoryAnalyzer =>
-            [
-                AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
-                AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
-                AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
-            ],
+    private IEnumerable<AIFunction> BuildGroup(ToolGroup group) => group switch
+    {
+        ToolGroup.ProjectRead =>
+        [
+            AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
+            AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
+            AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
+            AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles)
+        ],
 
-            AgentType.RouteAndApiAnalyzer =>
-            [
-                AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
-                AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
-                AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
-            ],
+        ToolGroup.ProjectWrite =>
+        [
+            AIFunctionFactory.Create(_projectFileTools.WriteProjectFile)
+        ],
 
-            AgentType.StyleAndThemeExtractor =>
-            [
-                AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
-                AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
-                AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
-            ],
+        ToolGroup.SandboxBrowse =>
+        [
+            AIFunctionFactory.Create(_sandboxTools.GetSandboxStatus),
+            AIFunctionFactory.Create(_sandboxTools.ListSandboxFiles),
+            AIFunctionFactory.Create(_sandboxTools.ReadSandboxFile)
+        ],
 
-            // ──────────────────────────────────────────────────────────────────
-            // Translation agents: project read/write + sandbox code authoring.
-            // Can install packages and verify correctness, but do NOT render.
-            // ──────────────────────────────────────────────────────────────────
+        ToolGroup.SandboxMetadata =>
+        [
+            AIFunctionFactory.Create(_sandboxTools.GetSandbox)
+        ],
 
-            AgentType.RemotionComponentTranslator =>
-            [
-                AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
-                AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
-                AIFunctionFactory.Create(_projectFileTools.WriteProjectFile),
-                AIFunctionFactory.Create(_sandboxTools.GetSandboxStatus),
-                AIFunctionFactory.Create(_sandboxTools.EnsureSandbox),
-                AIFunctionFactory.Create(_sandboxTools.GetSandbox),
-                AIFunctionFactory.Create(_sandboxTools.ListSandboxFiles),
-                AIFunctionFactory.Create(_sandboxTools.ReadSandboxFile),
-                AIFunctionFactory.Create(_sandboxTools.WriteSandboxFile),
-                AIFunctionFactory.Create(_sandboxTools.DeleteSandboxPath),
-                AIFunctionFactory.Create(_sandboxTools.InstallNpmPackages),
-                AIFunctionFactory.Create(_sandboxTools.CheckLintAndTypeErrors),
-                AIFunctionFactory.Create(_sandboxTools.RunSandboxNpmScript),
-                AIFunctionFactory.Create(_remotionSkillsTools.SearchRemotionSkills),
-                AIFunctionFactory.Create(_remotionSkillsTools.ReadRemotionSkill),
-                AIFunctionFactory.Create(_remotionSkillsTools.ListAllRemotionSkills),
-                AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
-            ],
+        ToolGroup.SandboxLint =>
+        [
+            AIFunctionFactory.Create(_sandboxTools.CheckLintAndTypeErrors)
+        ],
 
-            AgentType.AnimationStrategyAgent =>
-            [
-                AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
-                AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
-                AIFunctionFactory.Create(_sandboxTools.GetSandboxStatus),
-                AIFunctionFactory.Create(_sandboxTools.GetSandbox),
-                AIFunctionFactory.Create(_sandboxTools.ListSandboxFiles),
-                AIFunctionFactory.Create(_sandboxTools.ReadSandboxFile),
-                AIFunctionFactory.Create(_remotionSkillsTools.SearchRemotionSkills),
-                AIFunctionFactory.Create(_remotionSkillsTools.ReadRemotionSkill),
-                AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
-            ],
+        ToolGroup.SandboxAuthoring =>
+        [
+            AIFunctionFactory.Create(_sandboxTools.EnsureSandbox),
+            AIFunctionFactory.Create(_sandboxTools.WriteSandboxFile),
+            AIFunctionFactory.Create(_sandboxTools.DeleteSandboxPath),
+            AIFunctionFactory.Create(_sandboxTools.InstallNpmPackages),
+            AIFunctionFactory.Create(_sandboxTools.RunSandboxNpmScript)
+        ],
 
-            // ──────────────────────────────────────────────────────────────────
-            // Production planning agents: project + sandbox read-only.
-            // Director and Scriptwriter produce creative artefacts from data
-            // already in the project/sandbox; they never write or render.
-            // ──────────────────────────────────────────────────────────────────
+        ToolGroup.SandboxRender =>
+        [
+            AIFunctionFactory.Create(_sandboxTools.RunSandboxRemotionCommand),
+            AIFunctionFactory.Create(_sandboxTools.RenderVideoAndUploadToStorage),
+            AIFunctionFactory.Create(_sandboxTools.CompleteSandbox)
+        ],
 
-            AgentType.DirectorAgent or AgentType.ScriptwriterAgent =>
-            [
-                AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
-                AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
-                AIFunctionFactory.Create(_sandboxTools.GetSandboxStatus),
-                AIFunctionFactory.Create(_sandboxTools.ListSandboxFiles),
-                AIFunctionFactory.Create(_sandboxTools.ReadSandboxFile),
-                AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
-            ],
+        ToolGroup.RemotionSkillsBasic =>
+        [
+            AIFunctionFactory.Create(_remotionSkillsTools.SearchRemotionSkills),
+            AIFunctionFactory.Create(_remotionSkillsTools.ReadRemotionSkill)
+        ],
 
-            // ──────────────────────────────────────────────────────────────────
-            // Author: full sandbox pipeline including render and upload.
-            // This is the only agent producing the pipeline's FINAL deliverable video; the only
-            // other agent granted RenderVideoAndUploadToStorage is MotionGraphicsPlanner below,
-            // which uses it for a small, optional overlay ASSET (never the final video) as part
-            // of the separate video-editing pipeline (see docs/video-editing.md "Motion graphics
-            // (Phase 3)").
-            // ──────────────────────────────────────────────────────────────────
+        ToolGroup.RemotionSkillsFull =>
+        [
+            AIFunctionFactory.Create(_remotionSkillsTools.SearchRemotionSkills),
+            AIFunctionFactory.Create(_remotionSkillsTools.ReadRemotionSkill),
+            AIFunctionFactory.Create(_remotionSkillsTools.ListAllRemotionSkills)
+        ],
 
-            AgentType.AuthorAgent =>
-            [
-                AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
-                AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
-                AIFunctionFactory.Create(_projectFileTools.WriteProjectFile),
-                AIFunctionFactory.Create(_sandboxTools.GetSandboxStatus),
-                AIFunctionFactory.Create(_sandboxTools.EnsureSandbox),
-                AIFunctionFactory.Create(_sandboxTools.GetSandbox),
-                AIFunctionFactory.Create(_sandboxTools.ListSandboxFiles),
-                AIFunctionFactory.Create(_sandboxTools.ReadSandboxFile),
-                AIFunctionFactory.Create(_sandboxTools.WriteSandboxFile),
-                AIFunctionFactory.Create(_sandboxTools.DeleteSandboxPath),
-                AIFunctionFactory.Create(_sandboxTools.InstallNpmPackages),
-                AIFunctionFactory.Create(_sandboxTools.CheckLintAndTypeErrors),
-                AIFunctionFactory.Create(_sandboxTools.RunSandboxNpmScript),
-                AIFunctionFactory.Create(_sandboxTools.RunSandboxRemotionCommand),
-                AIFunctionFactory.Create(_sandboxTools.RenderVideoAndUploadToStorage),
-                AIFunctionFactory.Create(_sandboxTools.CompleteSandbox),
-                AIFunctionFactory.Create(_remotionSkillsTools.SearchRemotionSkills),
-                AIFunctionFactory.Create(_remotionSkillsTools.ReadRemotionSkill),
-                AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
-            ],
+        ToolGroup.WorkflowControl =>
+        [
+            AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
+        ],
 
-            // ──────────────────────────────────────────────────────────────────
-            // Review agent: read-only access + lint/type checking.
-            // Inspects existing artefacts and surfaces quality issues.
-            // ──────────────────────────────────────────────────────────────────
-
-            AgentType.ReviewAgent =>
-            [
-                AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
-                AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
-                AIFunctionFactory.Create(_sandboxTools.GetSandboxStatus),
-                AIFunctionFactory.Create(_sandboxTools.GetSandbox),
-                AIFunctionFactory.Create(_sandboxTools.ListSandboxFiles),
-                AIFunctionFactory.Create(_sandboxTools.ReadSandboxFile),
-                AIFunctionFactory.Create(_sandboxTools.CheckLintAndTypeErrors),
-                AIFunctionFactory.Create(_remotionSkillsTools.SearchRemotionSkills),
-                AIFunctionFactory.Create(_remotionSkillsTools.ReadRemotionSkill),
-                AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
-            ],
-
-            // ──────────────────────────────────────────────────────────────────
-            // VideoStoryEditor: read-only project context + FailWorkflow only. It decides
-            // which offered ids to keep; it never produces or touches media directly.
-            // Explicitly NO sandbox tools, no WriteProjectFile, no render tool — unlike the
-            // default/unknown case below, this is spelled out on purpose so a future widening
-            // of the default case does not silently hand this agent write/render access.
-            // ──────────────────────────────────────────────────────────────────
-
-            AgentType.VideoStoryEditor =>
-            [
-                AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
-                AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
-                AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
-            ],
-
-            // ──────────────────────────────────────────────────────────────────
-            // MusicSupervisor: read-only project context + FailWorkflow only, identical scope to
-            // VideoStoryEditor/VideoReviewAgent above. It only picks among offered "m{n}" track
-            // ids and enum-word settings — it never produces or touches media directly (no render,
-            // no sandbox — unlike MotionGraphicsPlanner, there is no rendered-asset escape hatch
-            // here). Explicitly spelled out rather than left to the default arm below, same
-            // reasoning as VideoStoryEditor's own comment.
-            // ──────────────────────────────────────────────────────────────────
-
-            AgentType.MusicSupervisor =>
-            [
-                AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
-                AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
-                AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
-            ],
-
-            // ──────────────────────────────────────────────────────────────────
-            // VideoReviewAgent: read-only project context + FailWorkflow only, identical scope
-            // to VideoStoryEditor above. Its review evidence (sentenceCheck / overlay coverage)
-            // is already present in the pipeline history it is given as input — it never needs
-            // sandbox/Remotion-skill tools since there is no code to inspect for a video edit.
-            // ──────────────────────────────────────────────────────────────────
-
-            AgentType.VideoReviewAgent =>
-            [
-                AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
-                AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
-                AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
-            ],
-
-            // ──────────────────────────────────────────────────────────────────
-            // MotionGraphicsPlanner (Phase 3): the same full sandbox+Remotion+render pipeline as
-            // AuthorAgent immediately above it, minus WriteProjectFile — this agent renders a
-            // small transparent-background overlay asset (a lower-third, title card, callout),
-            // never a whole project artifact, so there is nothing for it to persist as a project
-            // file. It still decides overlay placement/content anchored only to offered placement
-            // ids (never a timestamp or pixel coordinate — see MotionGraphicsPlanOutput's
-            // reflection-tested invariant); the render tools let it OPTIONALLY back that decision
-            // with an actual designed/animated graphic instead of only plain drawtext, via
-            // MotionGraphicsOverlay.RenderedAssetStorageKey. Previously this case was deliberately
-            // minimal (read-only + FailWorkflow only, identical to VideoStoryEditor) — widened
-            // here now that the agent can genuinely produce and render Remotion components; a
-            // future change should not silently narrow this back down without updating this
-            // comment and the mirrored built-in tool-list metadata in DatabaseSeeder.
-            // ──────────────────────────────────────────────────────────────────
-
-            AgentType.MotionGraphicsPlanner =>
-            [
-                AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
-                AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
-                AIFunctionFactory.Create(_sandboxTools.GetSandboxStatus),
-                AIFunctionFactory.Create(_sandboxTools.EnsureSandbox),
-                AIFunctionFactory.Create(_sandboxTools.GetSandbox),
-                AIFunctionFactory.Create(_sandboxTools.ListSandboxFiles),
-                AIFunctionFactory.Create(_sandboxTools.ReadSandboxFile),
-                AIFunctionFactory.Create(_sandboxTools.WriteSandboxFile),
-                AIFunctionFactory.Create(_sandboxTools.DeleteSandboxPath),
-                AIFunctionFactory.Create(_sandboxTools.InstallNpmPackages),
-                AIFunctionFactory.Create(_sandboxTools.CheckLintAndTypeErrors),
-                AIFunctionFactory.Create(_sandboxTools.RunSandboxNpmScript),
-                AIFunctionFactory.Create(_sandboxTools.RunSandboxRemotionCommand),
-                AIFunctionFactory.Create(_sandboxTools.RenderVideoAndUploadToStorage),
-                AIFunctionFactory.Create(_sandboxTools.CompleteSandbox),
-                AIFunctionFactory.Create(_remotionSkillsTools.SearchRemotionSkills),
-                AIFunctionFactory.Create(_remotionSkillsTools.ReadRemotionSkill),
-                AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
-            ],
-
-            // ──────────────────────────────────────────────────────────────────
-            // Custom / unknown: minimal project read access only.
-            // ──────────────────────────────────────────────────────────────────
-
-            _ =>
-            [
-                AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
-                AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
-                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
-                AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
-            ]
-        };
+        _ => throw new ArgumentOutOfRangeException(nameof(group), group, "Unknown ToolGroup.")
+    };
 }
