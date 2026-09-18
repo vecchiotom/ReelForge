@@ -52,8 +52,15 @@ public class EditRoomStepExecutorTests
         agentRegistry = new Mock<IAgentRegistry>();
         workspace = new Mock<IProjectFileWorkspace>();
 
+        // The real (not mocked) accessor: it's a pure AsyncLocal wrapper with no external
+        // dependencies, and using it here means these tests actually exercise BeginScope being
+        // opened correctly — the exact thing a live run found missing (every tool call inside the
+        // room/solo-fallback threw "No workflow execution context is available").
+        IWorkflowExecutionContextAccessor executionContextAccessor = new WorkflowExecutionContextAccessor();
+
         return new EditRoomStepExecutor(
             chatClients.Object, toolProvider.Object, agentRegistry.Object, workspace.Object,
+            executionContextAccessor,
             NullLogger<EditRoomStepExecutor>.Instance);
     }
 

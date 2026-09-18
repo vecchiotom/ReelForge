@@ -86,6 +86,7 @@ public class EditRoomStepExecutor : IStepExecutor
     private readonly IAgentToolProvider _toolProvider;
     private readonly IAgentRegistry _agentRegistry;
     private readonly IProjectFileWorkspace _workspace;
+    private readonly IWorkflowExecutionContextAccessor _executionContextAccessor;
     private readonly ILogger<EditRoomStepExecutor> _logger;
 
     public EditRoomStepExecutor(
@@ -93,12 +94,14 @@ public class EditRoomStepExecutor : IStepExecutor
         IAgentToolProvider toolProvider,
         IAgentRegistry agentRegistry,
         IProjectFileWorkspace workspace,
+        IWorkflowExecutionContextAccessor executionContextAccessor,
         ILogger<EditRoomStepExecutor> logger)
     {
         _chatClients = chatClients;
         _toolProvider = toolProvider;
         _agentRegistry = agentRegistry;
         _workspace = workspace;
+        _executionContextAccessor = executionContextAccessor;
         _logger = logger;
     }
 
@@ -108,6 +111,20 @@ public class EditRoomStepExecutor : IStepExecutor
     {
         Stopwatch sw = Stopwatch.StartNew();
         WorkflowStep step = context.Step;
+
+        // Every agent tool invoked during the room (each seat's ProjectFileAgentTools calls) and
+        // during the solo fallback resolves its WorkflowExecutionContext via this AsyncLocal-backed
+        // accessor. Unlike AgentStepExecutor/ForEachStepExecutor/ReviewLoopStepExecutor/
+        // ParallelStepExecutor, this scope was originally missing entirely here, so every such tool
+        // call saw a null context and either logged null ids (WorkflowControlAgentTools, which
+        // tolerates it) or threw (ProjectFileAgentTools.RequireContext) — confirmed live: a 23-minute
+        // room run's solo fallback failed with "No workflow execution context is available for
+        // project file tools." AsyncLocal flows correctly through the awaited
+        // InProcessExecution.RunStreamingAsync call chain once this scope is actually opened.
+        using IDisposable _ = _executionContextAccessor.BeginScope(
+            context.Execution.Id,
+            context.Execution.ProjectId,
+            context.CorrelationId);
 
         try
         {
