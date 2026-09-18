@@ -42,6 +42,27 @@ public enum MusicFit
 }
 
 /// <summary>
+/// Workflow-level gate for the deterministic per-seam transition system (see
+/// docs/video-editing.md "Cut transitions"). <c>Off</c> (default) is byte-identical to the
+/// pre-transition compile path — every seam is a hard butt-cut, exactly as before this addition.
+/// <c>AudioOnly</c> forces every seam to a short audio-only ramp (no video crossfade at all).
+/// <c>Auto</c>/<c>Expressive</c> select a per-seam <see cref="SeamTreatment"/> from a deterministic
+/// rule table over measured shot facts (never a model) — <c>Expressive</c> picks visually bolder
+/// treatments than <c>Auto</c> for the same measured facts (see <c>SeamTransitionPlanner</c>).
+/// </summary>
+public enum VideoTransitionPolicy { Off, AudioOnly, Auto, Expressive }
+
+/// <summary>
+/// The concrete treatment a single cut-seam receives, chosen deterministically by
+/// <c>SeamTransitionPlanner</c> from measured facts — never configurable per-seam by a human, never
+/// chosen by a model. <c>HardCut</c> is the pre-existing behavior (no fade of any kind).
+/// <c>AudioOnly</c> keeps the video a hard cut but ramps audio through the seam. The remaining
+/// values all apply a video crossfade/fade (requiring the ffmpeg <c>xfade</c>/<c>acrossfade</c>
+/// filters — see <c>SeamTransitionPlanner</c>'s <c>xfadeAvailable</c> demotion path).
+/// </summary>
+public enum SeamTreatment { HardCut, AudioOnly, DipCut, SoftCut, Dissolve, DipToBlack, WhipBlur }
+
+/// <summary>
 /// Cheap, in-process structural checks run against the resolved edit before encoding starts.
 /// No model call. <see cref="MinRetainedRatio"/> exists specifically to refuse an edit that
 /// discards nearly everything the source video contained.
@@ -163,4 +184,44 @@ public sealed record VideoCompileStepConfig(
     int MaxMusicLiftWindows = 12,
     /// <summary>Lift windows closer together than this are merged into one.</summary>
     int MusicLiftMergeMs = 400,
-    VideoCompileExpectation? Expect = null);
+    VideoCompileExpectation? Expect = null,
+    // -- Cut transitions (see docs/video-editing.md "Cut transitions"). Every field below defaults
+    // to a byte-identical-to-before-this-addition value: ProgramFadeInMs/ProgramFadeOutMs/
+    // ProgramAudioFadeInMs/ProgramAudioFadeOutMs all default to 0 (no program fade at all), and
+    // TransitionPolicy defaults to Off (every seam a hard butt-cut, exactly as before). This is
+    // the load-bearing backward-compatibility guarantee of this whole addition, exactly like
+    // EnableGraphics/EnableMusic above. Appended AFTER Expect (not inserted earlier) so every
+    // existing positional-construction call site and JSON payload keeps compiling/deserializing
+    // unchanged. --
+    /// <summary>Whole-piece video fade-IN duration (ms) at the very start of the compiled output. 0 (default) applies no fade.</summary>
+    int ProgramFadeInMs = 0,
+    /// <summary>Whole-piece video fade-OUT duration (ms) at the very end of the compiled output. 0 (default) applies no fade.</summary>
+    int ProgramFadeOutMs = 0,
+    /// <summary>Whole-piece audio fade-IN duration (ms). 0 (default) applies no fade. Requires the resolved audio codec to not be a stream-copy codec — see <c>PROGRAM_AUDIO_FADE_REQUIRES_AUDIO_REENCODE</c>.</summary>
+    int ProgramAudioFadeInMs = 0,
+    /// <summary>Whole-piece audio fade-OUT duration (ms). 0 (default) applies no fade. Same requirement as <see cref="ProgramAudioFadeInMs"/>.</summary>
+    int ProgramAudioFadeOutMs = 0,
+    /// <summary>Fade color for the program video fade-in/out (<c>fade=color=</c>). Allowlisted at execution time to <c>"black"</c>/<c>"white"</c> — see <c>AllowedProgramFadeColors</c>.</summary>
+    string ProgramFadeColor = "black",
+    /// <summary>Workflow-level gate for the per-seam transition system. <c>Off</c> (default) is byte-identical to the pre-transition compile path.</summary>
+    VideoTransitionPolicy TransitionPolicy = VideoTransitionPolicy.Off,
+    /// <summary>Half-width (ms) of the trapezoidal audio ramp <see cref="SeamTreatment.AudioOnly"/> applies around a seam.</summary>
+    int AudioSeamRampMs = 24,
+    /// <summary>Crossfade/fade-pair duration (ms) for <see cref="SeamTreatment.SoftCut"/>.</summary>
+    int SoftCutMs = 200,
+    /// <summary>Crossfade duration (ms) for <see cref="SeamTreatment.Dissolve"/>.</summary>
+    int DissolveMs = 500,
+    /// <summary>Crossfade duration (ms) for <see cref="SeamTreatment.DipToBlack"/> (an <c>xfade=fadeblack</c>).</summary>
+    int DipToBlackMs = 600,
+    /// <summary>Per-side fade duration (ms) for <see cref="SeamTreatment.DipCut"/> — a non-overlapping fade-out/fade-in pair, not a crossfade.</summary>
+    int DipCutMs = 220,
+    /// <summary>Hard cap (ms) on any single seam's crossfade overlap, regardless of the rule table's chosen duration.</summary>
+    int MaxTransitionMs = 1200,
+    /// <summary>Hard cap (percent of total seams) on how many seams may carry an OVERLAPPING treatment (OverlapSec &gt; 0) — excess seams downgrade to <see cref="SeamTreatment.AudioOnly"/>.</summary>
+    int MaxTransitionRatioPct = 35,
+    /// <summary>When the resolved cut list has more seams than this, the whole transition plan degrades to no overlaps at all (every seam <see cref="SeamTreatment.AudioOnly"/>/<see cref="SeamTreatment.HardCut"/>) rather than building an unbounded filtergraph.</summary>
+    int MaxTransitionSegments = 80,
+    /// <summary>A same-source removed gap at least this long (ms) is eligible to read as a deliberate section break (rule R4) rather than an ordinary trimmed pause.</summary>
+    int SectionBreakGapMs = 8000,
+    /// <summary>Reserved no-op flag for a future span-motion phase (speed ramps/Ken Burns at cuts) — deliberately unimplemented in this addition; always behaves as if <c>false</c>.</summary>
+    bool EnableSpanMotion = false);
