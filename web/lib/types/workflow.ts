@@ -124,6 +124,12 @@ export interface WorkflowStepResult {
   outputStorageKey?: string | null;
   /** Storage key of a large step artifact (e.g. a VideoAnalyze full analysis JSON or a VideoCompile EDL), separate from outputStorageKey so the execution UI never tries to play it as a video. */
   artifactStorageKey?: string | null;
+  /** Persisted JSON array of tool-call records, same shape as the live 'step.tool-called' SSE event's data (toolName, argumentsPreview, resultPreview, sequence, ...). Populated once the step completes — see `hydrateHistoricalStepEvents`. */
+  toolCallsJson?: string | null;
+  /** Persisted JSON array of reasoning entries, same shape as the live 'step.reasoning' SSE event's data. Populated once the step completes — see `hydrateHistoricalStepEvents`. */
+  reasoningJson?: string | null;
+  /** EditRoom steps only, else null: JSON array of ALL discussion turns in order, full untruncated text. Per-turn shape matches `WorkflowStepChatTurn` (camelCase), except `text` here is never truncated. Populated once the step completes — see `hydrateHistoricalStepEvents`. */
+  chatTranscriptJson?: string | null;
 }
 
 /**
