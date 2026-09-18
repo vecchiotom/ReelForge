@@ -7,7 +7,7 @@ export interface WorkflowDefinition {
   requiresUserInput: boolean;
 }
 
-export type StepType = 'Agent' | 'Conditional' | 'ForEach' | 'ReviewLoop' | 'Parallel' | 'Extract' | 'VideoAnalyze' | 'VideoCompile' | 'EditRoom' | 'GraphicsRoom';
+export type StepType = 'Agent' | 'Conditional' | 'ForEach' | 'ReviewLoop' | 'Parallel' | 'Extract' | 'VideoAnalyze' | 'VideoCompile' | 'EditRoom' | 'GraphicsRoom' | 'ColorGradeRoom';
 export type StepStatus = 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Skipped';
 export type AgentInputContextMode =
   | 'FullWorkflow'
@@ -44,6 +44,8 @@ export interface WorkflowStep {
   editRoomConfigJson?: string | null;
   /** JSON-serialized GraphicsRoomStepConfig (GraphicsRoom step type only). Opaque passthrough, same as editRoomConfigJson. */
   graphicsRoomConfigJson?: string | null;
+  /** JSON-serialized ColorGradeRoomStepConfig (ColorGradeRoom step type only). Opaque passthrough, same as editRoomConfigJson. */
+  colorGradeRoomConfigJson?: string | null;
 }
 
 export interface CreateWorkflowRequest {
@@ -79,6 +81,8 @@ export interface CreateWorkflowStepRequest {
   editRoomConfigJson?: string | null;
   /** JSON-serialized GraphicsRoomStepConfig (GraphicsRoom step type only). Opaque passthrough — see WorkflowStep.graphicsRoomConfigJson. */
   graphicsRoomConfigJson?: string | null;
+  /** JSON-serialized ColorGradeRoomStepConfig (ColorGradeRoom step type only). Opaque passthrough — see WorkflowStep.colorGradeRoomConfigJson. */
+  colorGradeRoomConfigJson?: string | null;
 }
 
 export interface UpdateWorkflowRequest {

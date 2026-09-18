@@ -29,6 +29,7 @@ executors, agents in general) see `CLAUDE.md`.
 - [The edit room](#the-edit-room)
 - [The shared room infrastructure](#the-shared-room-infrastructure)
 - [The graphics room](#the-graphics-room)
+- [Color grading](#color-grading)
 - [Security: why ffmpeg is not in the sandbox](#security-why-ffmpeg-is-not-in-the-sandbox)
 - [Explicitly not built](#explicitly-not-built)
 
@@ -368,6 +369,8 @@ before chunking it — wasted compute at best, a very large in-memory string at 
 | `MaxInserts` | `3` | Cap on applied inserts; excess dropped in plan order |
 | `MaxInsertExprKeyframes` | `96` | Per-insert cap on corner keyframes baked into the `perspective` expressions (uniform downsample; clamped 2..500) |
 | `InsertOverscan` | `0.02` | Fractional outward expansion of the tracked quad about its centroid, hiding the plate's edge fringe under the insert (clamped 0..0.1) |
+| `ColorGradePlan` | `null` | Color grading: `ExtractInputRef` (`Previous`/`Step` only) — which step's resolved `ColorGradePlanOutput` to apply (a solo `Agent(Colorist)` step or a `ColorGradeRoom` step; both emit the same shape). `null` = no grade looked up. See [Color grading](#color-grading) |
+| `EnableColorGrade` | `false` | Applies the resolved colour grade (a first-party `eq`/`colorbalance`/`colorlevels`/`hue` chain keyed by the plan's enum words — `ColorGradeFilterBuilder`) during the same encode, before overlays/inserts. `false` (default) is byte-identical to the pre-grade compile path. Requires `Mode = Reencode` (`COLOR_GRADE_REQUIRES_REENCODE`); every plan-level failure degrades to "no grade applied" |
 | `Expect` | `null` | Optional structural checks (`MinOutputSeconds`, `MaxOutputSeconds`, `MinRetainedRatio` default `0.15`, `MaxRetainedRatio`) |
 
 \* `TransitionPolicy` and the twelve fields above it (`AudioSeamRampMs` through
@@ -2155,6 +2158,154 @@ A seventh opt-in template (`AutoCreateOnProject: false`), replacing `video-derus
 step 2. The `GraphicsRoom` step's own `AgentDefinitionId` FK is satisfied by the same
 `AgentType.VideoTransform` placeholder the other deterministic-config step types use.
 Deserialization-tested in `WorkflowTemplateCatalogConfigDeserializationTests.cs`.
+
+---
+
+## Color grading
+
+Optional whole-program colour grading for the compiled edit, decided in enum WORDS only and
+resolved to concrete ffmpeg filter parameters entirely by first-party code. Two halves:
+
+1. **The compile integration** (`VideoCompileStepConfig.EnableColorGrade`/`ColorGradePlan` +
+   `ColorGradeFilterBuilder`) — deterministic, opt-in, soft-failure throughout, following the
+   `EnableGraphics`/`GraphicsPlan` and `EnableMusic`/`MusicPlan` precedent exactly.
+2. **The deciders** — a solo `AgentType.Colorist` Agent step, or the multi-agent
+   `StepType.ColorGradeRoom` ([below](#the-color-grade-room)); both emit the exact same
+   `ColorGradePlanOutput` shape, so the compile step consumes either interchangeably.
+
+### `ColorGradePlanOutput`: the words-only decision
+
+The rushcut invariant, extended a fourth time (after cut ids, overlay placements, and music):
+`ColorGradePlanOutput` is six plain strings — `Look`, `Strength`, `ShadowTone`, `HighlightTone`,
+`Reason`, `PlanRationale` — and nothing else, pinned by `ColorGradePlanOutputInvariantTests`
+(no numeric/time-bearing property; every property a string; the exact property set pinned so a
+future id-bearing addition fails the suite). A colorist agent is structurally incapable of
+emitting an RGB value, a curve point, a gamma/gain/contrast number, a percentage, or a
+timestamp — its entire contribution is:
+
+| Word | Values | Resolved to |
+|---|---|---|
+| `Look` | `None` \| `Warm` \| `Cool` \| `Filmic` \| `Vibrant` \| `Muted` \| `Mono` | A named first-party `colorbalance`/`eq`/`hue` parameter set. `None` declines the whole grade — the compiled bytes then carry no grade filter whatsoever, tone words included |
+| `Strength` | `Subtle` \| `Normal` \| `Strong` | A `0.5`/`1.0`/`1.5` multiplier over the look's parameter DELTAS (Mono's `hue=s=0` desaturation deliberately never scales) |
+| `ShadowTone` | `Neutral` \| `Lifted` \| `Deepened` | A `colorlevels` black-point input shift |
+| `HighlightTone` | `Neutral` \| `Softened` \| `Brightened` | A `colorlevels` white-point output/input shift |
+
+Unknown `Strength`/`ShadowTone`/`HighlightTone` words normalize to `Normal`/`Neutral`/`Neutral`
+(the same silent-normalize rule music applies to `Intensity`/`Ducking`); an unknown `Look` is
+never guessed at — it degrades the whole grade as `unknown_look_word`, because the contract's
+value is that every applied number traces to a recognized word.
+
+### `ColorGradeFilterBuilder`: the deterministic mapping
+
+Pure static C# (`Services/Video/ColorGradeFilterBuilder.cs`), exact-string-tested
+(`ColorGradeFilterBuilderTests`). Only four battle-tested core filters are ever emitted —
+`colorbalance` (colour cast), `eq` (contrast/saturation/gamma), `hue=s=0` (Mono), `colorlevels`
+(black/white-point shaping, both tone words folded into ONE instance) — composed in that fixed
+order. All numbers route through `FfmpegArgvFormat.Number` (the R8 locale rule).
+
+The numeric tables are deliberately INTERNAL constants, not `VideoCompileStepConfig` knobs:
+exposing raw eq/colorbalance numbers as workflow-author config would recreate, one layer up,
+exactly the free-numeric-parameter surface the words-only contract closes off, for no capability
+the curated looks don't already deliver. A future need for custom looks should add a NAMED look
+to the table, not a numeric pass-through. (Considered and rejected: per-look config overrides
+mirroring `MusicBed*Db` — those music knobs parameterize a *level* within one fixed mixing
+topology, while grade numbers ARE the look itself.)
+
+### Compile integration
+
+- **One hard failure, up front:** `EnableColorGrade=true` with `Mode=StreamCopy` fails
+  `COLOR_GRADE_REQUIRES_REENCODE` (a pure config error, mirroring `GRAPHICS_REQUIRE_REENCODE`).
+  Everything else is soft: `no_plan_configured`, `plan_unresolved`, `plan_invalid_json`,
+  `unknown_look_word`, `look_none` (the plan's own first-class no-grade decision, reported
+  distinctly from every failure reason), `grade_filters_unavailable` (a probed, process-lifetime
+  cached `-filters` check for `colorbalance`/`colorlevels`/`hue`/`eq`, mirroring the
+  drawtext/amix/xfade/perspective probes), and the defensive `empty_filter_chain` — all degrade
+  to "no grade applied", never a failed compile.
+- **Stage ordering: grade before graphics.** On the single-source select path the chain is
+  appended to the cut stage itself (directly after `setpts`); on the segmented path it is its own
+  stage directly after the concat/transition stage (`[vcat]…[vgrd]`). Either way it runs BEFORE
+  any insert/overlay stage, so motion graphics always paint clean on top of graded footage —
+  and unlike screen inserts, the grade works on BOTH encode paths (multi-source and
+  transition-overlap compiles included), since it is a plain per-frame filter with no timeline
+  bookkeeping to remap.
+- **Reporting:** the EDL and the step's output summary carry a `colorGrade` node
+  (`enabled`/`applied`/`look`/normalized `strength`/`shadowTone`/`highlightTone`/`filterChain`/
+  `reason`) only when `EnableColorGrade=true` — `false` (the default) leaves both shapes
+  byte-identical to the pre-grade compile path, the same load-bearing guarantee as
+  `EnableGraphics`/`EnableMusic`/`EnableInserts`.
+
+### `AgentType.Colorist`: the solo decider
+
+An ordinary LLM Agent step (`OutputSchemaName = "ColorGradePlanOutput"`), minimal read-only tool
+scope (`ProjectRead` + `WorkflowControl` — identical to `VideoStoryEditor`/`MusicSupervisor`;
+nothing about a grade ever needs rendering, so no sandbox grant in any role). It reads the
+bounded `VideoAnalyze` view's MEASURED per-shot words — the Phase 1/Phase 4 colour
+temperature/tone/saturation/exposure descriptors and look groups — and picks the words above,
+grounding its prose `Reason` in shot ids (`s2`, `s4`). Reasoning disabled, temperature 0.3, same
+rationale as the other bounded pick-from-fixed-lists deciders.
+
+### The color grade room
+
+`StepType.ColorGradeRoom` — the third room on
+[the shared room infrastructure](#the-shared-room-infrastructure): several `Colorist`-role seats
+plus a supervising colorist (`AgentType.ColorGradeDirector`) deliberate in a live group chat over
+the same bounded view a solo colorist consumes, then the director synthesizes ONE
+`ColorGradePlanOutput` OUTSIDE the chat loop. What is specific to this room:
+
+- **The decision carries no ids at all** — one whole-program grade in words. `FilterToOfferedIds`
+  is a documented structural no-op (pinned by the invariant tests' property-set check), and
+  `room.droppedSpanCount` is always `0`. The offered `s{n}` SHOT ids anchor only the
+  DELIBERATION: seats argue per-shot ("s2 reads backlit", "s0 and s4 disagree on temperature"),
+  and shot-id mentions drive convergence detection
+  (`ColorGradeRoomGroupChatManager`, pattern `s\d+` — deliberately narrower than the edit room's
+  `[sgt]` so a gap/segment mention never counts, and never matching `p{n}`/`m{n}`/`k{n}`).
+- **Word validation replaces id filtering.** Synthesis hard-rejects an EMPTY `Look` (retry with
+  the allowlist spelled out — "no grade" must be said as the word `None`, never as silence); a
+  non-empty unknown look spends one retry via `CheckRetryableIssue` and on the final attempt
+  passes through to the compile step's own `unknown_look_word` degrade.
+- **`Look: "None"` is a fully valid outcome** (the graphics room's empty-plan grace, in this
+  room's vocabulary), and a view offering ZERO shots completes immediately with a `None` plan
+  (`room.terminationReason = "empty-view"`) instead of failing `VIEW_UNRESOLVED`.
+- **Seats** (`ColorGradeRoomStepConfig.DefaultSeats`): `ToneArtist` (exposure/contrast, crushed
+  or washed shots, faces), `PaletteArtist` (temperature/saturation words, which named look the
+  footage wants), `ContinuityArtist` (one grade must suit every kept shot; when `Subtle` beats
+  `Strong` and when `None` is right). All three resolve to the built-in `Colorist` agent —
+  personas injected per-turn, the established one-agent-many-personas pattern.
+- **No tool-restriction override is needed** — unlike the graphics room, both backing agent
+  types are minimal read-only by `ToolGroupCatalog` in every role, so the base default (the
+  agent's full grant) is already the restricted set. `ColorGradeDirector` therefore mirrors
+  `VideoEditDirector`, not `MotionGraphicsDirector`.
+- **Failure codes**: `COLOR_GRADE_ROOM_CONFIG_INVALID` / `VIEW_UNRESOLVED` /
+  `COLOR_GRADE_ROOM_FAILED` / `UNEXPECTED_ERROR`. Solo fallback is one ordinary
+  `AgentType.Colorist` call (`FallbackToSoloColorist`, default `true`).
+
+`ColorGradeRoomStepConfig` (`color_grade_room_config_json`, jsonb on BOTH DbContexts) carries the
+same knobs as `EditRoomStepConfig`/`GraphicsRoomStepConfig` (see
+[Config reference](#config-reference)) with `FallbackToSoloColorist` as its fallback name. The
+step's `AgentDefinitionId` FK is satisfied by the same `AgentType.VideoTransform` placeholder as
+the other room/deterministic step types.
+
+### The `video-derush-edit-grade-room` template
+
+An eighth opt-in template (`AutoCreateOnProject: false`): `VideoAnalyze` (`Source: ProjectFile` —
+the default `AnalyzeVisuals: true` already emits the measured per-shot colour words, no extra
+flag needed) → `Agent(VideoStoryEditor)` → `ColorGradeRoom` (`View: Step 1` — explicit, since
+`Previous` would resolve to the story editor's decision, not the measured-shot envelope) →
+`VideoCompile` (`Decision: Step 2`, `AnalysisStepOrder: 1`, `enableColorGrade: true`,
+`colorGradePlan: Step 3`) → `ReviewLoop(VideoReviewAgent)` looping back to step 2.
+Deserialization-tested in `WorkflowTemplateCatalogConfigDeserializationTests.cs`.
+
+### Explicitly not built (color grading)
+
+- **Per-shot or per-look-group grades.** The v1 grade is whole-program by design: per-shot
+  grading would need timeline-enabled filter windows remapped through every cut/transition (two
+  disagreeing sources of timing for one filter), and per-look-group grading would mean offering
+  the `k{n}` namespace to an agent — a namespace this feature deliberately keeps
+  descriptive-only. A future per-scope phase should anchor to offered ids, not timestamps,
+  exactly as overlays did.
+- **Numeric grade knobs in config** — see the `ColorGradeFilterBuilder` rationale above.
+- **LUT files.** A `.cube` upload path would reintroduce an opaque binary asset into the filter
+  chain with no words-only audit trail; named first-party looks keep the EDL self-explanatory.
 
 ---
 

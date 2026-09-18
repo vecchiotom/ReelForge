@@ -63,6 +63,13 @@ const STEP_TYPE_TO_NODE_TYPE: Record<StepType, keyof typeof nodeTypes> = {
   VideoAnalyze: 'videoAnalyze',
   VideoCompile: 'videoCompile',
   EditRoom: 'editRoom',
+  // Display-only fallback for the template-provisioned room step types with no dedicated node
+  // editor yet (they are also excluded from StepTypeSelector's selectable options): render as a
+  // plain agent card (the placeholder VideoTransform agent) rather than leaving the Record
+  // non-exhaustive, which both breaks the Record<StepType, ...> type and hands React Flow an
+  // undefined node type at runtime.
+  GraphicsRoom: 'agent',
+  ColorGradeRoom: 'agent',
 };
 
 interface FlowchartBuilderProps {

@@ -118,6 +118,14 @@ public class VideoCompileStepExecutor : IStepExecutor
     /// <summary>Test-only hook, mirroring <see cref="ResetDrawtextAvailabilityCacheForTests"/>.</summary>
     internal static void ResetPerspectiveAvailabilityCacheForTests() => _perspectiveAvailableCache = null;
 
+    /// <summary>Process-lifetime cache of whether the ffmpeg build on PATH exposes the <c>colorbalance</c>/<c>colorlevels</c>/<c>eq</c>/<c>hue</c> filters the colour-grade chain composes (see docs/video-editing.md "Color grading") — probed once, mirroring the drawtext/amix/xfade/perspective caches exactly. Only ever probed when <see cref="VideoCompileStepConfig.EnableColorGrade"/> is on.</summary>
+    private static bool? _colorGradeFiltersAvailableCache;
+
+    private static readonly SemaphoreSlim ColorGradeProbeLock = new(1, 1);
+
+    /// <summary>Test-only hook, mirroring <see cref="ResetDrawtextAvailabilityCacheForTests"/>.</summary>
+    internal static void ResetColorGradeFiltersCacheForTests() => _colorGradeFiltersAvailableCache = null;
+
     /// <summary>
     /// Above this many segments, the select/aselect filtergraph is written to a scratch file and
     /// passed via <c>-filter_complex_script</c> instead of inline <c>-filter_complex</c>, to avoid
@@ -196,6 +204,26 @@ public class VideoCompileStepExecutor : IStepExecutor
                 return Failure(
                     context, sw, "CONFIG_INVALID",
                     $"VideoCompile GraphicsPlan.From must be Previous or Step; got '{config.GraphicsPlan.From}'.");
+            }
+
+            if (config.ColorGradePlan is not null &&
+                config.ColorGradePlan.From != ExtractInputSource.Previous && config.ColorGradePlan.From != ExtractInputSource.Step)
+            {
+                return Failure(
+                    context, sw, "CONFIG_INVALID",
+                    $"VideoCompile ColorGradePlan.From must be Previous or Step; got '{config.ColorGradePlan.From}'.");
+            }
+
+            // Color grading (see docs/video-editing.md "Color grading"): the one HARD failure in
+            // the whole addition, a pure config error caught up front — everything else about the
+            // grade is soft-failure ("no grade applied", cut proceeds). Mirrors
+            // GRAPHICS_REQUIRE_REENCODE's reasoning exactly: the eq/colorbalance/colorlevels/hue
+            // chain has no stream-copy equivalent.
+            if (config.EnableColorGrade && config.Mode == VideoCompileMode.StreamCopy)
+            {
+                return Failure(
+                    context, sw, "COLOR_GRADE_REQUIRES_REENCODE",
+                    "EnableColorGrade=true requires Mode=Reencode — the colour-grade filter chain has no stream-copy equivalent.");
             }
 
             // Phase 3 (motion graphics): drawbox/drawtext filters require the reencode
@@ -726,6 +754,23 @@ public class VideoCompileStepExecutor : IStepExecutor
                     context, config, artifact, timeline, scratch, canonicalMedia, segmentedEncode, context.CancellationToken);
             }
 
+            // ---- Color grading (see docs/video-editing.md "Color grading"): purely
+            // soft-failure, exactly like graphics/music/inserts above — a missing/bad plan, an
+            // unknown look word, or unavailable filters all degrade to "no grade applied", never
+            // to a failed compile. Only even attempted when EnableColorGrade=true — when false
+            // (the default), nothing below this point differs from the pre-grade compile path at
+            // all. Every number in the resulting filter chain comes from
+            // ColorGradeFilterBuilder's first-party tables; the plan contributes only words. ----
+
+            string? colorGradeFilter = null;
+            JsonObject? colorGradeNode = null;
+            if (config.EnableColorGrade)
+            {
+                await context.ReportProgressAsync("Resolving color grade plan");
+                (colorGradeFilter, colorGradeNode) = await ResolveColorGradeAsync(
+                    context, config, context.CancellationToken);
+            }
+
             // ---- Audio degrade report (bug group C): every OTHER degrade path in this feature
             // (graphics.reason, music.dropped, meta.transcription.degraded) records itself in the
             // EDL/outputSummary — this one previously didn't, so a silent-video deliverable could
@@ -765,7 +810,7 @@ public class VideoCompileStepExecutor : IStepExecutor
             JsonObject edl = BuildEdl(
                 config, analysisArtifactKey, resolvedSpans, retainedRatio, totalOutputSeconds, droppedOverCap, crf, graphicsNode, musicNode, audioNode,
                 transitions: transitionsNode, programFade: programFadeNode, transitionOverlapSec: transitionOverlapSec,
-                inserts: insertsNode);
+                inserts: insertsNode, colorGrade: colorGradeNode);
             await File.WriteAllTextAsync(edlLocalPath, edl.ToJsonString(EnvelopeJsonOptions), context.CancellationToken);
 
             string edlFileName = $"video-analysis/{context.Execution.Id:D}/step-{step.StepOrder}-edl.json";
@@ -793,7 +838,8 @@ public class VideoCompileStepExecutor : IStepExecutor
                     overlays: resolvedOverlays, graphicsConfig: resolvedOverlays.Count > 0 ? config : null,
                     progressContext: context, totalOutputSeconds: timeline.TotalSec,
                     music: resolvedMusic, sourceHasAudioByIndex: sourceHasAudioByIndex,
-                    seamPlans: seamPlans, timeline: timeline, transitionConfig: config, programFade: programFade);
+                    seamPlans: seamPlans, timeline: timeline, transitionConfig: config, programFade: programFade,
+                    colorGradeFilter: colorGradeFilter);
             }
             else
             {
@@ -812,7 +858,7 @@ public class VideoCompileStepExecutor : IStepExecutor
                         progressContext: context, totalOutputSeconds: timeline.TotalSec,
                         music: resolvedMusic, sourceHasAudio: sourceHasAudio,
                         seamPlans: seamPlans, timeline: timeline, transitionConfig: config, programFade: programFade,
-                        inserts: resolvedInserts)
+                        inserts: resolvedInserts, colorGradeFilter: colorGradeFilter)
                     : await EncodeStreamCopyAsync(scratch, localVideoPath, encodedLocalPath, resolvedSpans, timeout, context.CancellationToken);
             }
 
@@ -866,6 +912,9 @@ public class VideoCompileStepExecutor : IStepExecutor
 
             if (insertsNode is not null)
                 outputSummary["inserts"] = JsonNode.Parse(insertsNode.ToJsonString(EnvelopeJsonOptions));
+
+            if (colorGradeNode is not null)
+                outputSummary["colorGrade"] = JsonNode.Parse(colorGradeNode.ToJsonString(EnvelopeJsonOptions));
 
             outputSummary["audio"] = JsonNode.Parse(audioNode.ToJsonString(EnvelopeJsonOptions));
 
@@ -2074,6 +2123,150 @@ public class VideoCompileStepExecutor : IStepExecutor
     }
 
     // ---------------------------------------------------------------------
+    // Color grading (see docs/video-editing.md "Color grading")
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Resolves the step's <see cref="VideoCompileStepConfig.ColorGradePlan"/> to a concrete,
+    /// first-party ffmpeg filter chain (or null when no grade applies) plus the EDL/output
+    /// <c>colorGrade</c> report node. Purely soft-failure — every degrade path returns a null
+    /// chain with a machine-readable <c>reason</c>, never a failed compile. The plan contributes
+    /// only WORDS (validated against <see cref="ColorGradeFilterBuilder"/>'s allowlists — an
+    /// unknown <c>Look</c> is dropped as <c>unknown_look_word</c> rather than guessed at;
+    /// unknown strength/tone words normalize per the builder's documented rules); every number
+    /// in the chain comes from the builder's own tables.
+    /// </summary>
+    private async Task<(string? FilterChain, JsonObject ColorGradeNode)> ResolveColorGradeAsync(
+        StepExecutionContext context,
+        VideoCompileStepConfig config,
+        CancellationToken ct)
+    {
+        var node = new JsonObject { ["enabled"] = true, ["applied"] = false };
+
+        if (config.ColorGradePlan is null)
+        {
+            node["reason"] = "no_plan_configured";
+            return (null, node);
+        }
+
+        (string? planJson, string? planError) = ResolveDecisionJson(context, config.ColorGradePlan, "ColorGradePlan");
+        if (planJson is null)
+        {
+            _logger.LogInformation(
+                "VideoCompile step {StepOrder}: ColorGradePlan unresolved: {Error}", context.Step.StepOrder, planError);
+            node["reason"] = "plan_unresolved";
+            return (null, node);
+        }
+
+        ColorGradePlanOutput? plan = null;
+        try
+        {
+            plan = JsonSerializer.Deserialize<ColorGradePlanOutput>(planJson, DecisionJsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogInformation(
+                ex, "VideoCompile step {StepOrder}: ColorGradePlan is not valid JSON.", context.Step.StepOrder);
+        }
+
+        if (plan is null)
+        {
+            node["reason"] = "plan_invalid_json";
+            return (null, node);
+        }
+
+        string look = plan.Look ?? string.Empty;
+        node["look"] = look;
+
+        if (string.IsNullOrWhiteSpace(look) || !ColorGradeFilterBuilder.AllowedLooks.Contains(look))
+        {
+            // Never guess a substitute for an unrecognized look — the words-only contract's
+            // value is that every applied number traces to a recognized word.
+            node["reason"] = "unknown_look_word";
+            return (null, node);
+        }
+
+        // Normalized words are reported (not the raw ones) so the EDL states exactly what the
+        // deterministic resolution actually used.
+        string strength = ColorGradeFilterBuilder.NormalizeStrength(plan.Strength);
+        string shadowTone = ColorGradeFilterBuilder.NormalizeShadowTone(plan.ShadowTone);
+        string highlightTone = ColorGradeFilterBuilder.NormalizeHighlightTone(plan.HighlightTone);
+        node["strength"] = strength;
+        node["shadowTone"] = shadowTone;
+        node["highlightTone"] = highlightTone;
+
+        if (look == "None")
+        {
+            // The plan's own first-class "no grade" decision — reported distinctly from every
+            // failure reason, since nothing degraded: the colorist chose this.
+            node["reason"] = "look_none";
+            return (null, node);
+        }
+
+        if (!await IsColorGradeFiltersAvailableAsync(ct))
+        {
+            node["reason"] = "grade_filters_unavailable";
+            return (null, node);
+        }
+
+        string? chain = ColorGradeFilterBuilder.BuildFilterChain(look, strength, shadowTone, highlightTone);
+        if (chain is null)
+        {
+            // Defensive only: every recognized non-None look currently produces a non-empty
+            // chain, but a future table edit must degrade here rather than emit a dangling label.
+            node["reason"] = "empty_filter_chain";
+            return (null, node);
+        }
+
+        node["applied"] = true;
+        node["filterChain"] = chain;
+        node["reason"] = null;
+        return (chain, node);
+    }
+
+    private async Task<bool> IsColorGradeFiltersAvailableAsync(CancellationToken ct)
+    {
+        if (_colorGradeFiltersAvailableCache.HasValue)
+            return _colorGradeFiltersAvailableCache.Value;
+
+        await ColorGradeProbeLock.WaitAsync(ct);
+        try
+        {
+            if (_colorGradeFiltersAvailableCache.HasValue)
+                return _colorGradeFiltersAvailableCache.Value;
+
+            try
+            {
+                VideoToolResult result = await _videoToolRunner.RunFfmpegAsync(
+                    new[] { "-hide_banner", "-filters" }, TimeSpan.FromSeconds(15), ct);
+                // "eq" is matched space-padded — as ffmpeg's -filters table renders every filter
+                // name — since a bare Contains("eq") would match unrelated names (e.g. "areq"-
+                // style false positives on future builds); the longer names are unambiguous.
+                _colorGradeFiltersAvailableCache = result.Succeeded &&
+                    result.StdOut.Contains("colorbalance", StringComparison.Ordinal) &&
+                    result.StdOut.Contains("colorlevels", StringComparison.Ordinal) &&
+                    result.StdOut.Contains("hue", StringComparison.Ordinal) &&
+                    result.StdOut.Contains(" eq ", StringComparison.Ordinal);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "VideoCompile: color-grade filter availability probe failed; treating as unavailable.");
+                _colorGradeFiltersAvailableCache = false;
+            }
+
+            return _colorGradeFiltersAvailableCache.Value;
+        }
+        finally
+        {
+            ColorGradeProbeLock.Release();
+        }
+    }
+
+    // ---------------------------------------------------------------------
     // Background music (see docs/video-editing.md "Background music"): plan resolution — soft-
     // failure only, exactly like Phase 3's graphics resolution above. A missing/bad music plan, an
     // unoffered track id, a non-audio project file, a download/probe failure, or an unavailable
@@ -2573,7 +2766,11 @@ public class VideoCompileStepExecutor : IStepExecutor
         ProgramFadeResolved? programFade = null,
         // Tracked screen inserts (see docs/video-editing.md "Tracked screen inserts (Phase 5)"):
         // null/empty on every pre-inserts call path — the label plumbing below is then untouched.
-        IReadOnlyList<ResolvedScreenInsert>? inserts = null)
+        IReadOnlyList<ResolvedScreenInsert>? inserts = null,
+        // Color grading (see docs/video-editing.md "Color grading"): a fully-built, first-party
+        // filter chain from ColorGradeFilterBuilder, or null on every pre-grade call path — the
+        // cut stage below is then byte-identical to before this addition.
+        string? colorGradeFilter = null)
     {
         // Half-open [SnappedStart, SnappedEnd) per span, matching ToStartFrame(floor)/ToEndFrame
         // (ceiling)'s own semantics (EndFrame is the first EXCLUDED frame — see MapSourceToOutputSec's
@@ -2589,6 +2786,13 @@ public class VideoCompileStepExecutor : IStepExecutor
 
         string videoFilter = $"select='{BetweenTerms()}',setpts=N/FRAME_RATE/TB";
         string audioFilter = $"aselect='{BetweenTerms()}',asetpts=N/SR/TB";
+
+        // Color grading: appended to the cut stage itself, BEFORE any insert/overlay stage below,
+        // so motion graphics always paint clean on top of graded footage (the stage-ordering rule
+        // in docs/video-editing.md "Color grading"). Null (the default, and every pre-grade call
+        // path) leaves the cut stage byte-identical to before this addition.
+        if (colorGradeFilter is not null)
+            videoFilter += "," + colorGradeFilter;
 
         // Phase 3: partition into the two overlay flavors up front. Text overlays go through the
         // existing DrawtextFilterBuilder path unchanged; asset overlays (a rendered,
@@ -2911,7 +3115,12 @@ public class VideoCompileStepExecutor : IStepExecutor
         IReadOnlyList<SeamPlan>? seamPlans = null,
         OutputTimeline? timeline = null,
         VideoCompileStepConfig? transitionConfig = null,
-        ProgramFadeResolved? programFade = null)
+        ProgramFadeResolved? programFade = null,
+        // Color grading (see docs/video-editing.md "Color grading"): a fully-built, first-party
+        // filter chain from ColorGradeFilterBuilder, applied as its own stage directly after the
+        // concat/transition stage (before overlays), or null on every pre-grade call path — the
+        // label plumbing below is then untouched.
+        string? colorGradeFilter = null)
     {
         // Deterministic ffmpeg -i order: sorted distinct source indices actually referenced. Input
         // 0 is not necessarily "the" primary source here (that's canonicalMedia's own index,
@@ -3034,8 +3243,12 @@ public class VideoCompileStepExecutor : IStepExecutor
 
         // Same [vcut]-vs-[vout] labeling convention EncodeReencodeAsync uses: the concat/transition
         // stage outputs straight to the video final label when there is nothing further to draw,
-        // or to an internal [vcat] label that the overlay chain below continues from when there is.
-        string videoConcatLabel = hasOverlays ? "[vcat]" : videoFinalLabel;
+        // or to an internal [vcat] label that the grade/overlay chain below continues from when
+        // there is. Color grading adds one stage directly after the concat (before overlays, so
+        // graphics paint clean on top of graded footage — the same stage-ordering rule the
+        // single-source path applies by folding the grade into its cut stage).
+        bool hasGrade = colorGradeFilter is not null;
+        string videoConcatLabel = hasOverlays || hasGrade ? "[vcat]" : videoFinalLabel;
 
         // Background music (see docs/video-editing.md "Background music"): mirrors
         // EncodeReencodeAsync's own [aout]-vs-[adial] flip. No extra aformat is needed here on the
@@ -3058,6 +3271,17 @@ public class VideoCompileStepExecutor : IStepExecutor
             videoFinalLabel: videoConcatLabel, audioFinalLabel: audioConcatLabel ?? "[aout]");
         filterParts.AddRange(segmented.FilterParts);
 
+        // Color grading: its own stage between the concat and the overlay chain. When overlays
+        // follow, it ends at an internal [vgrd] label the overlay chain continues from; otherwise
+        // it becomes the video final label itself.
+        string overlayChainStartLabel = videoConcatLabel;
+        if (hasGrade)
+        {
+            string gradeStageFinalLabel = hasOverlays && graphicsConfig is not null ? "[vgrd]" : videoFinalLabel;
+            filterParts.Add($"[vcat]{colorGradeFilter}{gradeStageFinalLabel}");
+            overlayChainStartLabel = gradeStageFinalLabel;
+        }
+
         if (hasOverlays && graphicsConfig is not null)
         {
             // Deliberately duplicated (not shared) with EncodeReencodeAsync's own inline overlay-
@@ -3073,7 +3297,7 @@ public class VideoCompileStepExecutor : IStepExecutor
                     await WriteOverlayTextFileAsync(scratch, DrawtextFilterBuilder.SubtextSlot(i), overlay.SanitizedSubtext, ct);
             }
 
-            string currentLabel = videoConcatLabel;
+            string currentLabel = overlayChainStartLabel;
             if (textOverlays.Count > 0)
             {
                 string textStageFinalLabel = assetOverlays.Count > 0 ? "[vtxt]" : videoFinalLabel;
@@ -3439,7 +3663,8 @@ public class VideoCompileStepExecutor : IStepExecutor
         JsonObject? transitions = null,
         JsonObject? programFade = null,
         double? transitionOverlapSec = null,
-        JsonObject? inserts = null)
+        JsonObject? inserts = null,
+        JsonObject? colorGrade = null)
     {
         var segmentsArray = new JsonArray();
         for (int i = 0; i < spans.Count; i++)
@@ -3493,6 +3718,10 @@ public class VideoCompileStepExecutor : IStepExecutor
         // Tracked screen inserts: same discipline — only present when EnableInserts=true.
         if (inserts is not null)
             edl["inserts"] = inserts;
+
+        // Color grading: same discipline — only present when EnableColorGrade=true.
+        if (colorGrade is not null)
+            edl["colorGrade"] = colorGrade;
 
         // Bug group C: unlike graphics/music, always present — audio isn't opt-in the way those
         // phases are, so a dropped audio stream is never silently unreported.

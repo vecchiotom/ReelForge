@@ -48,6 +48,11 @@ export interface StepData {
    * passthrough discipline as editRoomConfigJson above.
    */
   graphicsRoomConfigJson?: string | null;
+  /**
+   * Raw JSON-serialized ColorGradeRoomStepConfig (ColorGradeRoom step type only). Same opaque
+   * passthrough discipline as editRoomConfigJson above.
+   */
+  colorGradeRoomConfigJson?: string | null;
 }
 
 interface WorkflowStepListProps {

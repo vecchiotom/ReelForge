@@ -254,4 +254,29 @@ public sealed record VideoCompileStepConfig(
     /// Fractional outward expansion of the tracked quad (about its centroid) before compositing,
     /// hiding the plate's own edge fringe under the inserted content. Clamped 0..0.1. Default 0.02.
     /// </summary>
-    double InsertOverscan = 0.02);
+    double InsertOverscan = 0.02,
+    // -- Color grading (see docs/video-editing.md "Color grading"). EnableColorGrade=false
+    //    (default) is byte-identical to the pre-grade compile path — the same load-bearing
+    //    backward-compatibility guarantee as EnableGraphics/EnableMusic/EnableInserts. Appended
+    //    AFTER InsertOverscan so every existing positional-construction call site and JSON
+    //    payload keeps compiling/deserializing unchanged. --
+    /// <summary>
+    /// Which step's resolved <c>ColorGradePlanOutput</c> to apply. <c>null</c> (default) means no
+    /// grade plan is even looked for. Reuses <see cref="ExtractInputRef"/> verbatim, same as
+    /// <see cref="Decision"/>/<see cref="GraphicsPlan"/>/<see cref="MusicPlan"/> — only
+    /// <c>From = Previous</c> or <c>From = Step</c> are valid. Points at either a solo
+    /// <c>AgentType.Colorist</c> Agent step or a <c>StepType.ColorGradeRoom</c> step — both emit
+    /// the exact same <c>ColorGradePlanOutput</c> shape.
+    /// </summary>
+    ExtractInputRef? ColorGradePlan = null,
+    /// <summary>
+    /// Applies the resolved colour grade (a whole-program ffmpeg
+    /// <c>eq</c>/<c>colorbalance</c>/<c>colorlevels</c>/<c>hue</c> chain built entirely from
+    /// first-party tables keyed by the plan's enum words — see <c>ColorGradeFilterBuilder</c>)
+    /// during the same encode, BEFORE overlays/inserts are painted so graphics stay clean.
+    /// <c>false</c> (default) is byte-identical to the pre-grade compile path. Requires
+    /// <c>Mode = Reencode</c>. Every plan-level failure (missing/invalid plan, unknown look word,
+    /// unavailable filters) degrades to "no grade applied", never to a failed compile — a plan
+    /// whose <c>Look</c> is <c>"None"</c> is a valid decision to apply no grade.
+    /// </summary>
+    bool EnableColorGrade = false);

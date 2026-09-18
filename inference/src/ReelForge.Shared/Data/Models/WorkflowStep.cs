@@ -63,6 +63,12 @@ public class WorkflowStep
     /// </summary>
     public string? GraphicsRoomConfigJson { get; set; }
 
+    /// <summary>
+    /// JSON configuration for StepType.ColorGradeRoom. Deserialised to ColorGradeRoomStepConfig.
+    /// Null for every other step type.
+    /// </summary>
+    public string? ColorGradeRoomConfigJson { get; set; }
+
     public WorkflowDefinition WorkflowDefinition { get; set; } = null!;
     public AgentDefinition AgentDefinition { get; set; } = null!;
     public ICollection<WorkflowStepResult> Results { get; set; } = new List<WorkflowStepResult>();

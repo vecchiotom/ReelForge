@@ -1056,7 +1056,8 @@ public class VideoCompileStepExecutorTests
         Action<IReadOnlyList<string>>? ffmpegArgsCaptured = null,
         Action<Mock<IMediaProbe>>? configureMediaProbe = null,
         bool amixNormalizeAvailable = true,
-        bool insertFiltersAvailable = true)
+        bool insertFiltersAvailable = true,
+        bool gradeFiltersAvailable = true)
     {
         // The drawtext-availability probe is a process-lifetime static cache in the executor
         // (see ResolveGraphicsAsync/IsDrawtextAvailableAsync) — reset it per test case so each
@@ -1067,10 +1068,12 @@ public class VideoCompileStepExecutorTests
         VideoCompileStepExecutor.ResetDrawtextAvailabilityCacheForTests();
         VideoCompileStepExecutor.ResetAmixNormalizeCacheForTests();
         VideoCompileStepExecutor.ResetPerspectiveAvailabilityCacheForTests();
+        VideoCompileStepExecutor.ResetColorGradeFiltersCacheForTests();
 
         string filtersStdOut =
             (drawtextAvailable ? "... drawtext ..." : "... (nothing here) ...") +
-            (insertFiltersAvailable ? " perspective alphamerge" : "");
+            (insertFiltersAvailable ? " perspective alphamerge" : "") +
+            (gradeFiltersAvailable ? " colorbalance colorlevels hue  eq  " : "");
         var toolRunner = new Mock<IVideoToolRunner>();
         toolRunner
             .Setup(t => t.RunFfmpegAsync(
@@ -2491,6 +2494,250 @@ public class VideoCompileStepExecutorTests
     }
 
     /// <summary>Builds a context wired for background music: the deterministic MusicTrackProjectFileId path by default, and an optional 4th history entry (StepOrder 3, a MusicSupervisor step) when <paramref name="musicPlanJson"/> is supplied.</summary>
+    // =======================================================================
+    // Color grading (see docs/video-editing.md "Color grading")
+    // =======================================================================
+
+    [Fact]
+    public async Task EnableColorGrade_false_produces_no_colorGrade_key_at_all_byte_identical_to_pre_grade()
+    {
+        // The load-bearing backward-compatibility guarantee: even with a ColorGradePlan
+        // configured, EnableColorGrade=false (the default) must leave the EDL/output shape
+        // completely untouched — no "colorGrade" key anywhere.
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" });
+
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateContext(
+            artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with
+            {
+                EnableColorGrade = false,
+                ColorGradePlan = new ExtractInputRef(ExtractInputSource.Previous)
+            });
+
+        JsonElement edl = default;
+        IReadOnlyList<string>? capturedArgs = null;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, edlCaptured: e => edl = e, ffmpegArgsCaptured: args => capturedArgs ??= args).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        edl.TryGetProperty("colorGrade", out _).Should().BeFalse("EDL must have no colorGrade key when EnableColorGrade=false");
+
+        using JsonDocument outputDoc = JsonDocument.Parse(result.Output);
+        outputDoc.RootElement.TryGetProperty("colorGrade", out _).Should().BeFalse();
+        string filterComplex = string.Join(" ", capturedArgs!);
+        filterComplex.Should().NotContain("colorbalance", "no grade filter may reach ffmpeg when EnableColorGrade=false");
+    }
+
+    [Fact]
+    public async Task EnableColorGrade_true_with_StreamCopy_fails_COLOR_GRADE_REQUIRES_REENCODE()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" });
+
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        StepExecutionContext context = CreateContext(
+            artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with
+            {
+                EnableColorGrade = true,
+                Mode = VideoCompileMode.StreamCopy,
+                AllowKeyframeSnapping = true
+            });
+
+        StepExecutionResult result = await CreateExecutor(workspace).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Failed);
+        ErrorCode(result).Should().Be("COLOR_GRADE_REQUIRES_REENCODE");
+    }
+
+    [Fact]
+    public async Task Warm_grade_plan_appends_the_first_party_chain_to_the_cut_stage_and_reports_it_in_the_EDL()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" });
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        string gradePlanJson = JsonSerializer.Serialize(new
+        {
+            look = "Warm",
+            strength = "Subtle",
+            shadowTone = "Lifted",
+            highlightTone = "Neutral",
+            reason = "test",
+            planRationale = "test"
+        });
+
+        StepExecutionContext context = CreateGradeContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace, gradePlanJson);
+
+        JsonElement edl = default;
+        IReadOnlyList<string>? capturedArgs = null;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, edlCaptured: e => edl = e, ffmpegArgsCaptured: args => capturedArgs ??= args).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+
+        JsonElement grade = edl.GetProperty("colorGrade");
+        grade.GetProperty("applied").GetBoolean().Should().BeTrue();
+        grade.GetProperty("look").GetString().Should().Be("Warm");
+        grade.GetProperty("strength").GetString().Should().Be("Subtle");
+        grade.GetProperty("shadowTone").GetString().Should().Be("Lifted");
+
+        string expectedChain = ColorGradeFilterBuilder.BuildFilterChain("Warm", "Subtle", "Lifted", "Neutral")!;
+        grade.GetProperty("filterChain").GetString().Should().Be(expectedChain);
+
+        // The chain must sit in the CUT stage (immediately after setpts) — i.e. before any
+        // overlay/insert stage would run — never as a dangling separate stage.
+        int fcIndex = capturedArgs!.ToList().IndexOf("-filter_complex");
+        fcIndex.Should().BeGreaterThan(0);
+        string filterComplex = capturedArgs[fcIndex + 1];
+        filterComplex.Should().Contain("setpts=N/FRAME_RATE/TB," + expectedChain);
+
+        using JsonDocument outputDoc = JsonDocument.Parse(result.Output);
+        outputDoc.RootElement.GetProperty("colorGrade").GetProperty("applied").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Grade_plan_with_look_None_applies_no_filter_and_reports_look_none()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" });
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        string gradePlanJson = JsonSerializer.Serialize(new
+        {
+            look = "None", strength = "Normal", shadowTone = "Lifted", highlightTone = "Softened",
+            reason = "already consistent", planRationale = "no grade"
+        });
+
+        StepExecutionContext context = CreateGradeContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace, gradePlanJson);
+
+        JsonElement edl = default;
+        IReadOnlyList<string>? capturedArgs = null;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, edlCaptured: e => edl = e, ffmpegArgsCaptured: args => capturedArgs ??= args).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        JsonElement grade = edl.GetProperty("colorGrade");
+        grade.GetProperty("applied").GetBoolean().Should().BeFalse();
+        grade.GetProperty("reason").GetString().Should().Be("look_none");
+        int fcIndex = capturedArgs!.ToList().IndexOf("-filter_complex");
+        string filterComplex = fcIndex >= 0 ? capturedArgs[fcIndex + 1] : string.Join(" ", capturedArgs!);
+        filterComplex.Should().NotContain("colorbalance",
+            "a plan whose look is None must leave the compiled bytes carrying no grade filter whatsoever — tone words included");
+        filterComplex.Should().NotContain("colorlevels");
+    }
+
+    [Fact]
+    public async Task Grade_plan_with_an_unknown_look_word_degrades_to_no_grade_and_the_cut_still_succeeds()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" });
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        string gradePlanJson = JsonSerializer.Serialize(new
+        {
+            look = "Sepia", strength = "Normal", shadowTone = "Neutral", highlightTone = "Neutral",
+            reason = "test", planRationale = "test"
+        });
+
+        StepExecutionContext context = CreateGradeContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace, gradePlanJson);
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(workspace, edlCaptured: e => edl = e).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, "a bad grade plan must never fail the cut itself");
+        JsonElement grade = edl.GetProperty("colorGrade");
+        grade.GetProperty("applied").GetBoolean().Should().BeFalse();
+        grade.GetProperty("reason").GetString().Should().Be("unknown_look_word");
+        grade.GetProperty("look").GetString().Should().Be("Sepia");
+    }
+
+    [Fact]
+    public async Task Missing_ColorGradePlan_content_produces_grade_free_but_otherwise_successful_compile()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" });
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+
+        // ColorGradePlan references a step order that produced no output at all.
+        StepExecutionContext context = CreateContext(
+            artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace,
+            configOverride: cfg => cfg with
+            {
+                EnableColorGrade = true,
+                ColorGradePlan = new ExtractInputRef(ExtractInputSource.Step, StepOrder: 99)
+            });
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(workspace, edlCaptured: e => edl = e).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        JsonElement grade = edl.GetProperty("colorGrade");
+        grade.GetProperty("applied").GetBoolean().Should().BeFalse();
+        grade.GetProperty("reason").GetString().Should().Be("plan_unresolved");
+    }
+
+    [Fact]
+    public async Task Grade_filters_missing_from_the_ffmpeg_build_skip_the_grade_and_the_cut_still_succeeds()
+    {
+        VideoAnalysisArtifact artifact = BuildArtifact(shots: new[] { ("s0", 0.0, 10.0) }, offeredIds: new[] { "s0" });
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        string gradePlanJson = JsonSerializer.Serialize(new
+        {
+            look = "Cool", strength = "Normal", shadowTone = "Neutral", highlightTone = "Neutral",
+            reason = "test", planRationale = "test"
+        });
+
+        StepExecutionContext context = CreateGradeContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace, gradePlanJson);
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, edlCaptured: e => edl = e, gradeFiltersAvailable: false).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, "an ffmpeg build without the grade filters must never fail the cut itself");
+        JsonElement grade = edl.GetProperty("colorGrade");
+        grade.GetProperty("applied").GetBoolean().Should().BeFalse();
+        grade.GetProperty("reason").GetString().Should().Be("grade_filters_unavailable");
+    }
+
+    /// <summary>
+    /// Mirrors <see cref="CreateContext"/> exactly, with one extra history entry: the grade plan
+    /// at step order 4 (referenced explicitly, since Previous would resolve to the story
+    /// editor's decision) and EnableColorGrade/ColorGradePlan preconfigured — the same pattern
+    /// <see cref="CreateMusicContext"/> established for its plan entry.
+    /// </summary>
+    private static StepExecutionContext CreateGradeContext(
+        VideoAnalysisArtifact artifact,
+        string decisionJson,
+        out Mock<IProjectFileWorkspace> workspace,
+        string gradePlanJson)
+    {
+        StepExecutionContext baseContext = CreateContext(
+            artifact, decisionJson, out workspace,
+            configOverride: cfg => cfg with
+            {
+                // Decision must reference the story editor explicitly here — with the grade-plan
+                // entry appended at step order 4, "Previous" would resolve to the grade plan
+                // itself, exactly the trap the shipped templates' comments document.
+                Decision = new ExtractInputRef(ExtractInputSource.Step, StepOrder: 2),
+                EnableColorGrade = true,
+                ColorGradePlan = new ExtractInputRef(ExtractInputSource.Step, StepOrder: 4)
+            });
+
+        List<StepOutputHistoryEntry> history = baseContext.StepOutputHistory.ToList();
+        history.Add(new StepOutputHistoryEntry(4, "Colorist", gradePlanJson, OutputStorageKey: null, ArtifactStorageKey: null));
+
+        return new StepExecutionContext
+        {
+            Execution = baseContext.Execution,
+            Step = baseContext.Step,
+            AllSteps = baseContext.AllSteps,
+            AccumulatedOutput = baseContext.AccumulatedOutput,
+            StepOutputHistory = history,
+            CurrentStepIndex = baseContext.CurrentStepIndex,
+            IterationCount = baseContext.IterationCount,
+            CorrelationId = baseContext.CorrelationId,
+            CancellationToken = baseContext.CancellationToken
+        };
+    }
+
     private static StepExecutionContext CreateMusicContext(
         VideoAnalysisArtifact artifact,
         string decisionJson,

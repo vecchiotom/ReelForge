@@ -109,7 +109,8 @@ public class WorkflowsController : ControllerBase
                         s.AgentInputContextMode.HasValue ? s.AgentInputContextMode.Value.ToString() : null,
                         s.SelectedPriorStepOrdersJson,
                         s.TrueBranchStepOrder, s.FalseBranchStepOrder, s.ParallelAgentIdsJson,
-                        s.ExtractConfigJson, s.VideoAnalyzeConfigJson, s.VideoCompileConfigJson, s.EditRoomConfigJson, s.GraphicsRoomConfigJson)
+                        s.ExtractConfigJson, s.VideoAnalyzeConfigJson, s.VideoCompileConfigJson, s.EditRoomConfigJson, s.GraphicsRoomConfigJson,
+                        s.ColorGradeRoomConfigJson)
                 ).ToList(),
                 w.RequiresUserInput))
             .ToListAsync(ct);
@@ -391,7 +392,8 @@ public class WorkflowsController : ControllerBase
             VideoAnalyzeConfigJson = req.VideoAnalyzeConfigJson,
             VideoCompileConfigJson = req.VideoCompileConfigJson,
             EditRoomConfigJson = req.EditRoomConfigJson,
-            GraphicsRoomConfigJson = req.GraphicsRoomConfigJson
+            GraphicsRoomConfigJson = req.GraphicsRoomConfigJson,
+            ColorGradeRoomConfigJson = req.ColorGradeRoomConfigJson
         };
 
         if (req.StepType != null && Enum.TryParse<StepType>(req.StepType, out var stepType))
@@ -415,7 +417,8 @@ public class WorkflowsController : ControllerBase
                     s.LoopTargetStepOrder, s.MaxIterations, s.MinScore, s.InputMappingJson,
                     s.AgentInputContextMode?.ToString(), s.SelectedPriorStepOrdersJson,
                     s.TrueBranchStepOrder, s.FalseBranchStepOrder, s.ParallelAgentIdsJson,
-                    s.ExtractConfigJson, s.VideoAnalyzeConfigJson, s.VideoCompileConfigJson, s.EditRoomConfigJson, s.GraphicsRoomConfigJson)
+                    s.ExtractConfigJson, s.VideoAnalyzeConfigJson, s.VideoCompileConfigJson, s.EditRoomConfigJson, s.GraphicsRoomConfigJson,
+                        s.ColorGradeRoomConfigJson)
             ).ToList(),
             workflow.RequiresUserInput);
 

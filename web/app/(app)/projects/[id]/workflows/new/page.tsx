@@ -77,6 +77,7 @@ export default function NewWorkflowPage({ params }: { params: Promise<{ id: stri
           videoCompileConfigJson: s.videoCompileConfig ? JSON.stringify(s.videoCompileConfig) : null,
           editRoomConfigJson: s.editRoomConfigJson ?? null,
           graphicsRoomConfigJson: s.graphicsRoomConfigJson ?? null,
+          colorGradeRoomConfigJson: s.colorGradeRoomConfigJson ?? null,
         })),
       });
       notifications.show({ title: 'Created', message: 'Workflow created', color: 'green' });

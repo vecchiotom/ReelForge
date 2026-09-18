@@ -165,6 +165,8 @@ public class InferenceApiDbContext : DbContext
                 .HasColumnType("jsonb");
             entity.Property(e => e.GraphicsRoomConfigJson)
                 .HasColumnType("jsonb");
+            entity.Property(e => e.ColorGradeRoomConfigJson)
+                .HasColumnType("jsonb");
             entity.Property(e => e.StepType)
                 .HasConversion<string>();
             entity.Property(e => e.AgentInputContextMode)

@@ -301,6 +301,24 @@ public static class ToolGroupCatalog
         ],
 
         // ──────────────────────────────────────────────────────────────────
+        // Colorist / ColorGradeDirector: read-only project context + FailWorkflow only,
+        // identical scope to VideoStoryEditor/MusicSupervisor above. Both only emit enum WORDS
+        // (a named look plus strength/shadow/highlight words — see ColorGradePlanOutput's
+        // reflection-tested all-strings invariant) that VideoCompileStepExecutor alone resolves
+        // to concrete ffmpeg filter parameters; nothing about a grade ever needs rendering, so —
+        // unlike MotionGraphicsPlanner/MotionGraphicsDirector — there is deliberately NO sandbox
+        // or render grant here, for either role (room-participant turns OR the director's
+        // standalone synthesis call). Explicitly spelled out rather than left to the default arm
+        // below, same reasoning as VideoStoryEditor's own comment.
+        // ──────────────────────────────────────────────────────────────────
+
+        AgentType.Colorist or AgentType.ColorGradeDirector =>
+        [
+            ToolGroup.ProjectRead,
+            ToolGroup.WorkflowControl
+        ],
+
+        // ──────────────────────────────────────────────────────────────────
         // Custom / unknown / FileSummarizerAgent (Inference-API-only — FileSummarizerAgent is
         // never actually routed through this resolver at runtime, but the switch's default arm
         // covers it defensively rather than throwing): minimal project read access only.
