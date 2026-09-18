@@ -59,6 +59,7 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
             extractConfig: s.extractConfigJson ? JSON.parse(s.extractConfigJson) : null,
             videoAnalyzeConfig: s.videoAnalyzeConfigJson ? JSON.parse(s.videoAnalyzeConfigJson) : null,
             videoCompileConfig: s.videoCompileConfigJson ? JSON.parse(s.videoCompileConfigJson) : null,
+            editRoomConfigJson: s.editRoomConfigJson ?? null,
           })),
       );
       setInitialized(true);
@@ -98,6 +99,7 @@ export default function WorkflowEditPage({ params }: { params: Promise<{ id: str
           extractConfigJson: s.extractConfig ? JSON.stringify(s.extractConfig) : null,
           videoAnalyzeConfigJson: s.videoAnalyzeConfig ? JSON.stringify(s.videoAnalyzeConfig) : null,
           videoCompileConfigJson: s.videoCompileConfig ? JSON.stringify(s.videoCompileConfig) : null,
+          editRoomConfigJson: s.editRoomConfigJson ?? null,
         })),
       });
       mutate();

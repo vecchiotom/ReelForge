@@ -354,7 +354,7 @@ export function VideoCompileStepConfig({
         <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }}>
           <NumberInput
             label="Audio seam ramp (ms)"
-            description="Crossfade applied to the audio at every seam, regardless of policy"
+            description="Half-width of the audio declick ramp an audio-only seam treatment applies around the cut"
             size="xs"
             min={0}
             value={config.audioSeamRampMs ?? 24}
@@ -414,7 +414,7 @@ export function VideoCompileStepConfig({
           />
           <NumberInput
             label="Max transition ratio (%)"
-            description="Caps a transition to this percent of the shorter adjacent segment"
+            description="Caps what percent of all cuts may carry a crossfade-style treatment; excess cuts downgrade to audio-only"
             size="xs"
             min={0}
             max={100}

@@ -38,7 +38,7 @@ export function AgentSkillsSelect({ agentId, assignedSkills, onUpdated }: AgentS
     );
   }
 
-  const skillData = (data?.skills ?? []).map((s) => ({ value: s.name, label: s.displayName }));
+  const skillData = (data ?? []).map((s) => ({ value: s.name, label: s.displayName }));
 
   const handleChange = async (newValue: string[]) => {
     setSaving(true);

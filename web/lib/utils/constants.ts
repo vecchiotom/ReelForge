@@ -58,6 +58,7 @@ export const STEP_TYPE_LABELS: Record<StepType, string> = {
   Extract: 'Extract',
   VideoAnalyze: 'Analyze Video',
   VideoCompile: 'Compile Video',
+  EditRoom: 'Edit Room',
 };
 
 // Note: 'cyan'/'teal' were the plan's suggested colors for VideoAnalyze/VideoCompile, but both are
@@ -72,6 +73,7 @@ export const STEP_TYPE_COLORS: Record<StepType, string> = {
   Extract: 'grape',
   VideoAnalyze: 'blue',
   VideoCompile: 'indigo',
+  EditRoom: 'pink',
 };
 
 export const STEP_TYPE_DESCRIPTIONS: Record<StepType, string> = {
@@ -83,4 +85,5 @@ export const STEP_TYPE_DESCRIPTIONS: Record<StepType, string> = {
   Extract: 'Deterministically reduce prior outputs or project files into a bounded view (no AI call)',
   VideoAnalyze: 'Deterministic ffmpeg-based derushing — silence, shot, and transcript analysis (no AI call)',
   VideoCompile: 'Deterministic ffmpeg-based cutting from an editorial decision (no AI call)',
+  EditRoom: 'Multi-agent group-chat deliberation producing one editorial decision (template-provisioned; no builder editor yet)',
 };

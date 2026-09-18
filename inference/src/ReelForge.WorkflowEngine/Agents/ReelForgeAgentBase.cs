@@ -317,11 +317,19 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
 
     /// <summary>
     /// Resolves the skill set for a Custom (non-built-in) agent from its own
-    /// <c>AgentDefinition</c> row. A sibling effort is adding <c>AgentDefinition.AssignedSkillsJson</c>
-    /// for exactly this purpose; until that column exists, this always returns an empty list —
-    /// Custom agents get no skills, the same as any other built-in AgentType not listed in
-    /// <see cref="SkillCatalog.DefaultsFor"/>.
-    /// TODO: wire to AgentDefinition.AssignedSkillsJson once the sibling data-model change lands.
+    /// <c>AgentDefinition</c> row.
+    ///
+    /// NOTE (post-merge review, 2026-09): the sibling data-model change this stub was waiting on
+    /// HAS landed — <c>AgentDefinition.AssignedSkillsJson</c> exists, is mapped read-only in
+    /// <c>WorkflowEngineDbContext</c>, and is written by <c>PUT /api/v1/agents/{id}/skills</c>
+    /// (custom agents only). This method is still a stub because this path is currently
+    /// UNREACHABLE: no <c>IReelForgeAgent</c> implementation with <c>AgentType.Custom</c> is ever
+    /// registered in the engine (see <c>Program.cs</c>/<c>AgentRegistry</c> — a Custom step
+    /// resolves to no agent and is Skipped), so there is no runtime consumer to wire this to yet.
+    /// Whoever adds an engine-side Custom agent implementation must ALSO implement this method
+    /// (read <c>AssignedSkillsJson</c> for <paramref name="agentDefinitionId"/> via a scoped
+    /// <c>WorkflowEngineDbContext</c>, map names through <see cref="SkillCatalog.Find"/>), or the
+    /// admin UI's per-custom-agent skill assignment will silently do nothing.
     /// </summary>
     private static Task<IReadOnlyList<SkillDescriptor>> ResolveCustomAgentSkillsAsync(Guid? agentDefinitionId, CancellationToken ct) =>
         Task.FromResult<IReadOnlyList<SkillDescriptor>>([]);

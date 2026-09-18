@@ -59,6 +59,9 @@ const STEP_TYPE_TO_NODE_TYPE: Record<StepType, keyof typeof nodeTypes> = {
   Extract: 'extract',
   VideoAnalyze: 'videoAnalyze',
   VideoCompile: 'videoCompile',
+  // No dedicated node component yet — an EditRoom step (template-provisioned only for now)
+  // renders as a generic agent node; its config round-trips opaquely (see StepData).
+  EditRoom: 'agent',
 };
 
 interface FlowchartBuilderProps {

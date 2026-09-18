@@ -110,7 +110,15 @@ public class SkillsController : ControllerBase
             return BadRequest(new { error = "Unknown skill name(s).", skills = unknown });
         }
 
-        agent.AssignedSkillsJson = JsonSerializer.Serialize(skills);
+        // Store the catalog's canonical names (deduplicated), not the caller's casing — every
+        // later consumer then matches by simple equality instead of depending on each read path
+        // remembering to compare case-insensitively.
+        string[] canonical = skills
+            .Select(s => SkillCatalog.Find(s)!.Name)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        agent.AssignedSkillsJson = JsonSerializer.Serialize(canonical);
         await _db.SaveChangesAsync(ct);
 
         return Ok(AgentsController.MapToResponse(agent));

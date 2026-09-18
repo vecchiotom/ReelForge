@@ -115,35 +115,42 @@ public sealed class EditRoomSeatAgent : DelegatingAIAgent
 
         if (!failed && enumerator is not null)
         {
-            while (true)
+            // try/finally (not a bare DisposeAsync after the loop) so the inner enumerator is
+            // also disposed when the CONSUMER abandons this stream early — the compiler-generated
+            // async-iterator DisposeAsync resumes here and runs this finally block.
+            try
             {
-                AgentResponseUpdate? update = null;
-                try
+                while (true)
                 {
-                    if (!await enumerator.MoveNextAsync())
+                    AgentResponseUpdate? update = null;
+                    try
+                    {
+                        if (!await enumerator.MoveNextAsync())
+                            break;
+                        update = enumerator.Current;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception)
+                    {
+                        failed = true;
+                    }
+
+                    if (failed || update is null)
                         break;
-                    update = enumerator.Current;
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch (Exception)
-                {
-                    failed = true;
-                }
 
-                if (failed || update is null)
-                    break;
+                    if (!string.IsNullOrEmpty(update.Text))
+                        accumulated.Append(update.Text);
 
-                if (!string.IsNullOrEmpty(update.Text))
-                    accumulated.Append(update.Text);
-
-                yield return update;
+                    yield return update;
+                }
             }
-
-            if (enumerator is not null)
+            finally
+            {
                 await enumerator.DisposeAsync();
+            }
         }
 
         if (failed)
