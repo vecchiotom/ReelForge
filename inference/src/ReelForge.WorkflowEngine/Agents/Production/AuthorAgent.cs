@@ -153,10 +153,14 @@ public class AuthorAgentImpl : ReelForgeAgentBase
         IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         IAgentToolProvider toolProvider)
+        // The most complex code-generation step in the pipeline (full sandbox access, assembles
+        // everything downstream reads): low temperature for precision, high reasoning effort
+        // since correctness here is worth the extra latency.
         : base(chatClients, configuration, "Author",
             "Assembles all outputs into a RenderManifest for Remotion.",
             AgentType.AuthorAgent, DefaultPrompt,
             toolProvider.GetTools(AgentType.AuthorAgent),
-            outputSchemaType: typeof(RenderManifestOutput))
+            outputSchemaType: typeof(RenderManifestOutput),
+            defaultModelSettings: new AgentModelSettings(Temperature: 0.3f, ReasoningEffort: "xhigh"))
     { }
 }

@@ -89,11 +89,15 @@ public class AnimationStrategyAgentImpl : ReelForgeAgentBase
         IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         IAgentToolProvider toolProvider)
+        // Mapping analysis output onto a real animation/timing plan benefits from deeper
+        // deliberation than pure extraction does; moderate temperature keeps some flexibility
+        // without drifting into inconsistency.
         : base(chatClients, configuration, "AnimationStrategy",
             "Defines transition timing, animation sequencing, and scene ordering.",
             AgentType.AnimationStrategyAgent, DefaultPrompt,
             toolProvider.GetTools(AgentType.AnimationStrategyAgent),
             agentId: null,
-            outputSchemaType: typeof(AnimationStrategyOutput))
+            outputSchemaType: typeof(AnimationStrategyOutput),
+            defaultModelSettings: new AgentModelSettings(Temperature: 0.4f, ReasoningEffort: "xhigh"))
     { }
 }

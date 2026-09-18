@@ -52,11 +52,14 @@ public class RouteAndApiAnalyzerAgent : ReelForgeAgentBase
         IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         IAgentToolProvider toolProvider)
+        // Structured extraction, not exploratory reasoning: low temperature for consistency,
+        // low reasoning effort — extracting routes/endpoints doesn't benefit from deliberation.
         : base(chatClients, configuration, "RouteAndApiAnalyzer",
             "Extracts all routes, API endpoints, and navigation structure.",
             AgentType.RouteAndApiAnalyzer, DefaultPrompt,
             toolProvider.GetTools(AgentType.RouteAndApiAnalyzer),
             agentId: null,
-            outputSchemaType: typeof(RouteAndApiOutput))
+            outputSchemaType: typeof(RouteAndApiOutput),
+            defaultModelSettings: new AgentModelSettings(Temperature: 0.3f, ReasoningEffort: "low"))
     { }
 }

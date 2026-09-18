@@ -94,11 +94,14 @@ public class RemotionComponentTranslatorAgent : ReelForgeAgentBase
         IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         IAgentToolProvider toolProvider)
+        // Writes real TSX code into the sandbox: low temperature for precision over creativity,
+        // high reasoning effort since correctness here compounds through everything downstream.
         : base(chatClients, configuration, "RemotionComponentTranslator",
             "Builds the Remotion project structure (TSX files) directly inside the sandbox environment.",
             AgentType.RemotionComponentTranslator, DefaultPrompt,
             toolProvider.GetTools(AgentType.RemotionComponentTranslator),
             agentId: null,
-            outputSchemaType: typeof(RemotionProjectBuildOutput))
+            outputSchemaType: typeof(RemotionProjectBuildOutput),
+            defaultModelSettings: new AgentModelSettings(Temperature: 0.3f, ReasoningEffort: "xhigh"))
    { }
 }

@@ -56,11 +56,14 @@ public class ScriptwriterAgentImpl : ReelForgeAgentBase
         IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         IAgentToolProvider toolProvider)
+        // Creative writing benefits more from sampling variety than from deliberation; higher
+        // temperature for voice, low reasoning effort to keep it snappy.
         : base(chatClients, configuration, "Scriptwriter",
             "Writes the voiceover/caption script for each scene.",
             AgentType.ScriptwriterAgent, DefaultPrompt,
             toolProvider.GetTools(AgentType.ScriptwriterAgent),
             agentId: null,
-            outputSchemaType: typeof(ScriptwriterOutput))
+            outputSchemaType: typeof(ScriptwriterOutput),
+            defaultModelSettings: new AgentModelSettings(Temperature: 0.8f, TopP: 0.95f, ReasoningEffort: "low"))
     { }
 }

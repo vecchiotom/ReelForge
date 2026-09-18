@@ -58,11 +58,14 @@ public class DependencyAnalyzerAgent : ReelForgeAgentBase
         IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         IAgentToolProvider toolProvider)
+        // Structured extraction, not exploratory reasoning: low temperature for consistency,
+        // low reasoning effort — enumerating dependencies doesn't benefit from deliberation.
         : base(chatClients, configuration, "DependencyAnalyzer",
             "Enumerates frameworks, libraries, and major dependencies.",
             AgentType.DependencyAnalyzer, DefaultPrompt,
             toolProvider.GetTools(AgentType.DependencyAnalyzer),
             agentId: null,
-            outputSchemaType: typeof(DependencyAnalysisOutput))
+            outputSchemaType: typeof(DependencyAnalysisOutput),
+            defaultModelSettings: new AgentModelSettings(Temperature: 0.3f, ReasoningEffort: "low"))
     { }
 }

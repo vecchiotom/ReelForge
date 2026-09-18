@@ -215,11 +215,18 @@ public class MotionGraphicsPlannerAgent : ReelForgeAgentBase
         IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         IAgentToolProvider toolProvider)
+        // The one video-editing decision agent with full sandbox+Remotion tool access (it may
+        // render a real overlay asset), so its observed 28-60 min runs are plausibly tool
+        // round-trips as much as reasoning tokens -- reasoning effort is kept at "low" rather
+        // than disabled outright, unlike the other three video-editing agents. Revisit via
+        // Agents:MotionGraphicsPlanner:ReasoningEffort ("none") if runs still blow past the
+        // timeout with the raised ceiling in ReelForgeAgentBase.
         : base(chatClients, configuration, "MotionGraphicsPlanner",
             "Plans zero or more motion-graphics overlays (lower-thirds, titles, callouts) anchored only to offered placement ids from a video analysis.",
             AgentType.MotionGraphicsPlanner, DefaultPrompt,
             toolProvider.GetTools(AgentType.MotionGraphicsPlanner),
             agentId: null,
-            outputSchemaType: typeof(MotionGraphicsPlanOutput))
+            outputSchemaType: typeof(MotionGraphicsPlanOutput),
+            defaultModelSettings: new AgentModelSettings(Temperature: 0.3f, ReasoningEffort: "low"))
     { }
 }

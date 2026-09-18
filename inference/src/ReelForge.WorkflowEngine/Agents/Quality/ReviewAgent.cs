@@ -91,11 +91,15 @@ public class ReviewAgentImpl : ReelForgeAgentBase
         IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         IAgentToolProvider toolProvider)
+        // Low temperature for consistent, comparable scores across iterations; low reasoning
+        // effort since a ReviewLoop step can re-run this agent up to MaxIterations times and
+        // slow per-call reasoning compounds directly into loop latency.
         : base(chatClients, configuration, "Review",
             "Scores output quality and provides structured feedback.",
             AgentType.ReviewAgent, DefaultPrompt,
             toolProvider.GetTools(AgentType.ReviewAgent),
             agentId: null,
-            outputSchemaType: typeof(ReviewOutput))
+            outputSchemaType: typeof(ReviewOutput),
+            defaultModelSettings: new AgentModelSettings(Temperature: 0.2f, ReasoningEffort: "low"))
     { }
 }

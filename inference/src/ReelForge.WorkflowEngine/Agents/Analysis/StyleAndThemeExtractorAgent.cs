@@ -60,11 +60,14 @@ public class StyleAndThemeExtractorAgent : ReelForgeAgentBase
         IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         IAgentToolProvider toolProvider)
+        // Structured extraction, not exploratory reasoning: low temperature for consistency,
+        // low reasoning effort — reading palette/typography tokens doesn't benefit from deliberation.
         : base(chatClients, configuration, "StyleAndThemeExtractor",
             "Extracts color palette, typography, spacing, and branding tokens.",
             AgentType.StyleAndThemeExtractor, DefaultPrompt,
             toolProvider.GetTools(AgentType.StyleAndThemeExtractor),
             agentId: null,
-            outputSchemaType: typeof(StyleAndThemeOutput))
+            outputSchemaType: typeof(StyleAndThemeOutput),
+            defaultModelSettings: new AgentModelSettings(Temperature: 0.3f, ReasoningEffort: "low"))
     { }
 }

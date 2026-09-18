@@ -165,11 +165,19 @@ public class VideoStoryEditorAgent : ReelForgeAgentBase
         IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         IAgentToolProvider toolProvider)
+        // This is a bounded KEEP/DROP selection over an already-curated, id-anchored view
+        // (minimal read-only tool scope, no sandbox) -- reasoning is disabled outright rather
+        // than just set low, since on this deployment even "low" is only a soft "think briefly"
+        // prompt steer with no enforced cap (see ReelForgeAgentBase.ValidReasoningEfforts), and
+        // this step has been observed running up to the 30-60 min agent timeout on exactly this
+        // kind of task. Override via Agents:VideoStoryEditor:ReasoningEffort if decision quality
+        // degrades in practice and some reasoning turns out to be worth the latency here.
         : base(chatClients, configuration, "VideoStoryEditor",
             "Decides which shots, silence gaps, and transcript spans to keep from a bounded, id-anchored view of a source video.",
             AgentType.VideoStoryEditor, DefaultPrompt,
             toolProvider.GetTools(AgentType.VideoStoryEditor),
             agentId: null,
-            outputSchemaType: typeof(VideoEditDecisionOutput))
+            outputSchemaType: typeof(VideoEditDecisionOutput),
+            defaultModelSettings: new AgentModelSettings(Temperature: 0.3f, ReasoningEffort: "none"))
     { }
 }

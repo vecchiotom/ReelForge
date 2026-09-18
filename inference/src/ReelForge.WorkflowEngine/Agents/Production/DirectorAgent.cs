@@ -54,11 +54,14 @@ public class DirectorAgentImpl : ReelForgeAgentBase
         IAgentChatClientProvider chatClients,
         IConfiguration configuration,
         IAgentToolProvider toolProvider)
+        // High-stakes structural decision that shapes the whole video: worth the extra
+        // reasoning effort; moderate-high temperature leaves room for narrative variety.
         : base(chatClients, configuration, "Director",
             "Composes the overall video narrative structure.",
             AgentType.DirectorAgent, DefaultPrompt,
             toolProvider.GetTools(AgentType.DirectorAgent),
             agentId: null,
-            outputSchemaType: typeof(DirectorOutput))
+            outputSchemaType: typeof(DirectorOutput),
+            defaultModelSettings: new AgentModelSettings(Temperature: 0.7f, ReasoningEffort: "xhigh"))
     { }
 }

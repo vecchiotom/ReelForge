@@ -10,10 +10,27 @@ namespace ReelForge.WorkflowEngine.Agents;
 
 public abstract class ReelForgeAgentBase : IReelForgeAgent
 {
+    /// <summary>
+    /// The exact <c>reasoning_effort</c> vocabulary the deployed Qwen3.8 chat template accepts
+    /// when thinking is enabled (<c>xhigh</c>, <c>medium</c>, <c>low</c> — its own
+    /// <c>resolved_reasoning_effort not in (...)</c> guard rejects anything else, which the Jinja
+    /// template turns into a raised exception, i.e. a 500 on every single request that agent
+    /// makes), plus <c>none</c>, which vLLM special-cases to disable the &lt;think&gt; block
+    /// entirely (confirmed live: 0 reasoning tokens, and the prompt itself renders shorter since
+    /// the thinking scaffold is omitted). This is deliberately NOT
+    /// <see cref="Microsoft.Extensions.AI.ReasoningEffort"/> (None/Low/Medium/High/ExtraHigh) —
+    /// that generic enum's wire vocabulary doesn't match this template's, and "High" would 500
+    /// just as reliably as any other unrecognised value. If the underlying model/deployment
+    /// changes, this allowlist (and the values passed into each agent's constructor) needs
+    /// revisiting alongside it.
+    /// </summary>
+    private static readonly string[] ValidReasoningEfforts = ["none", "low", "medium", "xhigh"];
+
     private readonly IAgentChatClientProvider _chatClients;
     private readonly List<AIFunction> _tools;
     private readonly Type? _outputSchemaType;
     private readonly int _agentRunTimeoutSeconds;
+    private readonly ChatOptions _chatOptions;
 
     protected ReelForgeAgentBase(
         IAgentChatClientProvider chatClients,
@@ -24,7 +41,8 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
         string defaultSystemPrompt,
         IEnumerable<AIFunction>? tools = null,
         Guid? agentId = null,
-        Type? outputSchemaType = null)
+        Type? outputSchemaType = null,
+        AgentModelSettings? defaultModelSettings = null)
     {
         _chatClients = chatClients;
         _outputSchemaType = outputSchemaType;
@@ -52,6 +70,8 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
         SystemPrompt = BuildSystemPrompt(
             configuration[configKey] ?? defaultSystemPrompt,
             _outputSchemaType);
+
+        _chatOptions = BuildChatOptions(configuration, name, defaultModelSettings);
 
         // Generate JSON schema documentation if output type is specified
         if (_outputSchemaType != null)
@@ -81,7 +101,10 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
             // Structured output is enforced via ChatResponseFormat.ForJsonSchema<T>() when OutputSchemaType is specified
             AIAgent agent = await CreateAgentAsync(agentDefinitionId, effectiveToken);
 
-            // If structured output is required, configure ResponseFormat at runtime via AgentRunOptions
+            // _chatOptions (temperature/top-p/top-k/reasoning effort) always applies; ResponseFormat
+            // is layered on top of it only when this agent requires structured output.
+            var runOptions = new ChatClientAgentRunOptions(_chatOptions);
+
             if (_outputSchemaType != null)
             {
                 // Use reflection to call ChatResponseFormat.ForJsonSchema<T>() with the runtime type
@@ -91,37 +114,14 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
                     Type.EmptyTypes,
                     null);
 
-                if (method != null)
+                var responseFormat = method?.MakeGenericMethod(_outputSchemaType).Invoke(null, null) as ChatResponseFormat;
+                if (responseFormat != null)
                 {
-                    var genericMethod = method.MakeGenericMethod(_outputSchemaType);
-                    var responseFormat = genericMethod.Invoke(null, null) as ChatResponseFormat;
-
-                    if (responseFormat != null)
-                    {
-                        var runOptions = new AgentRunOptions
-                        {
-                            ResponseFormat = responseFormat
-                        };
-
-                        agentResponse = await agent.RunAsync(prompt, options: runOptions, cancellationToken: effectiveToken);
-                    }
-                    else
-                    {
-                        // Fallback if reflection fails
-                        agentResponse = await agent.RunAsync(prompt, cancellationToken: effectiveToken);
-                    }
-                }
-                else
-                {
-                    // Fallback if reflection fails
-                    agentResponse = await agent.RunAsync(prompt, cancellationToken: effectiveToken);
+                    runOptions.ResponseFormat = responseFormat;
                 }
             }
-            else
-            {
-                // Fallback if reflection fails
-                agentResponse = await agent.RunAsync(prompt, cancellationToken: effectiveToken);
-            }
+
+            agentResponse = await agent.RunAsync(prompt, options: runOptions, cancellationToken: effectiveToken);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested && timeoutCts.IsCancellationRequested)
         {
@@ -282,6 +282,52 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
             instructions: SystemPrompt,
             name: Name,
             tools: _tools.Cast<AITool>().ToList());
+    }
+
+    private static ChatOptions BuildChatOptions(IConfiguration configuration, string name, AgentModelSettings? defaults)
+    {
+        float? temperature = configuration.GetValue<float?>($"Agents:{name}:Temperature") ?? defaults?.Temperature;
+        float? topP = configuration.GetValue<float?>($"Agents:{name}:TopP") ?? defaults?.TopP;
+        int? topK = configuration.GetValue<int?>($"Agents:{name}:TopK") ?? defaults?.TopK;
+        string? reasoningEffort = configuration[$"Agents:{name}:ReasoningEffort"] ?? defaults?.ReasoningEffort;
+
+        if (reasoningEffort != null && !ValidReasoningEfforts.Contains(reasoningEffort, StringComparer.OrdinalIgnoreCase))
+        {
+            // Fail at startup, not mid-workflow: an unrecognised value would otherwise make this
+            // agent's chat template 500 on every request it ever makes (see ValidReasoningEfforts).
+            throw new InvalidOperationException(
+                $"Agent '{name}': ReasoningEffort '{reasoningEffort}' is not one of the values the " +
+                $"deployed chat template accepts ({string.Join(", ", ValidReasoningEfforts)}).");
+        }
+
+        ChatOptions options = new()
+        {
+            Temperature = temperature,
+            TopP = topP,
+            TopK = topK
+        };
+
+        if (reasoningEffort != null)
+        {
+            // The OpenAI .NET SDK's ChatCompletionOptions.ReasoningEffortLevel is the one publicly
+            // supported hook that reaches the wire-level `reasoning_effort` field on a Chat
+            // Completions request (confirmed live against the deployed vLLM server); it is marked
+            // [Experimental("OPENAI001")] upstream, an accepted risk consistent with the other
+            // pinned-beta SDKs this solution already depends on (Azure.AI.OpenAI 2.8.0-beta.1,
+            // Microsoft.Agents.AI 1.0.0-rc2). RawRepresentationFactory seeds this raw value; the
+            // adapter still layers Temperature/TopP/TopK/etc. from the ChatOptions above onto it.
+            options.RawRepresentationFactory = _ =>
+            {
+#pragma warning disable OPENAI001
+                return new OpenAI.Chat.ChatCompletionOptions
+                {
+                    ReasoningEffortLevel = reasoningEffort
+                };
+#pragma warning restore OPENAI001
+            };
+        }
+
+        return options;
     }
 
     private static string BuildSystemPrompt(string basePrompt, Type? outputSchemaType)
