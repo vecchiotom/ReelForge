@@ -34,6 +34,7 @@ import {
   getPayloadString,
 } from '@/components/workflows/ExecutionEventCard';
 import { useExecutionStream } from '@/lib/hooks/use-execution-stream';
+import { hydrateHistoricalStepEvents, mergeStepEvents } from '@/lib/utils/execution-event-hydration';
 
 function isTerminalExecutionStatus(status: WorkflowExecution['status'] | undefined): boolean {
   return status === 'Passed' || status === 'Failed' || status === 'Cancelled';
@@ -206,14 +207,18 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
     }
   }, []);
 
-  const selectedStepType = useMemo(() => {
+  const selectedWorkflowStep = useMemo(() => {
     if (!workflow || !selectedStepResult) {
       return undefined;
     }
-    return workflow.steps.find((step) => step.id === selectedStepResult.workflowStepId)?.stepType;
+    return workflow.steps.find((step) => step.id === selectedStepResult.workflowStepId);
   }, [workflow, selectedStepResult]);
 
-  const selectedStepEvents = useMemo(() => {
+  const selectedStepType = selectedWorkflowStep?.stepType;
+
+  // Live SSE events for the selected step only (unfiltered `events` also carries other steps' and
+  // execution-level events — see the full-feed Timeline below, which intentionally stays SSE-only).
+  const liveSelectedStepEvents = useMemo(() => {
     if (!selectedStepResult) {
       return [];
     }
@@ -225,6 +230,31 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
       return eventStepResultId === selectedStepResult.id || eventStepId === selectedStepResult.workflowStepId;
     });
   }, [events, selectedStepResult]);
+
+  // Historical reasoning/tool-call/chat-turn events hydrated from the step result's persisted
+  // `toolCallsJson`/`reasoningJson`/`chatTranscriptJson` fields (present once the step has
+  // completed) — see `hydrateHistoricalStepEvents`'s own comment for why this only ever arrives as
+  // one full batch, unlike the live trickle above.
+  const historicalSelectedStepEvents = useMemo(() => {
+    if (!selectedStepResult) {
+      return [];
+    }
+
+    return hydrateHistoricalStepEvents(selectedStepResult, {
+      executionId,
+      stepId: selectedStepResult.workflowStepId,
+      stepResultId: selectedStepResult.id,
+      stepOrder: selectedWorkflowStep?.stepOrder,
+      stepLabel: selectedWorkflowStep?.label,
+    });
+  }, [selectedStepResult, selectedWorkflowStep, executionId]);
+
+  // Historical events seeded first (authoritative once persisted), live events merged in and
+  // deduplicated against them — see `mergeStepEvents` for the exact per-event-type dedupe strategy.
+  const selectedStepEvents = useMemo(
+    () => mergeStepEvents(historicalSelectedStepEvents, liveSelectedStepEvents),
+    [historicalSelectedStepEvents, liveSelectedStepEvents],
+  );
 
   const selectedStepLiveTokenMetrics = useMemo(() => {
     const completedStepEvent = selectedStepEvents.find((event) => event.type === 'step.completed');
