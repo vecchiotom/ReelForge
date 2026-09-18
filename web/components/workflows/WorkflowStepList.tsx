@@ -34,6 +34,13 @@ export interface StepData {
   videoAnalyzeConfig: VideoAnalyzeStepConfigValue | null;
   /** VideoCompile step configuration (VideoCompile step type only). */
   videoCompileConfig: VideoCompileStepConfigValue | null;
+  /**
+   * Raw JSON-serialized EditRoomStepConfig (EditRoom step type only). The builder has no editor
+   * for it yet — carried as an OPAQUE string so loading and re-saving a template-provisioned
+   * edit-room workflow never silently drops the step's config. Optional so every existing
+   * StepData construction site keeps compiling unchanged.
+   */
+  editRoomConfigJson?: string | null;
 }
 
 interface WorkflowStepListProps {

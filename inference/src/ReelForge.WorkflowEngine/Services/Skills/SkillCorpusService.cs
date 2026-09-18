@@ -95,7 +95,7 @@ public sealed class SkillCorpusService : ISkillCorpusService
         {
             return await File.ReadAllTextAsync(safePath, ct);
         }
-        catch (IOException ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             _logger.LogWarning(ex, "Failed to read skill resource {SkillName}/{ResourcePath}", skillName, resourcePath);
             return null;
@@ -111,7 +111,11 @@ public sealed class SkillCorpusService : ISkillCorpusService
     /// <summary>
     /// Resolves <paramref name="resourcePath"/> relative to <paramref name="skillDir"/>, requiring
     /// the fully-resolved path to still live under that skill's own directory. Returns null (never
-    /// throws) on any escape attempt — a rooted path, "..", a symlink-style escape, etc.
+    /// throws) on any lexical escape attempt — a rooted path, "..", etc. Note this check is
+    /// lexical (<see cref="Path.GetFullPath(string)"/> does not resolve symlinks); that is
+    /// sufficient here because the skill directories themselves are trusted, vendored, first-party
+    /// content — only <paramref name="resourcePath"/> is caller/model-controlled, and a caller
+    /// cannot plant a symlink inside the corpus.
     /// </summary>
     private static string? ResolveWithinSkillDir(string skillDir, string resourcePath)
     {

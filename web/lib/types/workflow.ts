@@ -7,7 +7,7 @@ export interface WorkflowDefinition {
   requiresUserInput: boolean;
 }
 
-export type StepType = 'Agent' | 'Conditional' | 'ForEach' | 'ReviewLoop' | 'Parallel' | 'Extract' | 'VideoAnalyze' | 'VideoCompile';
+export type StepType = 'Agent' | 'Conditional' | 'ForEach' | 'ReviewLoop' | 'Parallel' | 'Extract' | 'VideoAnalyze' | 'VideoCompile' | 'EditRoom';
 export type StepStatus = 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Skipped';
 export type AgentInputContextMode =
   | 'FullWorkflow'
@@ -40,6 +40,8 @@ export interface WorkflowStep {
   videoAnalyzeConfigJson?: string | null;
   /** JSON-serialized VideoCompileStepConfig (VideoCompile step type only). Deserialize with JSON.parse. */
   videoCompileConfigJson?: string | null;
+  /** JSON-serialized EditRoomStepConfig (EditRoom step type only). The builder UI has no editor for it yet — treat as an opaque passthrough so saving a workflow never drops it. */
+  editRoomConfigJson?: string | null;
 }
 
 export interface CreateWorkflowRequest {
@@ -71,6 +73,8 @@ export interface CreateWorkflowStepRequest {
   videoAnalyzeConfigJson?: string | null;
   /** JSON-serialized VideoCompileStepConfig (VideoCompile step type only). */
   videoCompileConfigJson?: string | null;
+  /** JSON-serialized EditRoomStepConfig (EditRoom step type only). Opaque passthrough — see WorkflowStep.editRoomConfigJson. */
+  editRoomConfigJson?: string | null;
 }
 
 export interface UpdateWorkflowRequest {

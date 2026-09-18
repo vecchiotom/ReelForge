@@ -2,8 +2,9 @@ import { apiFetch } from './client';
 import type { Skill, SkillDetail } from '../types/skill';
 import type { AgentDefinition } from '../types/agent';
 
-export function listSkills(): Promise<{ skills: Skill[] }> {
-  return apiFetch<{ skills: Skill[] }>('/api/v1/skills');
+// GET /api/v1/skills returns a bare JSON array (List<SkillSummaryResponse>), not a wrapper object.
+export function listSkills(): Promise<Skill[]> {
+  return apiFetch<Skill[]>('/api/v1/skills');
 }
 
 export function getSkill(name: string): Promise<SkillDetail> {

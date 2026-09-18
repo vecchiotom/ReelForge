@@ -37,6 +37,10 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url);
 
+  // Never touch cross-origin requests — this worker only knows how to reason about its own
+  // app's URLs, and caching opaque third-party responses would only bloat the cache.
+  if (url.origin !== self.location.origin) return;
+
   // Never touch API calls. Nginx translates the httpOnly auth cookie into an Authorization
   // header per-request (see CLAUDE.md's auth flow) — caching an authenticated API response in
   // the Cache API would persist it outside that per-request auth check, risking leaking one
@@ -52,7 +56,11 @@ self.addEventListener('fetch', (event) => {
   // Cache-first for Next's content-hashed build assets (immutable by construction) and for
   // icons/manifest requests.
   const isNextStaticAsset = url.pathname.startsWith(`${BASE_PATH}/_next/static/`);
-  const isIconOrManifest = url.pathname.includes('/icon') || url.pathname.endsWith('manifest.webmanifest');
+  const isIconOrManifest =
+    url.pathname.startsWith(`${BASE_PATH}/favicon`) ||
+    url.pathname.startsWith(`${BASE_PATH}/icon`) ||
+    url.pathname.startsWith(`${BASE_PATH}/apple-icon`) ||
+    url.pathname.endsWith('manifest.webmanifest');
 
   if (isNextStaticAsset || isIconOrManifest) {
     event.respondWith(
@@ -60,8 +68,12 @@ self.addEventListener('fetch', (event) => {
         (cached) =>
           cached ||
           fetch(request).then((response) => {
-            const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+            // Only cache successful responses — a transiently failed fetch (404 mid-deploy, 500)
+            // must never become a permanently cached error for a content-hashed asset.
+            if (response.ok) {
+              const copy = response.clone();
+              caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+            }
             return response;
           })
       )

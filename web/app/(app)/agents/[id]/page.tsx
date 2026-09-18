@@ -88,7 +88,7 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
               {agent.effectiveSkills.length > 0 ? (
                 <Group gap="xs">
                   {agent.effectiveSkills.map((skillName) => {
-                    const skill = skillsData?.skills.find((s) => s.name === skillName);
+                    const skill = skillsData?.find((s) => s.name === skillName);
                     return (
                       <Badge key={skillName} color="teal" variant="light" size="sm">
                         {skill?.displayName ?? skillName}

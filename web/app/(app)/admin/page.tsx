@@ -13,8 +13,7 @@ export default function AdminOverviewPage() {
   const { data: engineStatus, isLoading, error } = useWorkflowEngineStatus();
   const { data: providers, isLoading: providersLoading, error: providersError } = useInferenceProviders();
   const defaultProvider = providers?.find((p) => p.isDefault && p.capability === 'Chat');
-  const { data: skillsData, isLoading: skillsLoading, error: skillsError } = useSkills();
-  const skills = skillsData?.skills;
+  const { data: skills, isLoading: skillsLoading, error: skillsError } = useSkills();
 
   return (
     <>

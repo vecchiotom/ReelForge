@@ -7,8 +7,7 @@ import { SkillsTable } from '@/components/admin/SkillsTable';
 import { EmptyState } from '@/components/shared/EmptyState';
 
 export default function SkillsPage() {
-  const { data, isLoading } = useSkills();
-  const skills = data?.skills;
+  const { data: skills, isLoading } = useSkills();
 
   if (isLoading) {
     return <Center h={300}><Loader /></Center>;
