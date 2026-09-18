@@ -58,19 +58,6 @@ public enum ToolGroup
     SandboxRender,
 
     /// <summary>
-    /// SearchRemotionSkills, ReadRemotionSkill — read access to the Remotion skills knowledge
-    /// base, without the topic-discovery listing tool.
-    /// </summary>
-    RemotionSkillsBasic,
-
-    /// <summary>
-    /// SearchRemotionSkills, ReadRemotionSkill, ListAllRemotionSkills — the full Remotion
-    /// skills knowledge base including topic discovery. Granted only to
-    /// RemotionComponentTranslator, the agent building the Remotion project from scratch.
-    /// </summary>
-    RemotionSkillsFull,
-
-    /// <summary>
     /// FailWorkflow — abort the workflow with a human-readable reason. Granted to every real
     /// (non-deterministic) agent type.
     /// </summary>

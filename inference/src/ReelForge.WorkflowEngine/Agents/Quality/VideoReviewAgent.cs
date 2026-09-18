@@ -193,13 +193,15 @@ public class VideoReviewAgentImpl : ReelForgeAgentBase
     public VideoReviewAgentImpl(
         IAgentChatClientProvider chatClients,
         IConfiguration configuration,
-        IAgentToolProvider toolProvider)
+        IAgentToolProvider toolProvider,
+        ISkillAgentToolsFactory skillAgentToolsFactory)
         // Same rationale as ReviewAgent: low temperature for consistent scores, low reasoning
         // effort since this also sits inside a ReviewLoop and it's judging against facts
         // VideoCompileStepExecutor already computed deterministically, not deriving them itself.
         : base(chatClients, configuration, "VideoReview",
             "Scores a compiled video edit using deterministic sentence-boundary, opening/seam-continuity, pacing, and overlay-coverage checks, and loops back with feedback on a low score.",
             AgentType.VideoReviewAgent, DefaultPrompt,
+            skillAgentToolsFactory,
             toolProvider.GetTools(AgentType.VideoReviewAgent),
             agentId: null,
             outputSchemaType: typeof(VideoReviewOutput),

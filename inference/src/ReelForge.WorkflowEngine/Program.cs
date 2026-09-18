@@ -25,7 +25,7 @@ using ReelForge.WorkflowEngine.Observability;
 using ReelForge.WorkflowEngine.Services.Inference;
 using ReelForge.WorkflowEngine.Services.Storage;
 using ReelForge.WorkflowEngine.Services.Messaging;
-using ReelForge.WorkflowEngine.Services.RemotionSkills;
+using ReelForge.WorkflowEngine.Services.Skills;
 using ReelForge.WorkflowEngine.Services.Video;
 using ReelForge.WorkflowEngine.Workers;
 
@@ -124,10 +124,13 @@ builder.Services.AddSingleton<IAgentToolProvider, AgentToolProvider>();
 builder.Services.AddSingleton<IProjectFileWorkspace, ProjectFileWorkspace>();
 builder.Services.AddSingleton<ProjectFileAgentTools>();
 builder.Services.AddSingleton<ReactRemotionSandboxTools>();
-builder.Services.AddSingleton<RemotionSkillsService>();
-builder.Services.AddSingleton<RemotionSkillsAgentTools>();
 // workflow control tools provide helpers such as FailWorkflow
 builder.Services.AddSingleton<WorkflowControlAgentTools>();
+// Skills: loads the vendored SKILL.md corpus (inference/skills/, Skills:CorpusPath) once, and
+// binds UseSkill/ReadSkillResource tool instances to a resolved skill set per agent construction
+// (see ReelForgeAgentBase.CreateAgentAsync) — replaces the old live-GitHub-fetch RemotionSkills*.
+builder.Services.AddSingleton<ISkillCorpusService, SkillCorpusService>();
+builder.Services.AddSingleton<ISkillAgentToolsFactory, SkillAgentToolsFactory>();
 
 builder.Services.AddSingleton<IWorkflowExecutionContextAccessor, WorkflowExecutionContextAccessor>();
 builder.Services.AddHttpClient();

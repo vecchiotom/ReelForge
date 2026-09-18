@@ -5,6 +5,9 @@ using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using ReelForge.Shared.Data.Models;
 using ReelForge.Shared.Inference;
+using ReelForge.Shared.Skills;
+using ReelForge.WorkflowEngine.Agents.Tools;
+using ReelForge.WorkflowEngine.Services.Skills;
 
 namespace ReelForge.WorkflowEngine.Agents;
 
@@ -27,6 +30,7 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
     private static readonly string[] ValidReasoningEfforts = ["none", "low", "medium", "xhigh"];
 
     private readonly IAgentChatClientProvider _chatClients;
+    private readonly ISkillAgentToolsFactory _skillAgentToolsFactory;
     private readonly List<AIFunction> _tools;
     private readonly Type? _outputSchemaType;
     private readonly int _agentRunTimeoutSeconds;
@@ -39,12 +43,14 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
         string description,
         AgentType agentType,
         string defaultSystemPrompt,
+        ISkillAgentToolsFactory skillAgentToolsFactory,
         IEnumerable<AIFunction>? tools = null,
         Guid? agentId = null,
         Type? outputSchemaType = null,
         AgentModelSettings? defaultModelSettings = null)
     {
         _chatClients = chatClients;
+        _skillAgentToolsFactory = skillAgentToolsFactory;
         _outputSchemaType = outputSchemaType;
         Name = name;
         Description = description;
@@ -278,11 +284,47 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
         // driving this run) so a per-agent provider override resolves correctly; AgentId (set
         // once at DI-registration time) is only a fallback for callers that don't have one.
         IChatClient chatClient = await _chatClients.GetAsync(AgentType, agentDefinitionId ?? AgentId, ct);
-        return chatClient.AsAIAgent(
-            instructions: SystemPrompt,
-            name: Name,
-            tools: _tools.Cast<AITool>().ToList());
+
+        // Skill resolution rule — see SkillCatalog.DefaultsFor's own doc comment for the full
+        // rationale. This C# class's own AgentType is never AgentType.Custom for any of the
+        // built-in agent subclasses (each hardcodes its own specific AgentType in its base(...)
+        // call) — AgentType.Custom is only ever used by a generic implementation resolved
+        // per-AgentDefinition row via AgentRegistry's _customAgentsById. So checking THIS
+        // instance's own AgentType (not the caller-supplied agentDefinitionId) is the correct,
+        // and simpler, way to tell "the built-in agent this class represents" apart from "a
+        // per-definition Custom agent" — mirroring how AgentStepExecutor/ParallelStepExecutor
+        // already only ever pass a non-null customAgentId when AgentType == Custom.
+        IReadOnlyList<SkillDescriptor> skills = AgentType != AgentType.Custom
+            ? SkillCatalog.DefaultsFor(AgentType)
+                .Select(SkillCatalog.Find)
+                .Where(s => s != null)
+                .Select(s => s!)
+                .ToList()
+            : await ResolveCustomAgentSkillsAsync(agentDefinitionId ?? AgentId, ct);
+
+        if (skills.Count == 0)
+        {
+            return chatClient.AsAIAgent(
+                instructions: SystemPrompt,
+                name: Name,
+                tools: _tools.Cast<AITool>().ToList());
+        }
+
+        string instructions = SystemPrompt + SkillPromptBuilder.BuildAdvertisement(skills);
+        List<AITool> tools = [.. _tools, .. _skillAgentToolsFactory.CreateBoundTools(skills)];
+        return chatClient.AsAIAgent(instructions: instructions, name: Name, tools: tools);
     }
+
+    /// <summary>
+    /// Resolves the skill set for a Custom (non-built-in) agent from its own
+    /// <c>AgentDefinition</c> row. A sibling effort is adding <c>AgentDefinition.AssignedSkillsJson</c>
+    /// for exactly this purpose; until that column exists, this always returns an empty list —
+    /// Custom agents get no skills, the same as any other built-in AgentType not listed in
+    /// <see cref="SkillCatalog.DefaultsFor"/>.
+    /// TODO: wire to AgentDefinition.AssignedSkillsJson once the sibling data-model change lands.
+    /// </summary>
+    private static Task<IReadOnlyList<SkillDescriptor>> ResolveCustomAgentSkillsAsync(Guid? agentDefinitionId, CancellationToken ct) =>
+        Task.FromResult<IReadOnlyList<SkillDescriptor>>([]);
 
     private static ChatOptions BuildChatOptions(IConfiguration configuration, string name, AgentModelSettings? defaults)
     {

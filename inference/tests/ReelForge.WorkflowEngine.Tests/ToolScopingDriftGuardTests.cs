@@ -13,9 +13,9 @@ using Moq;
 using ReelForge.Inference.Api.Data;
 using ReelForge.Shared.Agents;
 using ReelForge.Shared.Data.Models;
+using ReelForge.Shared.Skills;
 using ReelForge.WorkflowEngine.Agents.Tools;
 using ReelForge.WorkflowEngine.Execution;
-using ReelForge.WorkflowEngine.Services.RemotionSkills;
 using ReelForge.WorkflowEngine.Services.Storage;
 using Xunit;
 
@@ -48,12 +48,27 @@ public class ToolScopingDriftGuardTests
         IReadOnlyList<AIFunction> realTools = CreateAgentToolProvider().GetTools(agentType);
         HashSet<string> realToolNames = realTools.Select(f => f.Name).ToHashSet();
 
+        // UseSkill/ReadSkillResource are a deliberate, documented exception: they are bound
+        // per agent-run in ReelForgeAgentBase from SkillCatalog.DefaultsFor, never registered as
+        // static ToolGroup-based tools by AgentToolProvider, but ARE included in the display
+        // metadata (sourced from the same SkillCatalog) so the "Available Tools" UI card shows
+        // them. Add them to the expected set here rather than to AgentToolProvider's real tools —
+        // the two are intentionally different for this one case, and this addition itself is
+        // still derived from SkillCatalog, so it cannot silently drift from SkillCatalog.cs.
+        HashSet<string> expectedToolNames = new(realToolNames);
+        if (SkillCatalog.DefaultsFor(agentType).Count > 0)
+        {
+            expectedToolNames.Add("UseSkill");
+            expectedToolNames.Add("ReadSkillResource");
+        }
+
         HashSet<string> displayToolNames = InvokeGetAvailableToolsJson(agentType);
 
-        displayToolNames.Should().BeEquivalentTo(realToolNames,
-            $"AgentToolProvider.GetTools({agentType}) and DatabaseSeeder.GetAvailableToolsJson({agentType}) " +
-            "must derive from the same ToolGroupCatalog and therefore agree exactly — a mismatch here " +
-            "means one side was edited without the other, which is precisely the drift this catalog exists to prevent");
+        displayToolNames.Should().BeEquivalentTo(expectedToolNames,
+            $"AgentToolProvider.GetTools({agentType}) plus SkillCatalog.DefaultsFor's UseSkill/ReadSkillResource " +
+            $"(when non-empty) and DatabaseSeeder.GetAvailableToolsJson({agentType}) " +
+            "must derive from the same ToolGroupCatalog/SkillCatalog and therefore agree exactly — a mismatch " +
+            "here means one side was edited without the other, which is precisely the drift this catalog exists to prevent");
     }
 
     /// <summary>
@@ -112,15 +127,6 @@ public class ToolScopingDriftGuardTests
             Mock.Of<IWorkflowExecutionContextAccessor>(),
             NullLogger<WorkflowControlAgentTools>.Instance);
 
-        RemotionSkillsService remotionSkillsService = new(
-            Mock.Of<IHttpClientFactory>(),
-            NullLogger<RemotionSkillsService>.Instance,
-            configuration);
-
-        RemotionSkillsAgentTools remotionSkillsTools = new(
-            remotionSkillsService,
-            NullLogger<RemotionSkillsAgentTools>.Instance);
-
-        return new AgentToolProvider(projectFileTools, sandboxTools, workflowControlTools, remotionSkillsTools);
+        return new AgentToolProvider(projectFileTools, sandboxTools, workflowControlTools);
     }
 }

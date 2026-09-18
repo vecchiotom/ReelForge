@@ -150,9 +150,9 @@ public class MotionGraphicsPlannerAgent : ReelForgeAgentBase
 
         If you choose to render a graphic, use the sandbox tools in this order:
         1. `EnsureSandbox`, then `GetSandboxStatus` or `GetSandbox` to confirm it is ready.
-        2. `SearchRemotionSkills("transparent")` and `ReadRemotionSkill` on the result
-           to confirm the current transparent-video render recipe before writing any
-           code — do not guess the flags.
+        2. `UseSkill("remotion-render")` to confirm the current transparent-video render
+           recipe before writing any code — do not guess the flags. `ReadSkillResource`
+           for any supplementary file that skill's own instructions point you to.
         3. `WriteSandboxFile` a small, self-contained composition (do not modify
            `src/index.ts`; use explicit `.tsx` import extensions). Register it with
            its own composition id. Keep it simple: one lower-third/title/callout
@@ -185,8 +185,8 @@ public class MotionGraphicsPlannerAgent : ReelForgeAgentBase
            ["--image-format=png", "--pixel-format=yuva420p", "--codec=vp9"])` —
            these exact flags are required for a real alpha-channel WebM export; a
            `.mp4`/no-alpha render cannot be composited transparently and will look
-           wrong. Confirm this against `ReadRemotionSkill` yourself before relying on
-           it — the flags can change between Remotion versions.
+           wrong. Confirm this against the `remotion-render` skill yourself before
+           relying on it — the flags can change between Remotion versions.
         8. `CompleteSandbox` when done.
 
         If rendering fails and you cannot fix it within the retry budget above,
@@ -214,7 +214,8 @@ public class MotionGraphicsPlannerAgent : ReelForgeAgentBase
     public MotionGraphicsPlannerAgent(
         IAgentChatClientProvider chatClients,
         IConfiguration configuration,
-        IAgentToolProvider toolProvider)
+        IAgentToolProvider toolProvider,
+        ISkillAgentToolsFactory skillAgentToolsFactory)
         // The one video-editing decision agent with full sandbox+Remotion tool access (it may
         // render a real overlay asset), so its observed 28-60 min runs are plausibly tool
         // round-trips as much as reasoning tokens -- reasoning effort is kept at "low" rather
@@ -224,6 +225,7 @@ public class MotionGraphicsPlannerAgent : ReelForgeAgentBase
         : base(chatClients, configuration, "MotionGraphicsPlanner",
             "Plans zero or more motion-graphics overlays (lower-thirds, titles, callouts) anchored only to offered placement ids from a video analysis.",
             AgentType.MotionGraphicsPlanner, DefaultPrompt,
+            skillAgentToolsFactory,
             toolProvider.GetTools(AgentType.MotionGraphicsPlanner),
             agentId: null,
             outputSchemaType: typeof(MotionGraphicsPlanOutput),

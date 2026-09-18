@@ -32,4 +32,7 @@ RUN dotnet publish "ReelForge.WorkflowEngine.csproj" -c $BUILD_CONFIGURATION -o 
 FROM base AS final
 WORKDIR /app
 COPY --from=publish /app/publish .
+# Vendored SKILL.md corpus (see inference/skills/UPSTREAM.md) — loaded once at runtime by
+# SkillCorpusService from Skills:CorpusPath (default /app/skills, matching this path).
+COPY skills/ /app/skills/
 ENTRYPOINT ["dotnet", "ReelForge.WorkflowEngine.dll"]

@@ -9,18 +9,15 @@ public class AgentToolProvider : IAgentToolProvider
     private readonly ProjectFileAgentTools _projectFileTools;
     private readonly ReactRemotionSandboxTools _sandboxTools;
     private readonly WorkflowControlAgentTools _workflowControlTools;
-    private readonly RemotionSkillsAgentTools _remotionSkillsTools;
 
     public AgentToolProvider(
         ProjectFileAgentTools projectFileTools,
         ReactRemotionSandboxTools sandboxTools,
-        WorkflowControlAgentTools workflowControlTools,
-        RemotionSkillsAgentTools remotionSkillsTools)
+        WorkflowControlAgentTools workflowControlTools)
     {
         _projectFileTools = projectFileTools;
         _sandboxTools = sandboxTools;
         _workflowControlTools = workflowControlTools;
-        _remotionSkillsTools = remotionSkillsTools;
     }
 
     /// <summary>
@@ -31,6 +28,12 @@ public class AgentToolProvider : IAgentToolProvider
     /// <c>DatabaseSeeder.GetAvailableToolsJson</c> on the Inference API side. This class only
     /// knows how to turn a group into real <c>AIFunctionFactory.Create(...)</c> calls, since it
     /// is the one holding the injected tool-implementation instances.
+    ///
+    /// Remotion knowledge-base access is deliberately NOT a static tool group here — it is
+    /// resolved per agent-run in <c>ReelForgeAgentBase.CreateAgentAsync</c> via
+    /// <c>SkillCatalog.DefaultsFor</c>/<c>ISkillAgentToolsFactory</c> instead, since it is a
+    /// named, on-demand-loadable skill (UseSkill/ReadSkillResource), not a tool with a fixed
+    /// static surface. See ReelForge.Shared/Skills/SkillCatalog.cs.
     /// </summary>
     public IReadOnlyList<AIFunction> GetTools(AgentType agentType)
     {
@@ -89,19 +92,6 @@ public class AgentToolProvider : IAgentToolProvider
             AIFunctionFactory.Create(_sandboxTools.RunSandboxRemotionCommand),
             AIFunctionFactory.Create(_sandboxTools.RenderVideoAndUploadToStorage),
             AIFunctionFactory.Create(_sandboxTools.CompleteSandbox)
-        ],
-
-        ToolGroup.RemotionSkillsBasic =>
-        [
-            AIFunctionFactory.Create(_remotionSkillsTools.SearchRemotionSkills),
-            AIFunctionFactory.Create(_remotionSkillsTools.ReadRemotionSkill)
-        ],
-
-        ToolGroup.RemotionSkillsFull =>
-        [
-            AIFunctionFactory.Create(_remotionSkillsTools.SearchRemotionSkills),
-            AIFunctionFactory.Create(_remotionSkillsTools.ReadRemotionSkill),
-            AIFunctionFactory.Create(_remotionSkillsTools.ListAllRemotionSkills)
         ],
 
         ToolGroup.WorkflowControl =>

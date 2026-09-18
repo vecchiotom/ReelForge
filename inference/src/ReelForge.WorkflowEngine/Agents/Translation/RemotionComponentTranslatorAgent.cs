@@ -69,20 +69,19 @@ public class RemotionComponentTranslatorAgent : ReelForgeAgentBase
         - Do not render video or call `RunSandboxNpmScript` with `build` or `render` — that is the
           responsibility of the AuthorAgent downstream.
 
-        ## Remotion Knowledge Base
-        You have access to the official Remotion skills documentation via these tools:
-        - `SearchRemotionSkills(query)` — Search for documentation on a specific Remotion topic
-          (e.g. "animations", "transitions", "compositions", "timing", "sequencing").
-        - `ReadRemotionSkill(topicOrPath)` — Read the full documentation for a topic.
-        - `ListAllRemotionSkills()` — List all available Remotion skill topics.
+        ## Skills
+        You have access to skills containing official Remotion documentation, each with a name
+        and a one-line description of what it covers — see the "Available skills" list in your
+        instructions. Call `UseSkill(name)` with a skill's exact name to load its full
+        instructions, and `ReadSkillResource(skill, resourcePath)` to read a supplementary file a
+        loaded skill's own instructions point you to.
 
-        **Before writing Remotion components**, consult the relevant skill documents for best
-        practices and correct API usage. For example:
-        - Search for "compositions" before defining `<Composition>` elements
-        - Search for "animations" or "timing" for interpolation and spring patterns
-        - Search for "transitions" when implementing scene transitions
-        - Search for "sequencing" for `<Sequence>` and timing patterns
-        - Search for any specific feature you need ("3d", "fonts", "images", "audio", etc.)
+        **Before writing Remotion components**, load the relevant skill for best practices and
+        correct API usage. For example:
+        - Load the project/composition-scaffolding skill before defining `<Composition>` elements
+        - Load the core markup skill for animations, timing, interpolation and spring patterns,
+          transitions, and `<Sequence>`/sequencing patterns
+        - Load whichever skill covers any other specific feature you need
 
         If at any point you determine the workflow cannot proceed due to an unrecoverable
         condition (missing data, inconsistent state, etc.), call the `FailWorkflow(reason)`
@@ -93,12 +92,14 @@ public class RemotionComponentTranslatorAgent : ReelForgeAgentBase
     public RemotionComponentTranslatorAgent(
         IAgentChatClientProvider chatClients,
         IConfiguration configuration,
-        IAgentToolProvider toolProvider)
+        IAgentToolProvider toolProvider,
+        ISkillAgentToolsFactory skillAgentToolsFactory)
         // Writes real TSX code into the sandbox: low temperature for precision over creativity,
         // high reasoning effort since correctness here compounds through everything downstream.
         : base(chatClients, configuration, "RemotionComponentTranslator",
             "Builds the Remotion project structure (TSX files) directly inside the sandbox environment.",
             AgentType.RemotionComponentTranslator, DefaultPrompt,
+            skillAgentToolsFactory,
             toolProvider.GetTools(AgentType.RemotionComponentTranslator),
             agentId: null,
             outputSchemaType: typeof(RemotionProjectBuildOutput),

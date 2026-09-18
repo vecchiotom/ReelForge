@@ -30,7 +30,7 @@ public static class ToolGroupCatalog
     /// The tool/function names belonging to a <see cref="ToolGroup"/>. Names must match the
     /// actual C# method names on the WorkflowEngine tool-provider classes
     /// (<c>ProjectFileAgentTools</c>, <c>ReactRemotionSandboxTools</c>,
-    /// <c>RemotionSkillsAgentTools</c>, <c>WorkflowControlAgentTools</c>) exactly, since
+    /// <c>WorkflowControlAgentTools</c>) exactly, since
     /// <c>AIFunctionFactory.Create</c> names each constructed <c>AIFunction</c> after the method
     /// it wraps.
     /// </summary>
@@ -63,14 +63,6 @@ public static class ToolGroupCatalog
         ToolGroup.SandboxRender =>
         [
             "RunSandboxRemotionCommand", "RenderVideoAndUploadToStorage", "CompleteSandbox"
-        ],
-        ToolGroup.RemotionSkillsBasic =>
-        [
-            "SearchRemotionSkills", "ReadRemotionSkill"
-        ],
-        ToolGroup.RemotionSkillsFull =>
-        [
-            "SearchRemotionSkills", "ReadRemotionSkill", "ListAllRemotionSkills"
         ],
         ToolGroup.WorkflowControl =>
         [
@@ -119,10 +111,10 @@ public static class ToolGroupCatalog
         // Translation agents: project read/write + sandbox code authoring.
         // Can install packages and verify correctness, but do NOT render.
         //
-        // RemotionComponentTranslator additionally gets the FULL Remotion skills knowledge base
-        // (including ListAllRemotionSkills, the topic-discovery tool) since it is the agent
-        // building the Remotion project from scratch and most needs to discover what's
-        // available; AnimationStrategyAgent below gets only the basic search/read pair.
+        // Remotion knowledge-base access (UseSkill/ReadSkillResource) is NOT a ToolGroup — it is
+        // resolved per agent-run from SkillCatalog.DefaultsFor(AgentType) instead, since it is a
+        // named, on-demand-loadable skill rather than a fixed tool surface. See
+        // ReelForge.Shared/Skills/SkillCatalog.cs for which of these agents get which skills.
         // ──────────────────────────────────────────────────────────────────
 
         AgentType.RemotionComponentTranslator =>
@@ -133,7 +125,6 @@ public static class ToolGroupCatalog
             ToolGroup.SandboxMetadata,
             ToolGroup.SandboxLint,
             ToolGroup.SandboxAuthoring,
-            ToolGroup.RemotionSkillsFull,
             ToolGroup.WorkflowControl
         ],
 
@@ -142,7 +133,6 @@ public static class ToolGroupCatalog
             ToolGroup.ProjectRead,
             ToolGroup.SandboxBrowse,
             ToolGroup.SandboxMetadata,
-            ToolGroup.RemotionSkillsBasic,
             ToolGroup.WorkflowControl
         ],
 
@@ -181,7 +171,6 @@ public static class ToolGroupCatalog
             ToolGroup.SandboxLint,
             ToolGroup.SandboxAuthoring,
             ToolGroup.SandboxRender,
-            ToolGroup.RemotionSkillsBasic,
             ToolGroup.WorkflowControl
         ],
 
@@ -196,7 +185,6 @@ public static class ToolGroupCatalog
             ToolGroup.SandboxBrowse,
             ToolGroup.SandboxMetadata,
             ToolGroup.SandboxLint,
-            ToolGroup.RemotionSkillsBasic,
             ToolGroup.WorkflowControl
         ],
 
@@ -267,7 +255,6 @@ public static class ToolGroupCatalog
             ToolGroup.SandboxLint,
             ToolGroup.SandboxAuthoring,
             ToolGroup.SandboxRender,
-            ToolGroup.RemotionSkillsBasic,
             ToolGroup.WorkflowControl
         ],
 
