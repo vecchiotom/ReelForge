@@ -139,4 +139,32 @@ internal static class RobustJsonExtractor
 
         return sb.ToString();
     }
+
+    /// <summary>
+    /// Best-effort repair for a model response that opens with a DOUBLED brace —
+    /// <c>{{"summary": ...}</c> instead of <c>{"summary": ...}</c> — but only ever emits one
+    /// matching close, so <see cref="ExtractJsonObject"/>'s balanced-brace scan (which correctly
+    /// treats the second <c>{</c> as opening a real nested object) never sees depth return to 0 and
+    /// gives up. Observed live and repeatedly from a vLLM-served vision model: a stray extra
+    /// opening brace, always at the very start, always exactly one extra, never anywhere else in
+    /// the response and never doubled at the close. Safe to collapse unconditionally for THIS
+    /// schema specifically — <c>VideoShotCaption</c> (the only caller) has no nested-object-valued
+    /// property, so its root JSON object structurally never needs more than one leading <c>{</c>;
+    /// a real, intentional nested object would need this repair to leave it alone, which is why
+    /// this is a narrow fix for one caller's schema, not a general "collapse repeated braces"
+    /// utility.
+    /// </summary>
+    public static string CollapseDuplicateLeadingBrace(string raw)
+    {
+        int i = 0;
+        while (i < raw.Length && char.IsWhiteSpace(raw[i])) i++;
+
+        int braceRunEnd = i;
+        while (braceRunEnd < raw.Length && raw[braceRunEnd] == '{') braceRunEnd++;
+
+        int extraBraces = braceRunEnd - i - 1; // 1 real opening brace is always kept
+        if (extraBraces <= 0) return raw;
+
+        return raw[..i] + "{" + raw[braceRunEnd..];
+    }
 }

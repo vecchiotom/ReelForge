@@ -101,4 +101,42 @@ public class RobustJsonExtractorTests
         JsonDocument doc = JsonDocument.Parse(normalized!);
         doc.RootElement.GetProperty("summary").GetString().Should().Be("line one\nline two");
     }
+
+    [Fact]
+    public void CollapseDuplicateLeadingBrace_repairs_a_doubled_opening_brace_with_only_one_close()
+    {
+        string raw = "{{\"shotId\": \"shot-001\", \"summary\": \"a room\"}";
+
+        string collapsed = RobustJsonExtractor.CollapseDuplicateLeadingBrace(raw);
+
+        JsonDocument doc = JsonDocument.Parse(collapsed);
+        doc.RootElement.GetProperty("shotId").GetString().Should().Be("shot-001");
+    }
+
+    [Fact]
+    public void CollapseDuplicateLeadingBrace_is_a_no_op_for_already_well_formed_json()
+    {
+        string raw = "{\"shotId\": \"shot-001\"}";
+
+        RobustJsonExtractor.CollapseDuplicateLeadingBrace(raw).Should().Be(raw);
+    }
+
+    [Fact]
+    public void CollapseDuplicateLeadingBrace_tolerates_leading_whitespace_before_the_braces()
+    {
+        string raw = "  \n  {{\"shotId\": \"shot-001\"}";
+
+        string collapsed = RobustJsonExtractor.CollapseDuplicateLeadingBrace(raw);
+
+        JsonDocument doc = JsonDocument.Parse(collapsed);
+        doc.RootElement.GetProperty("shotId").GetString().Should().Be("shot-001");
+    }
+
+    [Fact]
+    public void CollapseDuplicateLeadingBrace_is_a_no_op_when_there_is_no_leading_brace_at_all()
+    {
+        string raw = "not json at all";
+
+        RobustJsonExtractor.CollapseDuplicateLeadingBrace(raw).Should().Be(raw);
+    }
 }

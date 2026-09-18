@@ -115,7 +115,15 @@ public sealed class VisionShotCaptioner : IShotCaptioner
 
         ChatResponse response = await client.GetResponseAsync(new[] { message }, options, ct).ConfigureAwait(false);
 
-        string text = response.Text ?? string.Empty;
+        // Repair a doubled leading brace up front — observed live and repeatedly:
+        // '{{"shotId": ...}' instead of '{"shotId": ...}', with only ONE matching close, which
+        // otherwise defeats ExtractJsonObject's balanced-brace scan below (it correctly treats the
+        // second '{' as a real nested object's open and never sees depth return to 0). A no-op
+        // when the response already starts with exactly one brace, so it's always safe to apply
+        // before every attempt rather than gating it behind a failed strict parse first.
+        string rawText = response.Text ?? string.Empty;
+        string text = RobustJsonExtractor.CollapseDuplicateLeadingBrace(rawText);
+
         VideoShotCaption? parsed = TryParseCaption(text, out JsonException? parseError)
             // Fallback 1: strip any markdown fence/leading-or-trailing prose around a balanced
             // {...} object, then retry strict parsing on just that substring.
