@@ -1,6 +1,7 @@
 'use client';
 
-import { Table, Badge, Text } from '@mantine/core';
+import { Table, Badge, Text, Group, ActionIcon, Tooltip } from '@mantine/core';
+import { IconBrandGithub } from '@tabler/icons-react';
 import { useRouter } from 'next/navigation';
 import type { Skill } from '@/lib/types/skill';
 
@@ -60,9 +61,28 @@ export function SkillsTable({ skills }: SkillsTableProps) {
                 <Text size="sm" lineClamp={2} maw={420}>{skill.description}</Text>
               </Table.Td>
               <Table.Td>
-                <Badge color={categoryColor(skill.category)} variant="light" size="sm">
-                  {skill.category}
-                </Badge>
+                <Group gap={6} wrap="nowrap">
+                  <Badge color={categoryColor(skill.category)} variant="light" size="sm">
+                    {skill.category}
+                  </Badge>
+                  {skill.sourceUrl && (
+                    <Tooltip label="Vendored from GitHub — view source">
+                      <ActionIcon
+                        component="a"
+                        href={skill.sourceUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        variant="subtle"
+                        color="gray"
+                        size="sm"
+                        onClick={(e) => e.stopPropagation()}
+                        aria-label="View skill source on GitHub"
+                      >
+                        <IconBrandGithub size={14} />
+                      </ActionIcon>
+                    </Tooltip>
+                  )}
+                </Group>
               </Table.Td>
               <Table.Td visibleFrom="sm">{skill.version ?? '—'}</Table.Td>
               <Table.Td visibleFrom="sm">

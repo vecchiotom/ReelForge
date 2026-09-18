@@ -53,7 +53,9 @@ public class SkillsController : ControllerBase
                 s.Category.ToString(),
                 s.Version,
                 DefaultForAgentTypes(s.Name),
-                assignedCounts.GetValueOrDefault(s.Name)))
+                assignedCounts.GetValueOrDefault(s.Name),
+                s.SourceUrl,
+                s.SourceCommit))
             .ToList();
 
         return Ok(result);
@@ -76,7 +78,9 @@ public class SkillsController : ControllerBase
             descriptor.Version,
             DefaultForAgentTypes(descriptor.Name),
             assignedCounts.GetValueOrDefault(descriptor.Name),
-            body));
+            body,
+            descriptor.SourceUrl,
+            descriptor.SourceCommit));
     }
 
     /// <summary>

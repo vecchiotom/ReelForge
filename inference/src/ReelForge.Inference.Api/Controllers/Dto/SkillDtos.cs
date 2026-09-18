@@ -7,7 +7,9 @@ public record SkillSummaryResponse(
     string Category,
     string? Version,
     string[] DefaultForAgentTypes,
-    int AssignedAgentCount);
+    int AssignedAgentCount,
+    string? SourceUrl,
+    string? SourceCommit);
 
 public record SkillDetailResponse(
     string Name,
@@ -17,7 +19,9 @@ public record SkillDetailResponse(
     string? Version,
     string[] DefaultForAgentTypes,
     int AssignedAgentCount,
-    string? Body);
+    string? Body,
+    string? SourceUrl,
+    string? SourceCommit);
 
 /// <summary>
 /// Body for PUT /api/v1/agents/{id}/skills. Skills is never null — for a custom agent, an empty

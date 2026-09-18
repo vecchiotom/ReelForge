@@ -108,4 +108,42 @@ public class SkillCatalogTests
         SkillCatalog.DefaultsFor(AgentType.Custom).Should().BeEmpty();
         SkillCatalog.DefaultsFor(AgentType.VideoStoryEditor).Should().BeEmpty();
     }
+
+    // --- Provenance (SourceUrl/SourceCommit) ---
+
+    [Fact]
+    public void Every_curated_skill_has_a_populated_SourceUrl_and_SourceCommit()
+    {
+        // All five current skills are vendored from remotion-dev/skills at a single pinned
+        // commit (see inference/skills/UPSTREAM.md) — none of them should be null.
+        foreach (SkillDescriptor descriptor in SkillCatalog.All)
+        {
+            descriptor.SourceUrl.Should().NotBeNullOrWhiteSpace(
+                $"{descriptor.Name} is vendored and should carry a provenance link");
+            descriptor.SourceCommit.Should().NotBeNullOrWhiteSpace(
+                $"{descriptor.Name} is vendored and should carry a pinned commit SHA");
+        }
+    }
+
+    [Fact]
+    public void SourceUrl_points_at_the_exact_vendored_directory_for_this_skill_not_the_repo_root()
+    {
+        foreach (SkillDescriptor descriptor in SkillCatalog.All)
+        {
+            descriptor.SourceUrl.Should().Contain(descriptor.SourceCommit!,
+                $"{descriptor.Name}'s SourceUrl should be pinned to its SourceCommit, not a moving ref like main");
+            descriptor.SourceUrl.Should().EndWith($"/skills/{descriptor.RelativePath}",
+                $"{descriptor.Name}'s SourceUrl should resolve to its own vendored directory, not the bare repo root");
+        }
+    }
+
+    [Fact]
+    public void All_skills_share_the_same_upstream_repository_and_pinned_commit()
+    {
+        // Matches inference/skills/UPSTREAM.md: a single repo, a single pinned commit, for every
+        // one of the five current skills.
+        SkillCatalog.All.Select(s => s.SourceCommit).Distinct().Should().ContainSingle();
+        SkillCatalog.All.Select(s => s.SourceUrl!.Split("/tree/")[0]).Distinct().Should().ContainSingle()
+            .Which.Should().Be("https://github.com/remotion-dev/skills");
+    }
 }
