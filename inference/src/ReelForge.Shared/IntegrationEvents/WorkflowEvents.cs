@@ -164,6 +164,56 @@ public record WorkflowStepReasoningCaptured
 }
 
 /// <summary>
+/// Published once per completed turn in a <c>StepType.EditRoom</c> group-chat run (a seat's or the
+/// director's turn). Structural twin of <see cref="WorkflowStepReasoningCaptured"/>: append-only
+/// and sequence-numbered (<see cref="TurnIndex"/>), NOT a reuse of <see cref="WorkflowStepProgress"/>
+/// — that event's "a later progress event supersedes any earlier one" semantics are wrong for a
+/// transcript where every turn matters. Relayed by the Go API as an SSE event (a separate,
+/// follow-up pass — not implemented by this event's addition) and rendered as a running transcript
+/// card, mirroring how <see cref="WorkflowStepReasoningCaptured"/> becomes a "step.reasoning" card
+/// today. <see cref="Text"/> is free-form model prose and is NEVER authoritative for the actual cut
+/// decision — see docs/video-editing.md "The edit room" and <c>EditRoomStepExecutor</c>'s own
+/// transcript-artifact doc comment for the same caveat.
+/// </summary>
+public record WorkflowStepChatTurn
+{
+    public Guid ExecutionId { get; init; }
+    public Guid StepId { get; init; }
+    public Guid StepResultId { get; init; }
+    public Guid? ProjectId { get; init; }
+    public Guid? WorkflowDefinitionId { get; init; }
+    public int? StepOrder { get; init; }
+    public string? StepLabel { get; init; }
+    public string CorrelationId { get; init; } = string.Empty;
+
+    /// <summary>0-based, append-only turn index within the room.</summary>
+    public int TurnIndex { get; init; }
+
+    /// <summary>The configured turn ceiling (<c>EditRoomStepConfig.MaxTurns</c>), for a "turn 3 of 8" display. Null when not known.</summary>
+    public int? TotalTurns { get; init; }
+
+    /// <summary>The seat/persona name that spoke, e.g. "PacingEditor" or "Director".</summary>
+    public string Speaker { get; init; } = string.Empty;
+
+    /// <summary>"editor" or "director".</summary>
+    public string SpeakerRole { get; init; } = string.Empty;
+
+    /// <summary>The turn's text, truncated to roughly 600 characters at a word boundary. Free-form model prose — never authoritative, see the type's doc comment.</summary>
+    public string Text { get; init; } = string.Empty;
+
+    public bool Truncated { get; init; }
+
+    /// <summary>
+    /// Offered shot/silence/segment ids this turn mentioned, server-extracted with the same regex
+    /// <c>EditRoomGroupChatManager</c> uses for convergence checking, filtered against the id set
+    /// actually offered to the room — display/audit only, never trusted as the decision itself.
+    /// </summary>
+    public IReadOnlyList<string> IdsMentioned { get; init; } = [];
+
+    public DateTime OccurredAt { get; init; } = DateTime.UtcNow;
+}
+
+/// <summary>
 /// Published when a step starts execution.
 /// </summary>
 public record WorkflowStepStarted

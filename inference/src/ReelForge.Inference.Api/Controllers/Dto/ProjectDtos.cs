@@ -95,7 +95,8 @@ public record WorkflowStepResponse(
     string? ParallelAgentIdsJson = null,
     string? ExtractConfigJson = null,
     string? VideoAnalyzeConfigJson = null,
-    string? VideoCompileConfigJson = null);
+    string? VideoCompileConfigJson = null,
+    string? EditRoomConfigJson = null);
 
 public record CreateWorkflowRequest(string Name, List<CreateWorkflowStepRequest> Steps, bool RequiresUserInput = false);
 
@@ -118,7 +119,8 @@ public record CreateWorkflowStepRequest(
     string? ParallelAgentIdsJson = null,
     string? ExtractConfigJson = null,
     string? VideoAnalyzeConfigJson = null,
-    string? VideoCompileConfigJson = null);
+    string? VideoCompileConfigJson = null,
+    string? EditRoomConfigJson = null);
 public record UpdateWorkflowRequest(string? Name, List<CreateWorkflowStepRequest> Steps, bool? RequiresUserInput = null);
 
 public record WorkflowTemplateSummaryResponse(

@@ -209,6 +209,22 @@ public class AgentToolProvider : IAgentToolProvider
             ],
 
             // ──────────────────────────────────────────────────────────────────
+            // VideoEditDirector: read-only project context + FailWorkflow only, identical scope to
+            // VideoStoryEditor above. Used both as a StepType.EditRoom group-chat participant (via
+            // a raw AIAgent the executor builds directly from these same tools) and for the
+            // standalone structured-output synthesis call — neither role produces or touches media.
+            // ──────────────────────────────────────────────────────────────────
+
+            AgentType.VideoEditDirector =>
+            [
+                AIFunctionFactory.Create(_projectFileTools.ListProjectFiles),
+                AIFunctionFactory.Create(_projectFileTools.ReadProjectFile),
+                AIFunctionFactory.Create(_projectFileTools.SearchProjectFiles),
+                AIFunctionFactory.Create(_projectFileTools.GetDeterministicContextFiles),
+                AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
+            ],
+
+            // ──────────────────────────────────────────────────────────────────
             // MusicSupervisor: read-only project context + FailWorkflow only, identical scope to
             // VideoStoryEditor/VideoReviewAgent above. It only picks among offered "m{n}" track
             // ids and enum-word settings — it never produces or touches media directly (no render,

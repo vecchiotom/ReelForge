@@ -107,7 +107,17 @@ public enum AgentType
     /// alternative (VideoCompileStepConfig.MusicTrackProjectFileId, set directly by the workflow
     /// author) does not require this agent at all.
     /// </summary>
-    MusicSupervisor
+    MusicSupervisor,
+    /// <summary>
+    /// LLM agent used TWICE by a StepType.EditRoom step: once per-turn as the moderator
+    /// participant in the room's live Microsoft.Agents.AI.Workflows group chat (free-form prose,
+    /// emits the literal sentinel "ROOM_DECIDED" once satisfied), and once more, OUTSIDE the group
+    /// chat, for a single ordinary structured-output synthesis call that converts the room's
+    /// discussion into ONE schema-validated VideoEditDecisionOutput — the exact same schema
+    /// AgentType.VideoStoryEditor emits, and reused verbatim: same rushcut invariant (never a
+    /// timestamp, only offered ids). See docs/video-editing.md "The edit room".
+    /// </summary>
+    VideoEditDirector
 }
 
 /// <summary>
@@ -138,7 +148,17 @@ public enum StepType
     /// decision's opaque ids to frame-accurate times against a VideoAnalyze artifact.
     /// See ReelForge.Shared.Workflows.VideoCompileStepConfig.
     /// </summary>
-    VideoCompile
+    VideoCompile,
+    /// <summary>
+    /// Multi-agent "edit room": several AgentType.VideoStoryEditor-role seats plus an
+    /// AgentType.VideoEditDirector moderator converse in a live Microsoft.Agents.AI.Workflows
+    /// group chat over a bounded VideoAnalyze view, then the director emits ONE schema-validated
+    /// VideoEditDecisionOutput in a normal structured call outside the chat loop — exactly the
+    /// shape a StepType.Agent + AgentType.VideoStoryEditor step already produces, so
+    /// VideoCompileStepExecutor needs no changes to consume it. See
+    /// ReelForge.Shared.Workflows.EditRoomStepConfig and docs/video-editing.md "The edit room".
+    /// </summary>
+    EditRoom
 }
 
 /// <summary>

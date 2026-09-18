@@ -19,7 +19,8 @@ public sealed record WorkflowTemplateStepDefinition(
     IReadOnlyList<AgentType>? ParallelAgentTypes = null,
     string? ExtractConfigJson = null,
     string? VideoAnalyzeConfigJson = null,
-    string? VideoCompileConfigJson = null);
+    string? VideoCompileConfigJson = null,
+    string? EditRoomConfigJson = null);
 
 public sealed record WorkflowTemplateDefinition(
     string Key,
@@ -278,6 +279,62 @@ public static class WorkflowTemplateCatalog
                     // supervisor, and the compile step in sequence — step 1 (VideoAnalyze) is
                     // deterministic and need not rerun. Same MinScore/MaxIterations/FullWorkflow
                     // pattern as video-derush-edit/video-derush-edit-graphics above.
+                    LoopTargetStepOrder: 2,
+                    MaxIterations: 3,
+                    MinScore: 8,
+                    AgentInputContextMode: AgentInputContextMode.FullWorkflow)
+            ]),
+        new(
+            Key: "video-derush-edit-room",
+            Name: "Video Derush & Edit Room",
+            Description: "Opt-in template that replaces the single VideoStoryEditor decision step with a multi-agent 'edit room': several editor seats plus a director converse in a live group chat over the analyzed video's bounded view, then the director synthesizes ONE editorial decision the compile step consumes exactly like a solo VideoStoryEditor step would. Demonstrates the EditRoom step type end to end.",
+            Version: 1,
+            AutoCreateOnProject: false,
+            RequiresUserInput: false,
+            Steps:
+            [
+                new(
+                    AgentType.VideoTransform,
+                    "Analyze source video",
+                    StepType.VideoAnalyze,
+                    // Same ProjectFile-source rationale as video-derush-edit's first step above
+                    // (this is the first step, so PreviousStepOutput would fail SOURCE_UNRESOLVED
+                    // on every run).
+                    VideoAnalyzeConfigJson: """
+                        {"version":1,"source":{"kind":"ProjectFile"}}
+                        """),
+                new(
+                    // The step's own AgentDefinitionId FK is satisfied by the same deterministic
+                    // VideoTransform placeholder VideoAnalyze/VideoCompile steps use — the room's
+                    // actual LLM seats/director are resolved independently by EditRoomStepExecutor
+                    // from EditRoomConfigJson, never from this step's own AgentDefinitionId.
+                    AgentType.VideoTransform,
+                    "Edit room deliberation",
+                    StepType.EditRoom,
+                    EditRoomConfigJson: """
+                        {"version":1,"view":{"from":"Previous"}}
+                        """),
+                new(
+                    AgentType.VideoTransform,
+                    "Compile edited video",
+                    StepType.VideoCompile,
+                    // Decision/AnalysisStepOrder reference their source steps explicitly by
+                    // StepOrder — "Previous" relative to the compile step already resolves
+                    // correctly here (the EditRoom step immediately precedes it and emits the
+                    // exact same VideoEditDecisionOutput shape a solo VideoStoryEditor step
+                    // would), kept explicit anyway for the same auditability the other video
+                    // templates' compile steps already follow.
+                    VideoCompileConfigJson: """
+                        {"version":1,"decision":{"from":"Step","stepOrder":2},"analysisStepOrder":1,"transitionPolicy":"Auto","programFadeInMs":500,"programFadeOutMs":800,"programAudioFadeInMs":300,"programAudioFadeOutMs":900,"minSegmentMs":800}
+                        """),
+                new(
+                    AgentType.VideoReviewAgent,
+                    "Review edit quality",
+                    StepType.ReviewLoop,
+                    // Loop back to step 2 (the edit room) — step 1 (VideoAnalyze) is deterministic
+                    // and produces the same bounded view every time, so there is nothing for a
+                    // retry to gain from re-running it. Same MinScore/MaxIterations/FullWorkflow
+                    // pattern as video-derush-edit above.
                     LoopTargetStepOrder: 2,
                     MaxIterations: 3,
                     MinScore: 8,

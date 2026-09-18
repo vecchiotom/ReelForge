@@ -220,6 +220,9 @@ public class WorkflowExecutorService
                 context.StepResultId = stepResult.Id;
                 context.ProgressReporter = (stage, percent, progressCt) =>
                     _eventPublisher.PublishStepProgressAsync(execution, step, stepResult, stage, percent, progressCt);
+                context.ChatTurnReporter = (turnIndex, totalTurns, speaker, speakerRole, text, idsMentioned, chatCt) =>
+                    _eventPublisher.PublishStepChatTurnAsync(
+                        execution, step, stepResult, turnIndex, totalTurns, speaker, speakerRole, text, idsMentioned, chatCt);
 
                 await _eventPublisher.PublishStepStartedAsync(
                     execution,
@@ -666,13 +669,17 @@ public class WorkflowExecutorService
     {
         if (step.StepType == StepType.Extract
             || step.StepType == StepType.VideoAnalyze
-            || step.StepType == StepType.VideoCompile)
+            || step.StepType == StepType.VideoCompile
+            || step.StepType == StepType.EditRoom)
         {
             // Deterministic, non-LLM steps: retrying the whole step reproduces the same failure
             // (Extract) or re-burns minutes of ffmpeg decode/encode to reproduce a deterministic
             // failure (VideoAnalyze/VideoCompile). ASR's own network call inside
             // VideoAnalyzeStepExecutor has its own small bounded retry around just that call —
-            // it does not go through this outer step-level retry mechanism.
+            // it does not go through this outer step-level retry mechanism. EditRoom is NOT
+            // deterministic (it makes many LLM calls), but an outer retry re-running the whole
+            // room from scratch is expensive — the step's own internal synthesis retry
+            // (EditRoomStepConfig.MaxSynthesisAttempts) is where retry value actually is.
             return 1;
         }
 
