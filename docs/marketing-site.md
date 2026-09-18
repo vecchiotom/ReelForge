@@ -131,7 +131,45 @@ Work through this before pointing real traffic (and real search engines) at the 
    — those mounts exist for Turbopack hot reload and would shadow the precompiled standalone build
    the production Dockerfile target produces.
 6. **Submit to search engines.** Once the real domain is live and serving real content, submit
-   `https://<domain>/sitemap.xml` to Google Search Console (and any other search console you use).
+   `https://<domain>/sitemap.xml` to Google Search Console (and any other search console you use). The
+   site also serves `https://<domain>/llms.txt` (`site/app/llms.txt/route.ts`), a plain-text
+   summary for AI assistants; it is generated from the same `siteConfig`/`HOME_FAQS` sources as
+   the pages, so it needs no separate upkeep.
+
+## Who the copy is written for
+
+The marketing pages address a **buyer** — a founder, product marketer or growth lead deciding
+whether to use ReelForge — not an engineer evaluating the stack. That is a deliberate split:
+
+- **Marketing pages say what you get.** "Upload the raw take, get back the finished cut."
+  Implementation names (ffmpeg, Remotion, Docker, PostgreSQL, RabbitMQ, the workflow engine, the
+  agent-room architecture) are *out of scope* for `/`, `/features` and `/about`. A buyer does not
+  choose a video tool on which encoder it shells out to, and the words cost comprehension.
+- **`CLAUDE.md` and `docs/` say how it works.** That is where the stack belongs, and it stays
+  exhaustive there.
+- **One deliberate exception:** the open-source attribution clause in
+  `site/app/legal/terms/page.tsx` still names Remotion and ffmpeg. That is a licensing
+  acknowledgement, not marketing copy, and it must stay.
+
+When adding a page or a section, write the benefit first and check it against `CLAUDE.md` second.
+If a sentence cannot be traced to a real capability there, it does not ship.
+
+## Structured data
+
+`site/lib/structured-data.ts` emits, per page:
+
+| Schema type | Where | Source |
+|---|---|---|
+| `Organization`, `WebSite` | every page (root layout) | `siteConfig` |
+| `SoftwareApplication` | `/` | `siteConfig` + a `featureList` of real capabilities |
+| `FAQPage` | `/` | `site/lib/faqs.ts` — **the same array the page renders** |
+| `BreadcrumbList` | `/features`, `/about` | the trail passed by each page |
+
+The `FAQPage` markup and the visible FAQ section read from one array on purpose: Google treats
+FAQ markup whose answers are not visible on the page as a violation, so they must not be allowed
+to drift. No `offers` or `aggregateRating` is emitted anywhere — there is no real price and there
+are no real reviews, and fabricating either is a manual-action-level violation rather than a
+growth tactic.
 
 ## Cookie consent gates GA4 — and undercounts pageviews on purpose
 
@@ -161,9 +199,16 @@ Two categories of content went into this site, and they were held to different r
   policy, terms of service) so there is exactly one place to fill in real values, and no
   page silently shipped with a fabricated address or a made-up company name that could be mistaken
   for real. See the launch checklist above for the full list of tokens to replace before launch.
-- The same discipline extended to the visual redesign: the homepage's "Runs on" strip
-  (`site/components/home/TechStrip.tsx`) lists real stack components (Remotion, ffmpeg,
-  PostgreSQL, Docker, Next.js, Azure OpenAI) as plain text, never captioned as "partners" or
+- The same discipline extended to the visual redesign: the homepage strip
+  (`site/components/home/UseCaseStrip.tsx`) lists the video jobs ReelForge is built to produce
+  ("Product launches", "Feature demos", …) as plain text, never captioned as "partners" or
   "customers" — no partner logo or customer name was invented. No fabricated social-media links
   were added either; the reference design's social-icon rail became real in-page section anchors.
   See `docs/site-design-system.md`.
+- The copy rewrite kept the same rule. Every capability claim on the marketing pages maps to a
+  real one in `CLAUDE.md` — automatic silence/bad-take removal, best-take selection, overlays and
+  tracked screen inserts, colour grading, music and sound effects, the scoring review loop,
+  bring-your-own provider, self-hosting. What changed is the vocabulary, not the claim. Nothing
+  about pricing, customer counts, ratings or time savings was asserted, and the structured data
+  carries no `offers` or `aggregateRating` for the same reason (see
+  `site/lib/structured-data.ts`).

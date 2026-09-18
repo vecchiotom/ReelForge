@@ -2,7 +2,7 @@ import { ImageResponse } from 'next/og';
 
 export const size = { width: 1200, height: 630 };
 export const contentType = 'image/png';
-export const alt = 'ReelForge: AI agents that turn your codebase into promotional videos';
+export const alt = 'ReelForge: an AI video team for the product you already built';
 
 export default function OpengraphImage() {
   return new ImageResponse(
@@ -63,7 +63,7 @@ export default function OpengraphImage() {
             lineHeight: 1.25,
           }}
         >
-          AI agents that turn your codebase into promotional videos
+          An AI video team for the product you already built
         </div>
         <div
           style={{
@@ -73,7 +73,7 @@ export default function OpengraphImage() {
             color: 'rgba(255,255,255,0.85)',
           }}
         >
-          Agentic workflows, Remotion rendering, self-hostable end to end.
+          Scripted, edited and reviewed by AI. Ready to publish.
         </div>
       </div>
     ),

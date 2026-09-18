@@ -18,8 +18,8 @@ export default function NotFound() {
           Page not found
         </h1>
         <p className="mx-auto mt-4 max-w-xl text-lg text-ink-muted">
-          The page you&apos;re looking for doesn&apos;t exist, may have moved, or the link you
-          followed might be out of date.
+          This page doesn&apos;t exist, may have moved, or the link you followed is out of date.
+          Here&apos;s where most people are headed.
         </p>
 
         <ul className="mx-auto mt-8 flex max-w-xl flex-col gap-3 sm:flex-row sm:flex-wrap sm:justify-center">
@@ -30,12 +30,12 @@ export default function NotFound() {
           </li>
           <li>
             <Button href="/features" variant="outline">
-              Features
+              What it does
             </Button>
           </li>
           <li>
             <Button href="/contact" variant="outline">
-              Contact
+              Book a demo
             </Button>
           </li>
           <li>

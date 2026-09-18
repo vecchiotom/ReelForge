@@ -9,7 +9,7 @@ import { buildMetadata } from '@/lib/seo';
 export const metadata = buildMetadata({
   title: 'Contact',
   description:
-    'Tell us about your project and what you want to use ReelForge for. Reach our team directly and we will get back to you shortly.',
+    'Tell us about your product and the video you want made. Book a demo and see ReelForge run on something you actually built.',
   path: '/contact',
 });
 
@@ -18,13 +18,13 @@ export default function ContactPage() {
     <div className="relative isolate overflow-hidden py-16 sm:py-20 lg:py-28">
       <GridOverlay columns={3} className="hidden lg:block" />
       <Container>
-        <Eyebrow>Talk to us</Eyebrow>
+        <Eyebrow>Book a demo</Eyebrow>
         <h1 className="mt-4 text-balance font-display text-[clamp(2rem,5vw,3.5rem)] font-bold uppercase leading-[0.95] tracking-[-0.02em] text-ink">
           Contact
         </h1>
         <p className="mt-4 max-w-2xl font-mono text-sm leading-relaxed text-ink-muted">
-          Tell us a bit about your project and what you&apos;d like to use ReelForge for, and
-          we&apos;ll get back to you.
+          Tell us what you&apos;re building and the video you&apos;d like to make. We&apos;ll show
+          you what ReelForge does with it.
         </p>
 
         <div className="mt-12 grid grid-cols-1 gap-10 lg:grid-cols-3 lg:gap-12">
