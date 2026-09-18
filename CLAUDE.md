@@ -363,7 +363,14 @@ compilation. Full design in [`docs/video-editing.md`](docs/video-editing.md); su
   scratch file referenced via drawtext's `textfile=` (with `expansion=none`) — never interpolated
   into the ffmpeg filter string. A bad/missing graphics plan, an unknown placement id, or a missing
   `drawtext` filter all degrade to "no graphics applied" rather than failing the compile. See
-  `docs/video-editing.md` § "Motion graphics (Phase 3)".
+  `docs/video-editing.md` § "Motion graphics (Phase 3)". `TransitionPolicy` (`VideoTransitionPolicy`,
+  default `Off`) picks a per-seam transition treatment (hard cut, audio declick, dissolve, dip-to-black,
+  dip-cut) purely from measured shot/seam data — no agent chooses, requests, or can alter one — plus an
+  independent program-level video/audio fade-in/out at the very start/end of the compiled file
+  (`ProgramFadeInMs`/`ProgramFadeOutMs`/`ProgramAudioFadeInMs`/`ProgramAudioFadeOutMs`), capped by
+  `MaxTransitionSegments` since a crossfade-style blend costs more filtergraph buffering per
+  transition than a plain segment switch. See `docs/video-editing.md` § "Seam transitions and the
+  program envelope".
 
 **Why ffmpeg runs inside the WorkflowEngine container, not the Remotion sandbox
 (`/sandbox`):** the sandbox's container and network isolation exists to contain

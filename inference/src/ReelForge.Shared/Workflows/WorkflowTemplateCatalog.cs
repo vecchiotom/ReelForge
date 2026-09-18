@@ -156,7 +156,7 @@ public static class WorkflowTemplateCatalog
                     "Compile edited video",
                     StepType.VideoCompile,
                     VideoCompileConfigJson: """
-                        {"version":1,"decision":{"from":"Previous"},"analysisStepOrder":1}
+                        {"version":1,"decision":{"from":"Previous"},"analysisStepOrder":1,"transitionPolicy":"Auto","programFadeInMs":500,"programFadeOutMs":800,"programAudioFadeInMs":300,"programAudioFadeOutMs":900,"minSegmentMs":800}
                         """),
                 new(
                     AgentType.VideoReviewAgent,
@@ -170,8 +170,8 @@ public static class WorkflowTemplateCatalog
                     // review agent sees the analysis view, the story editor's decision, and the
                     // compile step's own deterministic sentenceCheck.
                     LoopTargetStepOrder: 2,
-                    MaxIterations: 2,
-                    MinScore: 7,
+                    MaxIterations: 3,
+                    MinScore: 8,
                     AgentInputContextMode: AgentInputContextMode.FullWorkflow)
             ]),
         new(
@@ -214,7 +214,7 @@ public static class WorkflowTemplateCatalog
                     // MotionGraphicsPlanner step's output (step 3), not the story editor's
                     // decision (step 2).
                     VideoCompileConfigJson: """
-                        {"version":1,"decision":{"from":"Step","stepOrder":2},"analysisStepOrder":1,"enableGraphics":true,"graphicsPlan":{"from":"Step","stepOrder":3}}
+                        {"version":1,"decision":{"from":"Step","stepOrder":2},"analysisStepOrder":1,"enableGraphics":true,"graphicsPlan":{"from":"Step","stepOrder":3},"transitionPolicy":"Auto","programFadeInMs":500,"programFadeOutMs":800,"programAudioFadeInMs":300,"programAudioFadeOutMs":900,"minSegmentMs":800}
                         """),
                 new(
                     AgentType.VideoReviewAgent,
@@ -225,8 +225,8 @@ public static class WorkflowTemplateCatalog
                     // step 1 (VideoAnalyze) is deterministic and need not rerun. Same
                     // MinScore/MaxIterations/FullWorkflow pattern as video-derush-edit above.
                     LoopTargetStepOrder: 2,
-                    MaxIterations: 2,
-                    MinScore: 7,
+                    MaxIterations: 3,
+                    MinScore: 8,
                     AgentInputContextMode: AgentInputContextMode.FullWorkflow)
             ]),
         new(
@@ -268,7 +268,7 @@ public static class WorkflowTemplateCatalog
                     // "Previous" relative to THIS step would resolve to the MusicSupervisor step's
                     // output (step 3), not the story editor's decision (step 2).
                     VideoCompileConfigJson: """
-                        {"version":1,"decision":{"from":"Step","stepOrder":2},"analysisStepOrder":1,"enableMusic":true,"musicPlan":{"from":"Step","stepOrder":3}}
+                        {"version":1,"decision":{"from":"Step","stepOrder":2},"analysisStepOrder":1,"enableMusic":true,"musicPlan":{"from":"Step","stepOrder":3},"transitionPolicy":"Auto","programFadeInMs":500,"programFadeOutMs":800,"programAudioFadeInMs":300,"programAudioFadeOutMs":900,"minSegmentMs":800}
                         """),
                 new(
                     AgentType.VideoReviewAgent,
@@ -279,8 +279,8 @@ public static class WorkflowTemplateCatalog
                     // deterministic and need not rerun. Same MinScore/MaxIterations/FullWorkflow
                     // pattern as video-derush-edit/video-derush-edit-graphics above.
                     LoopTargetStepOrder: 2,
-                    MaxIterations: 2,
-                    MinScore: 7,
+                    MaxIterations: 3,
+                    MinScore: 8,
                     AgentInputContextMode: AgentInputContextMode.FullWorkflow)
             ])
     ];
