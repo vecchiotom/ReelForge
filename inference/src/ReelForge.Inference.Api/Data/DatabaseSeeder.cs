@@ -4,6 +4,7 @@ using System.Text.Json.Serialization.Metadata;
 using Microsoft.EntityFrameworkCore;
 using ReelForge.Shared.Agents;
 using ReelForge.Shared.Data.Models;
+using ReelForge.Shared.Skills;
 
 namespace ReelForge.Inference.Api.Data;
 

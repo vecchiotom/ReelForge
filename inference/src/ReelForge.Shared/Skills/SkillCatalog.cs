@@ -2,21 +2,6 @@ using ReelForge.Shared.Data.Models;
 
 namespace ReelForge.Shared.Skills;
 
-/// <summary>Grouping for a <see cref="SkillDescriptor"/>. Only one value exists today.</summary>
-public enum SkillCategory
-{
-    Remotion,
-}
-
-/// <summary>Static metadata describing one assignable skill.</summary>
-public sealed record SkillDescriptor(
-    string Name,
-    string DisplayName,
-    string Description,
-    SkillCategory Category,
-    string RelativePath,
-    int Version = 1);
-
 /// <summary>
 /// Code-defined source of truth for WHICH skills exist and WHICH built-in agents get them by
 /// default. See <c>docs/video-editing.md</c> / the "Remotion Knowledge Base" replacement design

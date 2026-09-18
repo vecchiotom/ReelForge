@@ -5,7 +5,7 @@ public record SkillSummaryResponse(
     string DisplayName,
     string Description,
     string Category,
-    int Version,
+    string? Version,
     string[] DefaultForAgentTypes,
     int AssignedAgentCount);
 
@@ -14,7 +14,7 @@ public record SkillDetailResponse(
     string DisplayName,
     string Description,
     string Category,
-    int Version,
+    string? Version,
     string[] DefaultForAgentTypes,
     int AssignedAgentCount,
     string? Body);
