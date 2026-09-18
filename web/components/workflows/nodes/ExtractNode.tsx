@@ -1,9 +1,9 @@
 'use client';
 
-import { memo, useState } from 'react';
+import { memo } from 'react';
 import { Handle, Position } from '@xyflow/react';
-import { Card, Group, Text, ActionIcon, Badge, Stack, TextInput, Tooltip } from '@mantine/core';
-import { IconTrash, IconFilterCog } from '@tabler/icons-react';
+import { Card, Group, Text, ActionIcon, Badge, Stack, TextInput, Tooltip, Collapse } from '@mantine/core';
+import { IconTrash, IconFilterCog, IconChevronDown, IconChevronUp } from '@tabler/icons-react';
 import { motion } from 'framer-motion';
 import { ExtractStepConfig, createDefaultExtractStepConfig } from '../ExtractStepConfig';
 import type { StepData } from '../WorkflowStepList';
@@ -13,13 +13,17 @@ interface ExtractNodeData {
   stepNumber: number;
   allSteps: StepData[];
   currentStepIndex: number;
+  expanded: boolean;
+  pinned: boolean;
+  onExpandChange: (stepId: string | null) => void;
+  onTogglePin: (stepId: string) => void;
   onChange: (updates: Partial<StepData>) => void;
   onRemove: () => void;
 }
 
 export const ExtractNode = memo(({ data }: { data: ExtractNodeData }) => {
-  const { step, stepNumber, allSteps, currentStepIndex, onChange, onRemove } = data;
-  const [expanded, setExpanded] = useState(false);
+  const { step, stepNumber, allSteps, currentStepIndex, expanded, pinned, onExpandChange, onTogglePin, onChange, onRemove } = data;
+  const isOpen = expanded || pinned;
 
   const config = step.extractConfig ?? createDefaultExtractStepConfig();
 
@@ -39,11 +43,11 @@ export const ExtractNode = memo(({ data }: { data: ExtractNodeData }) => {
           style={{
             width: 360,
             border: '2px solid #a855f7',
-            background: 'linear-gradient(135deg, #ffffff 0%, #faf5ff 100%)',
+            background: 'linear-gradient(135deg, light-dark(#ffffff, var(--mantine-color-dark-7)) 0%, light-dark(#faf5ff, var(--mantine-color-dark-6)) 100%)',
             cursor: 'pointer',
           }}
-          onMouseEnter={() => setExpanded(true)}
-          onMouseLeave={() => setExpanded(false)}
+          onMouseEnter={() => onExpandChange(step.id)}
+          onMouseLeave={() => onExpandChange(null)}
         >
           <Stack gap="sm">
             {/* Header */}
@@ -80,18 +84,32 @@ export const ExtractNode = memo(({ data }: { data: ExtractNodeData }) => {
                   ≤{config.maxOutputChars.toLocaleString()} chars
                 </Badge>
               </Group>
-              <Tooltip label="Delete Step">
-                <ActionIcon
-                  color="red"
-                  variant="subtle"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onRemove();
-                  }}
-                >
-                  <IconTrash size={16} />
-                </ActionIcon>
-              </Tooltip>
+              <Group gap="xs">
+                <Tooltip label={pinned ? 'Collapse' : 'Expand'}>
+                  <ActionIcon
+                    color="gray"
+                    variant="subtle"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onTogglePin(step.id);
+                    }}
+                  >
+                    {pinned ? <IconChevronUp size={16} /> : <IconChevronDown size={16} />}
+                  </ActionIcon>
+                </Tooltip>
+                <Tooltip label="Delete Step">
+                  <ActionIcon
+                    color="red"
+                    variant="subtle"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRemove();
+                    }}
+                  >
+                    <IconTrash size={16} />
+                  </ActionIcon>
+                </Tooltip>
+              </Group>
             </Group>
 
             {/* Label */}
@@ -109,14 +127,14 @@ export const ExtractNode = memo(({ data }: { data: ExtractNodeData }) => {
             </Text>
 
             {/* Expanded: full config form */}
-            {expanded && (
+            <Collapse in={isOpen}>
               <ExtractStepConfig
                 config={config}
                 onChange={(next) => onChange({ extractConfig: next })}
                 allSteps={allSteps}
                 currentStepIndex={currentStepIndex}
               />
-            )}
+            </Collapse>
           </Stack>
         </Card>
       </motion.div>

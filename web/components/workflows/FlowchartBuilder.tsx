@@ -19,6 +19,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { Stack, ActionIcon, Tooltip } from '@mantine/core';
+import { useMediaQuery } from '@mantine/hooks';
 import { IconPlus, IconLayoutGrid } from '@tabler/icons-react';
 import { AgentNode } from './nodes/AgentNode';
 import { ConditionalNode } from './nodes/ConditionalNode';
@@ -33,6 +34,7 @@ import { createDefaultExtractStepConfig } from './ExtractStepConfig';
 import { createDefaultVideoAnalyzeStepConfig } from './VideoAnalyzeStepConfig';
 import { createDefaultVideoCompileStepConfig } from './VideoCompileStepConfig';
 import { useAgents } from '@/lib/hooks/use-agents';
+import { WorkflowStepList } from './WorkflowStepList';
 import type { StepData } from './WorkflowStepList';
 import type { StepType } from '@/lib/types/workflow';
 
@@ -72,6 +74,30 @@ export function FlowchartBuilder({ steps, onChange, projectId }: FlowchartBuilde
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const { data: agents, isLoading: agentsLoading } = useAgents();
 
+  // Hover-preview expansion (transient) and click-to-pin expansion (sticky) for node bodies.
+  // Lifted up here — rather than kept as local state inside each node — so a node's zIndex can be
+  // promoted above its siblings' from the single place that actually lays nodes out. Without this,
+  // an expanded card's body grows downward into the next node's band and loses the paint-order
+  // fight, since every node otherwise shares the same default stacking context.
+  const [expandedStepId, setExpandedStepId] = useState<string | null>(null);
+  const [pinnedStepIds, setPinnedStepIds] = useState<Set<string>>(new Set());
+
+  const handleExpandChange = useCallback((stepId: string | null) => {
+    setExpandedStepId(stepId);
+  }, []);
+
+  const handleTogglePin = useCallback((stepId: string) => {
+    setPinnedStepIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(stepId)) {
+        next.delete(stepId);
+      } else {
+        next.add(stepId);
+      }
+      return next;
+    });
+  }, []);
+
   // Convert steps to nodes and edges
   useMemo(() => {
     const newNodes: Node[] = [];
@@ -79,17 +105,26 @@ export function FlowchartBuilder({ steps, onChange, projectId }: FlowchartBuilde
 
     steps.forEach((step, index) => {
       const nodeType = STEP_TYPE_TO_NODE_TYPE[step.stepType] ?? 'agent';
+      const isExpanded = expandedStepId === step.id;
+      const isPinned = pinnedStepIds.has(step.id);
 
       newNodes.push({
         id: step.id,
         type: nodeType,
         position: { x: 250, y: index * 180 + 50 },
+        // React Flow v12 honors a node's own zIndex on its wrapper element — the only thing that
+        // can actually outrank a later-in-DOM sibling node's paint order once a card expands.
+        zIndex: isExpanded || isPinned ? 1000 : 0,
         data: {
           step,
           stepNumber: index + 1,
           allSteps: steps,
           currentStepIndex: index,
           projectId,
+          expanded: isExpanded,
+          pinned: isPinned,
+          onExpandChange: handleExpandChange,
+          onTogglePin: handleTogglePin,
           onChange: (updates: Partial<StepData>) => {
             const newSteps = [...steps];
             newSteps[index] = { ...newSteps[index], ...updates };
@@ -123,7 +158,7 @@ export function FlowchartBuilder({ steps, onChange, projectId }: FlowchartBuilde
 
     setNodes(newNodes);
     setEdges(newEdges);
-  }, [steps, onChange, setNodes, setEdges, projectId]);
+  }, [steps, onChange, setNodes, setEdges, projectId, expandedStepId, pinnedStepIds, handleExpandChange, handleTogglePin]);
 
   const onConnect = useCallback(
     (params: Connection) => setEdges((existingEdges) => addEdge(params, existingEdges)),
@@ -229,10 +264,22 @@ export function FlowchartBuilder({ steps, onChange, projectId }: FlowchartBuilde
   );
 }
 
-export function FlowchartBuilderWrapper(props: FlowchartBuilderProps) {
+export function FlowchartBuilderWrapper({ steps, onChange, projectId }: FlowchartBuilderProps) {
+  // Below Mantine's `sm` breakpoint (768px / 48em), drag-and-drop-a-canvas is a poor fit for a
+  // touch viewport — render a linear editable list instead. `useMediaQuery` (rather than
+  // visibleFrom/hiddenFrom CSS-only hiding) ensures only one of the two ever actually mounts:
+  // React Flow is a heavy canvas and we don't want it mounted-but-hidden on a phone burning render
+  // budget. Both branches share the same `steps`/`onChange` from the caller, so resizing/rotating
+  // across the breakpoint never loses in-progress edits.
+  const isDesktop = useMediaQuery('(min-width: 48em)');
+
+  if (!isDesktop) {
+    return <WorkflowStepList steps={steps} onChange={onChange} projectId={projectId} />;
+  }
+
   return (
     <ReactFlowProvider>
-      <FlowchartBuilder {...props} />
+      <FlowchartBuilder steps={steps} onChange={onChange} projectId={projectId} />
     </ReactFlowProvider>
   );
 }

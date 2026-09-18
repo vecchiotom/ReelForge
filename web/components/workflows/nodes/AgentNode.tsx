@@ -15,13 +15,17 @@ interface AgentNodeData {
   stepNumber: number;
   allSteps: StepData[];
   currentStepIndex: number;
+  expanded: boolean;
+  pinned: boolean;
+  onExpandChange: (stepId: string | null) => void;
+  onTogglePin: (stepId: string) => void;
   onChange: (updates: Partial<StepData>) => void;
   onRemove: () => void;
 }
 
 export const AgentNode = memo(({ data }: { data: AgentNodeData }) => {
-  const { step, stepNumber, allSteps, currentStepIndex, onChange, onRemove } = data;
-  const [expanded, setExpanded] = useState(false);
+  const { step, stepNumber, allSteps, currentStepIndex, expanded, pinned, onExpandChange, onTogglePin, onChange, onRemove } = data;
+  const isOpen = expanded || pinned;
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const { data: agents } = useAgents();
 
@@ -58,11 +62,11 @@ export const AgentNode = memo(({ data }: { data: AgentNodeData }) => {
           style={{
             width: 320,
             border: '2px solid #8b5cf6',
-            background: 'linear-gradient(135deg, #ffffff 0%, #f8f4ff 100%)',
+            background: 'linear-gradient(135deg, light-dark(#ffffff, var(--mantine-color-dark-7)) 0%, light-dark(#f8f4ff, var(--mantine-color-dark-6)) 100%)',
             cursor: 'pointer',
           }}
-          onMouseEnter={() => setExpanded(true)}
-          onMouseLeave={() => setExpanded(false)}
+          onMouseEnter={() => onExpandChange(step.id)}
+          onMouseLeave={() => onExpandChange(null)}
         >
           <Stack gap="sm">
             {/* Header */}
@@ -93,18 +97,32 @@ export const AgentNode = memo(({ data }: { data: AgentNodeData }) => {
                   AGENT
                 </Badge>
               </Group>
-              <Tooltip label="Delete Step">
-                <ActionIcon
-                  color="red"
-                  variant="subtle"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onRemove();
-                  }}
-                >
-                  <IconTrash size={16} />
-                </ActionIcon>
-              </Tooltip>
+              <Group gap="xs">
+                <Tooltip label={pinned ? 'Collapse' : 'Expand'}>
+                  <ActionIcon
+                    color="gray"
+                    variant="subtle"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onTogglePin(step.id);
+                    }}
+                  >
+                    {pinned ? <IconChevronUp size={16} /> : <IconChevronDown size={16} />}
+                  </ActionIcon>
+                </Tooltip>
+                <Tooltip label="Delete Step">
+                  <ActionIcon
+                    color="red"
+                    variant="subtle"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRemove();
+                    }}
+                  >
+                    <IconTrash size={16} />
+                  </ActionIcon>
+                </Tooltip>
+              </Group>
             </Group>
 
             {/* Label */}
@@ -126,12 +144,7 @@ export const AgentNode = memo(({ data }: { data: AgentNodeData }) => {
             />
 
             {/* Expanded Content */}
-            <motion.div
-              initial={false}
-              animate={{ height: expanded ? 'auto' : 0, opacity: expanded ? 1 : 0 }}
-              transition={{ duration: 0.2 }}
-              style={{ overflow: 'hidden' }}
-            >
+            <Collapse in={isOpen}>
               <Stack gap="xs">
                 <AgentPicker
                   value={step.agentDefinitionId}
@@ -226,7 +239,7 @@ export const AgentNode = memo(({ data }: { data: AgentNodeData }) => {
                   )}
                 </Collapse>
               </Stack>
-            </motion.div>
+            </Collapse>
           </Stack>
         </Card>
       </motion.div>
