@@ -32,9 +32,9 @@ export function Hero() {
       <Container>
         <div className="pt-16 pb-6 lg:pt-24">
           <h1 className="text-balance font-display text-[clamp(2.25rem,6.2vw,5.25rem)] font-bold uppercase leading-[0.95] tracking-[-0.02em] text-ink">
-            AI agents that turn your codebase into promotional videos
+            An AI video team for the product you already built
           </h1>
-          <Eyebrow className="mt-6">Agentic video production &middot; self-hostable</Eyebrow>
+          <Eyebrow className="mt-6">AI video production &middot; for teams that ship</Eyebrow>
         </div>
 
         <div className="border-t border-line" aria-hidden="true" />
@@ -42,15 +42,16 @@ export function Hero() {
         <div className="grid gap-10 py-12 lg:grid-cols-12">
           <div className="lg:col-span-4 lg:col-start-1">
             <p className="font-mono text-sm leading-relaxed text-ink-muted">
-              Agents analyze your project, script and direct a promo video, and Remotion renders
-              it, with a review loop that scores and refines every draft.
+              ReelForge learns what your product does, writes the script, cuts the footage, and
+              delivers a finished promo video. Every draft is scored and reworked until it is
+              good enough to publish.
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
               <Button href="/contact" variant="accent" size="lg" skew>
-                Get in touch
+                Book a demo
               </Button>
-              <Button href="/app/login" variant="outline">
-                Sign in
+              <Button href="/features" variant="outline">
+                See what it does
               </Button>
             </div>
           </div>
@@ -61,7 +62,7 @@ export function Hero() {
 
           <div className="lg:col-span-3 lg:col-start-10">
             <Panel tone="ink" brackets className="aspect-square">
-              <Eyebrow className="p-3 text-white/70">Render preview</Eyebrow>
+              <Eyebrow className="p-3 text-white/70">Live render</Eyebrow>
               <div className="h-[calc(100%-2.5rem)] w-full">
                 <ViewfinderMount />
               </div>

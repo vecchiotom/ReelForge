@@ -4,12 +4,20 @@ import { useRef, useState, useEffect } from 'react';
 import { Eyebrow } from '@/components/ui/Eyebrow';
 import { useReducedMotion } from '@/lib/use-reduced-motion';
 
-// Genuine, documented parts of the ReelForge stack (see CLAUDE.md) — text
-// wordmarks, never logo images, since ReelForge has no real partners or
-// customers to showcase and no third-party trademark assets are used.
-const TECHNOLOGIES = ['Remotion', 'ffmpeg', 'PostgreSQL', 'Docker', 'Next.js', 'Azure OpenAI'];
+// The video jobs ReelForge is actually built to produce. Deliberately plain
+// text, never customer logos or partner marks — ReelForge has no real
+// customers to showcase, and inventing a logo wall would be a false claim.
+const USE_CASES = [
+  'Product launches',
+  'Feature demos',
+  'Sales outreach',
+  'Paid social ads',
+  'Customer onboarding',
+  'Release highlights',
+  'Investor updates',
+];
 
-export function TechStrip() {
+export function UseCaseStrip() {
   const reduced = useReducedMotion();
   const stripRef = useRef<HTMLDivElement>(null);
   const [atStart, setAtStart] = useState(true);
@@ -33,11 +41,11 @@ export function TechStrip() {
   return (
     <div className="border-y border-line py-8">
       <div className="flex items-center justify-between">
-        <Eyebrow>Runs on</Eyebrow>
+        <Eyebrow>Made for</Eyebrow>
         <div className="flex items-center gap-2">
           <button
             type="button"
-            aria-label="Scroll technologies left"
+            aria-label="Scroll use cases left"
             disabled={atStart}
             onClick={() => scrollBy(-240)}
             className="flex h-11 w-11 items-center justify-center border border-line text-ink-muted transition-colors hover:text-ink disabled:cursor-not-allowed disabled:opacity-30"
@@ -48,7 +56,7 @@ export function TechStrip() {
           </button>
           <button
             type="button"
-            aria-label="Scroll technologies right"
+            aria-label="Scroll use cases right"
             disabled={atEnd}
             onClick={() => scrollBy(240)}
             className="flex h-11 w-11 items-center justify-center border border-line text-ink-muted transition-colors hover:text-ink disabled:cursor-not-allowed disabled:opacity-30"
@@ -65,14 +73,14 @@ export function TechStrip() {
         onScroll={updateEdges}
         className="mt-6 flex snap-x overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
-        {TECHNOLOGIES.map((tech, i) => (
+        {USE_CASES.map((useCase, i) => (
           <div
-            key={tech}
+            key={useCase}
             className={`flex shrink-0 snap-start items-center border-l border-line px-8 py-4 ${
-              i === TECHNOLOGIES.length - 1 ? 'border-r' : ''
+              i === USE_CASES.length - 1 ? 'border-r' : ''
             }`}
           >
-            <span className="whitespace-nowrap font-display text-lg font-bold uppercase text-ink-2">{tech}</span>
+            <span className="whitespace-nowrap font-display text-lg font-bold uppercase text-ink-2">{useCase}</span>
           </div>
         ))}
       </div>

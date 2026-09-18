@@ -209,10 +209,12 @@ are built from three.js core geometries/materials only, and all scroll-driven mo
 
 ## No invented facts, applied to visuals
 
-- The reference design's "partner logos" strip became `site/components/home/TechStrip.tsx`, an
-  honest "Runs on" strip of real stack technologies (Remotion, ffmpeg, PostgreSQL, Docker, Next.js,
-  Azure OpenAI) rendered as plain text wordmarks — never as logos, and never captioned as
-  "partners" or "customers".
+- The reference design's "partner logos" strip became `site/components/home/UseCaseStrip.tsx`, a
+  "Made for" strip of the video jobs ReelForge produces ("Product launches", "Feature demos",
+  "Sales outreach", …) rendered as plain text — never as logos, and never captioned as "partners"
+  or "customers". It previously listed stack technologies under a "Runs on" heading; that was
+  accurate but spoke to engineers rather than buyers, so the slot now carries use cases (which
+  also earn their keep as keyword coverage). The no-invented-logos rule is unchanged.
 - The reference design's social-icon rail became `site/components/home/SectionIndexRail.tsx`, real
   in-page section-anchor links (`#how-it-works`, `#whats-inside`, `#get-started`) — no fabricated
   social-media URLs were added anywhere on the site.

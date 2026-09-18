@@ -7,7 +7,7 @@ import { RESPONSE_TIME_SLA } from '@/lib/legal-placeholders';
 
 export const metadata = buildMetadata({
   title: 'Thanks',
-  description: 'Your message has been received. Our team will follow up with you soon about your ReelForge project.',
+  description: 'Your message has been received. We will follow up shortly about the video you want to make.',
   path: '/contact/thank-you',
   noIndex: true,
 });
@@ -31,7 +31,7 @@ export default function ContactThankYouPage() {
               Back to home
             </Button>
             <Button href="/features" variant="outline" size="lg">
-              Explore features
+              See what it does
             </Button>
           </div>
         </div>

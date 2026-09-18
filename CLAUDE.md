@@ -41,7 +41,7 @@ All services are containerized and accessed through an nginx reverse proxy on a 
 
 Nginx is the single entry point (port 80). It routes requests to the appropriate backend and translates httpOnly cookies into Authorization headers. The Go API is the authority for user management and JWT issuance. The Inference API handles CRUD and publishes execution requests to RabbitMQ. The Workflow Engine consumes execution requests and runs AI agents.
 
-See [`docs/marketing-site.md`](docs/marketing-site.md) for the public marketing site's routing split (`/` → `site`, `/app/*` → `web`) and its launch checklist. `/site` also ships a WebGL/three.js hero (homepage-only, lazy-loaded behind `next/dynamic`) and a Chakra Petch/JetBrains Mono type system — see [`docs/site-design-system.md`](docs/site-design-system.md).
+See [`docs/marketing-site.md`](docs/marketing-site.md) for the public marketing site's routing split (`/` → `site`, `/app/*` → `web`), its launch checklist, its structured-data map, and the rule that its copy is written for buyers — implementation names (ffmpeg, Remotion, Docker, PostgreSQL, the workflow engine) deliberately do not appear on `/`, `/features` or `/about`; the one exception is the open-source attribution clause in the terms page. `/site` also ships a WebGL/three.js hero (homepage-only, lazy-loaded behind `next/dynamic`) and a Chakra Petch/JetBrains Mono type system — see [`docs/site-design-system.md`](docs/site-design-system.md).
 
 ### Go API
 
@@ -715,7 +715,7 @@ All configuration is driven by `.env` at the repo root (copy `.env.example` to `
 | `VIDEO_FONT_FILE` | `/usr/share/fonts/dejavu/DejaVuSans.ttf` | Font file passed to drawtext's `fontfile=` for Phase 3 motion-graphics overlays (`VideoEditing:FontFilePath`) — must exist in the `workflow-engine` image; the default matches the `font-dejavu` Alpine package the Dockerfile installs alongside ffmpeg |
 | `SITE_BUILD_TARGET` | `development` | Dockerfile build target for the `site` service (`development` for Turbopack hot reload, `production` for the precompiled standalone build) |
 | `SITE_NODE_ENV` | `development` | `NODE_ENV` for the `site` container; set to `production` alongside `SITE_BUILD_TARGET=production` |
-| `NEXT_PUBLIC_SITE_URL` | `https://reelforge.com` | Canonical absolute origin for the marketing site — the single value `site/lib/site-config.ts` reads for canonical URLs, `sitemap.xml`, `robots.txt`, Open Graph/Twitter cards, and JSON-LD. Baked in at build time via a Docker build arg, so the `site` image must be rebuilt after changing it. See [`docs/marketing-site.md`](docs/marketing-site.md) |
+| `NEXT_PUBLIC_SITE_URL` | `https://reelforge.com` | Canonical absolute origin for the marketing site — the single value `site/lib/site-config.ts` reads for canonical URLs, `sitemap.xml`, `robots.txt`, `llms.txt`, Open Graph/Twitter cards, and JSON-LD. Baked in at build time via a Docker build arg, so the `site` image must be rebuilt after changing it. See [`docs/marketing-site.md`](docs/marketing-site.md) |
 | `NEXT_PUBLIC_GA_MEASUREMENT_ID` | — | GA4 measurement ID (`G-XXXXXXXXXX`) for the marketing site. Leave empty to ship without analytics — no script is injected either way unless a visitor also accepts the cookie banner |
 | `CONTACT_WEBHOOK_URL` | — | Where the marketing site's `/api/contact` route POSTs submissions as JSON. Leave empty and submissions are only logged to the `site` container's stdout |
 
