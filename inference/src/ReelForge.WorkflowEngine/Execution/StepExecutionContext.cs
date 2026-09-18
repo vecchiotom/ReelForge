@@ -1,6 +1,7 @@
 using System.Text.Json;
 using ReelForge.Shared.Data.Models;
 using ReelForge.WorkflowEngine.Agents;
+using ReelForge.WorkflowEngine.Execution.Context;
 
 namespace ReelForge.WorkflowEngine.Execution;
 
@@ -47,6 +48,27 @@ public class StepExecutionContext
     /// Last concrete agent input built during this context lifetime.
     /// </summary>
     public string? LastResolvedAgentInput { get; private set; }
+
+    /// <summary>
+    /// Deterministic prompt-context budget applied to <c>FullWorkflow</c>/<c>SelectedPriorSteps</c>
+    /// concatenation — see <see cref="AgentInputBudget"/>'s doc comment for the full safety
+    /// contract (prompt-only; never touches <see cref="StepOutputHistory"/>, the persisted
+    /// <c>WorkflowStepResult.OutputJson</c>, or any deterministic by-<c>StepOrder</c> consumer).
+    /// Null (the default for every existing 3/4-arg construction site, including every test that
+    /// builds this type directly) means budgeting is off — <see cref="BuildFullWorkflowInput"/>
+    /// and <see cref="BuildSelectedPriorStepsInput"/> then produce EXACTLY what they did before
+    /// this feature existed, byte-for-byte.
+    /// </summary>
+    public AgentInputBudgetOptions? BudgetOptions { get; init; }
+
+    /// <summary>
+    /// A short, human-readable line describing the last time <see cref="ApplyBudget"/> actually
+    /// changed something (e.g. <c>"context budget: 412000→158900 chars (3 steps digested, 1
+    /// dropped)"</c>), for <c>WorkflowExecutorService</c> to log. Reset to null at the start of
+    /// every <see cref="ApplyBudget"/> call and only set when digesting or dropping actually
+    /// happened — a budgeted call that already fit leaves this null, same as an unbudgeted one.
+    /// </summary>
+    public string? LastBudgetSummary { get; private set; }
 
     /// <summary>
     /// Free-text user request provided at execution time.
@@ -266,7 +288,7 @@ public class StepExecutionContext
             .Select(ForPrompt)
             .ToList();
 
-        return BuildConcatenated(history);
+        return ApplyBudget(history);
     }
 
     private string BuildPreviousStepInput()
@@ -299,7 +321,7 @@ public class StepExecutionContext
             .Select(ForPrompt)
             .ToList();
 
-        return BuildConcatenated(selected);
+        return ApplyBudget(selected);
     }
 
     private string BuildCustomMappedSubsetInput()
@@ -337,16 +359,44 @@ public class StepExecutionContext
         }
     }
 
-    private static string BuildConcatenated(IEnumerable<StepOutputHistoryEntry> history)
+    /// <summary>
+    /// Sole entry point for turning a list of already-filtered/ordered history entries into the
+    /// prompt string used by <see cref="BuildFullWorkflowInput"/>/<see cref="BuildSelectedPriorStepsInput"/>.
+    /// Routes through <see cref="AgentInputBudget.Apply"/> unconditionally — with
+    /// <see cref="BudgetOptions"/> null, that call is given a disabled-budget options instance, so
+    /// it takes the exact same "return today's format unchanged" fast path <c>Apply</c> takes when
+    /// enabled but already under budget. That keeps the concatenation FORMAT defined in exactly
+    /// one place (<c>AgentInputBudget.BuildFormatted</c>) instead of drifting into two copies.
+    /// </summary>
+    private string ApplyBudget(IReadOnlyList<StepOutputHistoryEntry> history)
     {
-        List<StepOutputHistoryEntry> parts = history.Where(h => !string.IsNullOrEmpty(h.Output)).ToList();
-        if (parts.Count == 0)
-            return "[\"Begin analysis of the project.\"]";
-        if (parts.Count == 1)
-            return parts[0].Output;
+        LastBudgetSummary = null;
 
-        return string.Join("\n\n---\n\n", parts.Select(p => $"## Step {p.StepOrder}: {p.StepLabel}\n{p.Output}"));
+        if (history.Count == 0)
+            return "[\"Begin analysis of the project.\"]";
+
+        List<(int StepOrder, string StepLabel, string Output)> parts =
+            history.Select(h => (h.StepOrder, h.StepLabel, h.Output)).ToList();
+
+        AgentInputBudgetOptions effectiveOptions = BudgetOptions ?? DisabledBudgetOptions;
+        BudgetedConcatenation result = AgentInputBudget.Apply(parts, effectiveOptions);
+
+        if (BudgetOptions is not null && (result.DigestedStepCount > 0 || result.DroppedStepCount > 0))
+        {
+            LastBudgetSummary =
+                $"context budget: {result.OriginalChars}→{result.FinalChars} chars " +
+                $"({result.DigestedStepCount} steps digested, {result.DroppedStepCount} dropped)";
+        }
+
+        return result.Text;
     }
+
+    /// <summary>
+    /// Reused across every unbudgeted call so <see cref="ApplyBudget"/> always goes through
+    /// <see cref="AgentInputBudget.Apply"/>'s <c>!Enabled</c> path rather than duplicating its
+    /// format logic here.
+    /// </summary>
+    private static readonly AgentInputBudgetOptions DisabledBudgetOptions = new() { Enabled = false };
 
     private string BuildRetryGuidance()
     {

@@ -69,6 +69,13 @@ public class WorkflowStep
     /// </summary>
     public string? ColorGradeRoomConfigJson { get; set; }
 
+    /// <summary>
+    /// Per-step override for cross-execution step-result caching (see
+    /// ReelForge.WorkflowEngine.Execution.Caching.IStepCachePolicy). Null means
+    /// <see cref="StepCacheMode.Default"/> — the built-in StepType/AgentType-driven decision.
+    /// </summary>
+    public StepCacheMode? CacheMode { get; set; }
+
     public WorkflowDefinition WorkflowDefinition { get; set; } = null!;
     public AgentDefinition AgentDefinition { get; set; } = null!;
     public ICollection<WorkflowStepResult> Results { get; set; } = new List<WorkflowStepResult>();

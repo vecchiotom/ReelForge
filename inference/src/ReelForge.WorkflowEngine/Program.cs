@@ -20,6 +20,8 @@ using ReelForge.WorkflowEngine.Agents.Translation;
 using ReelForge.WorkflowEngine.Consumers;
 using ReelForge.WorkflowEngine.Data;
 using ReelForge.WorkflowEngine.Execution;
+using ReelForge.WorkflowEngine.Execution.Caching;
+using ReelForge.WorkflowEngine.Execution.Context;
 using ReelForge.WorkflowEngine.Execution.StepExecutors;
 using ReelForge.WorkflowEngine.Observability;
 using ReelForge.WorkflowEngine.Services.Inference;
@@ -140,6 +142,26 @@ builder.Services.AddSingleton<ISkillAgentToolsFactory, SkillAgentToolsFactory>()
 builder.Services.AddSingleton<IWorkflowExecutionContextAccessor, WorkflowExecutionContextAccessor>();
 builder.Services.AddHttpClient();
 builder.Services.Configure<WorkflowHardeningOptions>(builder.Configuration.GetSection(WorkflowHardeningOptions.SectionName));
+
+// Deterministic, prompt-only bound on how much prior-step output is concatenated into an agent's
+// input (see docs/workflow-execution-optimization.md). Purely additive: StepExecutionContext
+// treats a null BudgetOptions as "budgeting off" and reproduces the previous concatenation
+// byte-for-byte, so this binding is the only thing that turns the feature on.
+builder.Services.Configure<AgentInputBudgetOptions>(builder.Configuration.GetSection(AgentInputBudgetOptions.SectionName));
+
+// --- Cross-execution step-result cache ---
+// Lets a repeated execution reuse a prior successful step's output instead of re-calling the agent
+// or re-running ffmpeg; see docs/workflow-execution-optimization.md for the key composition and
+// for why side-effecting agents (ProjectWrite/SandboxAuthoring/SandboxRender) are never cached.
+// WorkflowExecutorService resolves all of this optionally, so leaving these registrations out
+// makes the cache a complete no-op rather than a broken feature.
+builder.Services.Configure<StepCacheOptions>(builder.Configuration.GetSection(StepCacheOptions.SectionName));
+// Pure and stateless — safe as singletons, and WorkflowExecutorService takes them directly.
+builder.Services.AddSingleton<IStepCachePolicy, StepCachePolicy>();
+builder.Services.AddSingleton<IStepCacheKeyBuilder, StepCacheKeyBuilder>();
+// Both depend on the Scoped WorkflowEngineDbContext, so they must be Scoped too.
+builder.Services.AddScoped<IProjectFileFingerprintProvider, ProjectFileFingerprintProvider>();
+builder.Services.AddScoped<IStepResultCache, StepResultCache>();
 
 // --- Step Executors ---
 // Consumed by AgentStepExecutor (AgentType.MotionGraphicsPlanner steps) and by

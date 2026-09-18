@@ -563,6 +563,10 @@ namespace ReelForge.WorkflowEngine.Migrations
                         .HasColumnType("text")
                         .HasColumnName("agent_input_context_mode");
 
+                    b.Property<string>("CacheMode")
+                        .HasColumnType("text")
+                        .HasColumnName("cache_mode");
+
                     b.Property<string>("ColorGradeRoomConfigJson")
                         .HasColumnType("jsonb")
                         .HasColumnName("color_grade_room_config_json");
@@ -660,6 +664,97 @@ namespace ReelForge.WorkflowEngine.Migrations
                     b.ToTable("workflow_steps");
                 });
 
+            modelBuilder.Entity("ReelForge.Shared.Data.Models.WorkflowStepCacheEntry", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AgentType")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("agent_type");
+
+                    b.Property<string>("ArtifactStorageKey")
+                        .HasColumnType("text")
+                        .HasColumnName("artifact_storage_key");
+
+                    b.Property<string>("CacheKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("cache_key");
+
+                    b.Property<string>("ChatTranscriptJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("chat_transcript_json");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<long>("DurationMs")
+                        .HasColumnType("bigint")
+                        .HasColumnName("duration_ms");
+
+                    b.Property<DateTime?>("ExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_at");
+
+                    b.Property<int>("HitCount")
+                        .HasColumnType("integer")
+                        .HasColumnName("hit_count");
+
+                    b.Property<int?>("InputTokens")
+                        .HasColumnType("integer")
+                        .HasColumnName("input_tokens");
+
+                    b.Property<DateTime?>("LastHitAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_hit_at");
+
+                    b.Property<string>("Output")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("output");
+
+                    b.Property<string>("OutputStorageKey")
+                        .HasColumnType("text")
+                        .HasColumnName("output_storage_key");
+
+                    b.Property<int?>("OutputTokens")
+                        .HasColumnType("integer")
+                        .HasColumnName("output_tokens");
+
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("project_id");
+
+                    b.Property<string>("StepType")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("step_type");
+
+                    b.Property<int>("TokensUsed")
+                        .HasColumnType("integer")
+                        .HasColumnName("tokens_used");
+
+                    b.Property<Guid>("WorkflowDefinitionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("workflow_definition_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_workflow_step_cache_entries");
+
+                    b.HasIndex("ProjectId", "CacheKey")
+                        .IsUnique();
+
+                    b.HasIndex("ProjectId", "ExpiresAt");
+
+                    b.ToTable("workflow_step_cache_entries");
+                });
+
             modelBuilder.Entity("ReelForge.Shared.Data.Models.WorkflowStepResult", b =>
                 {
                     b.Property<Guid>("Id")
@@ -670,6 +765,10 @@ namespace ReelForge.WorkflowEngine.Migrations
                     b.Property<string>("ArtifactStorageKey")
                         .HasColumnType("text")
                         .HasColumnName("artifact_storage_key");
+
+                    b.Property<int?>("CachedTokensSaved")
+                        .HasColumnType("integer")
+                        .HasColumnName("cached_tokens_saved");
 
                     b.Property<string>("ChatTranscriptJson")
                         .HasColumnType("jsonb")
@@ -690,6 +789,10 @@ namespace ReelForge.WorkflowEngine.Migrations
                     b.Property<DateTime>("ExecutedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("executed_at");
+
+                    b.Property<bool>("FromCache")
+                        .HasColumnType("boolean")
+                        .HasColumnName("from_cache");
 
                     b.Property<string>("InputJson")
                         .HasColumnType("text")

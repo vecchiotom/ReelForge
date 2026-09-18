@@ -19,6 +19,7 @@ public class WorkflowEngineDbContext : DbContext
     public DbSet<WorkflowExecution> WorkflowExecutions => Set<WorkflowExecution>();
     public DbSet<WorkflowStepResult> WorkflowStepResults => Set<WorkflowStepResult>();
     public DbSet<ReviewScore> ReviewScores => Set<ReviewScore>();
+    public DbSet<WorkflowStepCacheEntry> WorkflowStepCacheEntries => Set<WorkflowStepCacheEntry>();
 
     // Referenced tables (for navigation properties, not migrations)
     public DbSet<ApplicationUser> ApplicationUsers => Set<ApplicationUser>();
@@ -165,6 +166,8 @@ public class WorkflowEngineDbContext : DbContext
                 .HasConversion<string>();
             entity.Property(e => e.AgentInputContextMode)
                 .HasConversion<string>();
+            entity.Property(e => e.CacheMode)
+                .HasConversion<string>();
         });
 
         modelBuilder.Entity<WorkflowExecution>(entity =>
@@ -225,6 +228,26 @@ public class WorkflowEngineDbContext : DbContext
                 .WithMany(e => e.ReviewScores)
                 .HasForeignKey(e => e.WorkflowExecutionId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // WorkflowStepCacheEntry: deliberately NO HasOne/foreign key to Project or
+        // WorkflowDefinition — see WorkflowStepCacheEntry's own doc comment for why (cache rows
+        // must survive workflow-definition edits and are pruned by TTL policy, not by cascade).
+        modelBuilder.Entity<WorkflowStepCacheEntry>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.ProjectId, e.CacheKey }).IsUnique();
+            entity.HasIndex(e => new { e.ProjectId, e.ExpiresAt });
+            entity.Property(e => e.CacheKey)
+                .HasMaxLength(64);
+            entity.Property(e => e.StepType)
+                .HasConversion<string>();
+            entity.Property(e => e.AgentType)
+                .HasConversion<string>();
+            entity.Property(e => e.Output)
+                .HasColumnType("text");
+            entity.Property(e => e.ChatTranscriptJson)
+                .HasColumnType("jsonb");
         });
     }
 }

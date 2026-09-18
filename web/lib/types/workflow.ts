@@ -138,6 +138,10 @@ export interface WorkflowStepResult {
   reasoningJson?: string | null;
   /** EditRoom steps only, else null: JSON array of ALL discussion turns in order, full untruncated text. Per-turn shape matches `WorkflowStepChatTurn` (camelCase), except `text` here is never truncated. Populated once the step completes — see `hydrateHistoricalStepEvents`. */
   chatTranscriptJson?: string | null;
+  /** True when this step was served from the cross-execution step-result cache instead of actually running. `tokensUsed`/`durationMs` are then 0, because this execution genuinely spent nothing — see `cachedTokensSaved` for what the original run cost. */
+  fromCache?: boolean;
+  /** Only meaningful when `fromCache` is true: the token count the ORIGINAL execution of this step spent, i.e. what reusing it saved. */
+  cachedTokensSaved?: number | null;
 }
 
 /**

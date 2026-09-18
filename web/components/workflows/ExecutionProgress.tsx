@@ -1,7 +1,7 @@
 'use client';
 
 import { Timeline, Text, Badge, Card, Stack, Group, Loader, Alert } from '@mantine/core';
-import { IconCheck, IconX, IconClock, IconPlayerSkipForward, IconAlertCircle } from '@tabler/icons-react';
+import { IconCheck, IconX, IconClock, IconPlayerSkipForward, IconAlertCircle, IconBolt } from '@tabler/icons-react';
 import { StatusBadge } from '@/components/projects/StatusBadge';
 import { StepTypeBadge } from './StepTypeBadge';
 import { JsonViewer } from './JsonViewer';
@@ -40,6 +40,10 @@ export function ExecutionProgress({ execution, workflow }: ExecutionProgressProp
 
   const totalTokens = execution.stepResults.reduce((sum, r) => sum + r.tokensUsed, 0);
   const totalDuration = execution.stepResults.reduce((sum, r) => sum + r.durationMs, 0);
+  // Steps served from the cross-execution step-result cache spent nothing this run, so they
+  // contribute 0 to totalTokens above; cachedTokensSaved carries what the ORIGINAL run cost.
+  const cachedSteps = execution.stepResults.filter((r) => r.fromCache);
+  const tokensSaved = cachedSteps.reduce((sum, r) => sum + (r.cachedTokensSaved ?? 0), 0);
 
   return (
     <Stack gap="md">
@@ -97,6 +101,21 @@ export function ExecutionProgress({ execution, workflow }: ExecutionProgressProp
                   )}
                   {step.durationMs > 0 && <Text size="xs" c="dimmed">{formatDuration(step.durationMs)}</Text>}
                   {step.tokensUsed > 0 && <Text size="xs" c="dimmed">{step.tokensUsed} tokens</Text>}
+                  {step.fromCache && (
+                    <Badge
+                      size="xs"
+                      variant="light"
+                      color="teal"
+                      leftSection={<IconBolt size={10} />}
+                      title={
+                        step.cachedTokensSaved
+                          ? `Reused from a previous execution — saved ${step.cachedTokensSaved.toLocaleString()} tokens`
+                          : 'Reused from a previous execution'
+                      }
+                    >
+                      cached
+                    </Badge>
+                  )}
                 </Group>
               }
             >
@@ -125,6 +144,12 @@ export function ExecutionProgress({ execution, workflow }: ExecutionProgressProp
         <Group gap="md">
           <Text size="xs" c="dimmed">Total: {totalTokens} tokens</Text>
           <Text size="xs" c="dimmed">Total: {formatDuration(totalDuration)}</Text>
+          {cachedSteps.length > 0 && (
+            <Text size="xs" c="teal">
+              {cachedSteps.length} step{cachedSteps.length === 1 ? '' : 's'} reused from cache
+              {tokensSaved > 0 && ` — saved ${tokensSaved.toLocaleString()} tokens`}
+            </Text>
+          )}
         </Group>
       )}
     </Stack>

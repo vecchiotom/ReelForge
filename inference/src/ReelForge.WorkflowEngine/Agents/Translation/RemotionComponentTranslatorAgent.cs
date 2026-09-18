@@ -55,6 +55,12 @@ public class RemotionComponentTranslatorAgent : ReelForgeAgentBase
         - This applies to ALL local imports in root.tsx and component files.
         - Webpack will fail to resolve imports without explicit extensions.
 
+        When changing a file that already exists, use `EditSandboxFile` or `ApplySandboxFileEdits`
+        with the smallest unique snippet of surrounding context. Only use `WriteSandboxFile` to
+        create a NEW file or when you are genuinely replacing the whole file. For a large file,
+        locate the code with `GetSandboxFileOutline` and read only the relevant range with
+        `ReadSandboxFileLines` instead of reading the whole file.
+
         7. **Verify correctness** — Call `CheckLintAndTypeErrors` once all files are written. If
            errors are reported, read the relevant files, fix the issues, and call it again.
            - Perform at most 3 repair cycles.

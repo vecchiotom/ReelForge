@@ -163,7 +163,9 @@ public record StepResultResponse(
     string? ArtifactStorageKey = null,
     string? ToolCallsJson = null,
     string? ReasoningJson = null,
-    string? ChatTranscriptJson = null);
+    string? ChatTranscriptJson = null,
+    bool FromCache = false,
+    int? CachedTokensSaved = null);
 
 public record ReviewScoreResponse(
     Guid Id, int IterationNumber, int Score, string Comments, DateTime CreatedAt);
