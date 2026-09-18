@@ -66,6 +66,16 @@ export function StepResultPanel({
         <Paper withBorder p="sm" radius="md">
           <Text size="xs" c="dimmed">Tokens Used</Text>
           <Text fw={700}>{stepResult.tokensUsed.toLocaleString()}</Text>
+          {/* A cache-served step spent nothing this run, so the figure above is 0 and would
+              otherwise read as "this step was free" rather than "this step was reused". */}
+          {stepResult.fromCache && (
+            <Text size="xs" c="teal">
+              reused from cache
+              {stepResult.cachedTokensSaved
+                ? ` — saved ${stepResult.cachedTokensSaved.toLocaleString()}`
+                : ''}
+            </Text>
+          )}
         </Paper>
       </Group>
       <Group grow>
