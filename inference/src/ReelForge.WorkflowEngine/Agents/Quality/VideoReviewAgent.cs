@@ -15,10 +15,11 @@ namespace ReelForge.WorkflowEngine.Agents.Quality;
 /// enum member, mirroring <c>ReviewAgentImpl</c>/<see cref="AgentType.ReviewAgent"/>.
 ///
 /// Deliberately a separate agent from <c>ReviewAgentImpl</c> rather than an extension of it: this
-/// agent's evidence is entirely different (a deterministic transcript sentence-boundary check and
-/// overlay frame-coverage numbers already computed by <c>VideoCompileStepExecutor</c>, surfaced in
-/// its own step output JSON — see "sentenceCheck"/"graphics.appliedOverlays[].coveragePct") rather
-/// than lint/Remotion-doc-verified code quality, and its tool scope stays minimal/read-only (no
+/// agent's evidence is entirely different (deterministic transcript sentence-boundary, opening,
+/// seam-continuity, and pacing checks plus overlay frame-coverage numbers already computed by
+/// <c>VideoCompileStepExecutor</c>, surfaced in its own step output JSON — see
+/// "sentenceCheck"/"openingCheck"/"seamCheck"/"pacing"/"graphics.appliedOverlays[].coveragePct")
+/// rather than lint/Remotion-doc-verified code quality, and its tool scope stays minimal/read-only (no
 /// sandbox, no Remotion-skills lookup) since there is no code to inspect. Keeping the two prompts
 /// separate avoids bloating ReviewAgent's tool surface with video-specific concerns irrelevant to
 /// the main pipeline, and keeps this agent's own prompt focused on what it can actually evidence.
@@ -40,7 +41,8 @@ public class VideoReviewAgentImpl : ReelForgeAgentBase
         ## Deterministic evidence already computed for you — trust the verdicts, do not re-derive them
 
         The booleans and numbers below (`endsAtSentenceBoundary`, `nextSegmentContinues`,
-        `coveragePct`, `headroomDb`, the look ids) were computed in code and are reliable: take
+        `coveragePct`, `headroomDb`, the look ids, `startsMidSentence`, `lookJump`,
+        `shortSegmentPct`) were computed in code and are reliable: take
         them as given rather than trying to recompute or second-guess them. That is NOT a reason
         to avoid the text you were given. Whenever you propose a SPECIFIC fix that names or quotes
         transcript text, an overlay's words, or a particular segment or shot, re-read the actual
@@ -74,6 +76,26 @@ public class VideoReviewAgentImpl : ReelForgeAgentBase
             among others rather than capping the score at 4. If it reads as a complete thought,
             put at most a soft observation in `issues` (or nothing) and do not lower the score
             for it. Never quote `punctuationRatio` as if it were a flaw in the edit.
+        - `openingCheck` (on the VideoCompile step's output): the exact mirror image of
+          `sentenceCheck`, for the FIRST kept span instead of the last. When `applicable` is
+          true it reports whether the edit OPENS mid-sentence (`startsMidSentence`), the
+          actual text of that first segment (`firstSegmentText`), whether the immediately
+          PRECEDING transcript segment appears to run into it (`previousSegmentContinues`),
+          and whether the edit opens on a silence gap rather than on content
+          (`startsOnSilenceGap`). Read the reliability flags first, exactly as for
+          `sentenceCheck` — but note there are now TWO: `punctuationReliable` and
+          `capitalizationReliable`. `startsMidSentence` is only trustworthy when at least one
+          of them is true.
+          - Reliable signal and `startsMidSentence` true: the finished piece begins in the
+            middle of a thought — a first-impression defect at least as bad as cutting off the
+            ending. Score no higher than 4, say so explicitly in `issues`, and quote
+            `firstSegmentText` verbatim so the retry knows which line it opened on.
+          - Neither signal reliable: judge the opening yourself from `firstSegmentText` alone,
+            weigh it as one ordinary issue rather than a score cap, and never quote
+            `capitalizationRatio` or `punctuationRatio` as if either were a flaw in the edit.
+          - `startsOnSilenceGap` true is a defect on its own regardless of the transcript: the
+            piece opens on dead air. Mention it in `issues` and tell the story editor to start
+            its first Keep span on a content id instead.
         - `graphics.appliedOverlays` (present only when graphics were enabled), each with a
           `coveragePct` — the exact percentage of the frame's area that overlay's drawn box
           covers. A single overlay covering more than roughly 20% of the frame is oversized for
@@ -101,12 +123,40 @@ public class VideoReviewAgentImpl : ReelForgeAgentBase
         - `lookGroups` and each shot's `look` id (on the VideoAnalyze step's view, when present): shots
           sharing a `look` id were measured to have been shot under similar light with a similar grade.
           A cut BETWEEN two different look groups is a probable continuity defect — the viewer sees the
-          image change color or contrast at the cut even though both shots are fine on their own. Walk
-          the kept spans in order; if the edit repeatedly alternates between look groups where staying
-          within one was available, call it out in `issues` naming the specific look ids, and score no
-          higher than 6. A single deliberate transition between looks (e.g. moving from interior
-          coverage to exterior B-roll) is normal and not a defect. When `meta.look.uniform` is true
-          there is only one look in the whole analysis and this check does not apply at all.
+          image change color or contrast at the cut even though both shots are fine on their own. See
+          `seamCheck` below for the already-measured count of these cuts across the whole edit — do not
+          walk the kept spans yourself to find them.
+        - `seamCheck` (on the VideoCompile step's output): every cut between two kept spans, already
+          measured in code. `seamCount` is the total; `lookJumpCount` is how many of those cuts land
+          between two DIFFERENT measured look groups; `jumpCutCount` is how many cut within the SAME
+          shot (the frame visibly snaps); `midMotionCount` is how many cut from a moving frame straight
+          into another moving frame. The `seams` array lists the notable ones individually with their
+          `outLook`/`inLook` ids and `cutOutMotion`/`cutInMotion`. **Do not re-derive any of this by
+          walking the kept spans yourself — it is already computed, and your own reading of the span
+          list will be less accurate than the measurement.**
+          - When `lookJumpCount` exceeds roughly a third of `seamCount`, the edit repeatedly bounces
+            between visually mismatched material: score no higher than 6, name the specific
+            `outLook`/`inLook` id pairs from the `seams` array in `issues`, and tell the story editor to
+            prefer runs that stay inside one look group.
+          - A handful of `jumpCut` seams is normal in a derush edit (removing pauses inside one shot).
+            Many of them, with no transition applied, is why an edit reads as amateurish — mention it.
+          - When `meta.look.uniform` is true on the analyze step's view, `lookJumpCount` will be 0 and
+            this check simply does not apply.
+        - `pacing` (on the VideoCompile step's output): `segmentCount`, `meanSegmentSec`,
+          `medianSegmentSec`, and `shortSegmentPct` — the percentage of kept segments shorter than the
+          configured comfortable minimum. Above roughly 30% the edit is machine-gunning: a viewer gets
+          no time to settle into any shot before the next cut. Score no higher than 6, cite the actual
+          `shortSegmentPct`, and tell the story editor to use fewer, longer Keep spans that each hold a
+          complete thought rather than many one-segment spans.
+        - `transitions` (present only when seam transitions were enabled): `policy`, `appliedCount`, and
+          a `treatments` breakdown. Transition choice is made **deterministically by the compile step**
+          from measured shot data — no agent chooses it, and the story editor cannot request, add,
+          remove, lengthen or shorten one. Never write an issue telling any agent to "add a fade", "use
+          a dissolve here", or "soften that cut". If the seam evidence shows a real continuity problem,
+          the actionable remediation is always about WHICH SPANS were kept (choose material from the
+          same look group, do not cut mid-motion, keep longer runs), never about the transition. When
+          the `transitions` node is absent entirely, transitions are switched off for this workflow — do
+          not penalize the edit for having hard cuts.
 
         ## What else to judge
 
@@ -148,7 +198,7 @@ public class VideoReviewAgentImpl : ReelForgeAgentBase
         // effort since this also sits inside a ReviewLoop and it's judging against facts
         // VideoCompileStepExecutor already computed deterministically, not deriving them itself.
         : base(chatClients, configuration, "VideoReview",
-            "Scores a compiled video edit using deterministic sentence-boundary and overlay-coverage checks, and loops back with feedback on a low score.",
+            "Scores a compiled video edit using deterministic sentence-boundary, opening/seam-continuity, pacing, and overlay-coverage checks, and loops back with feedback on a low score.",
             AgentType.VideoReviewAgent, DefaultPrompt,
             toolProvider.GetTools(AgentType.VideoReviewAgent),
             agentId: null,

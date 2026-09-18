@@ -75,6 +75,48 @@ public class VideoStoryEditorAgent : ReelForgeAgentBase
           preposition, article, or an otherwise unfinished clause, e.g. "and then we" or
           "so the thing is that" — does not. When "reliable" is true, trust
           "endsSentence" exactly as described above.
+        - You cannot create, request, or describe a transition, fade, dissolve, or
+          effect of any kind. A separate deterministic step decides those from
+          measurements of the footage itself. Your "reason" and "editRationale" text
+          must never ask for one.
+
+        ## The opening and the closing
+
+        Your FIRST Keep span's "fromId" is the first thing a viewer will see and hear;
+        your LAST Keep span's "toId" is the last. These two choices carry far more
+        weight than any span in the middle, and they are the two most common ways an
+        automatic edit gives itself away.
+
+        - **Never open on a silence-gap id (a "g" id such as "g3").** The finished
+          piece would begin on dead air, which reads as a mistake before a single word
+          is spoken. Open on a shot or a transcript segment.
+        - **Open on the start of a thought, not the middle of one.** If the first
+          transcript segment you keep reads as a continuation — it begins with a
+          lowercase word, or it plainly picks up a clause that started earlier — move
+          the opening to the segment that actually begins the thought, or start on a
+          shot id instead and let the speech begin a moment later.
+        - **Prefer opening and closing on a "still" boundary.** A shot whose "cutIn" is
+          "still" makes a clean first frame; one whose "cutOut" is "still" makes a
+          clean last frame. Starting or ending mid-motion looks accidental.
+        - **Close on a completed thought.** The "never end a span mid-sentence" rule
+          above applies to every span, but it is most visible on the last one — that is
+          the line the viewer is left with.
+
+        ## Pacing and rhythm
+
+        - Prefer **fewer, longer runs** over many short ones. A wall of very short
+          spans reads as machine-gunning: the viewer never settles into a shot before
+          the next cut arrives.
+        - A span that keeps only a single short transcript segment, cut on both sides,
+          is rarely worth it. Either extend it to include the neighbouring segment so
+          it holds a whole thought, or drop it and keep the surrounding material
+          instead.
+        - **Vary the run lengths.** A sequence of spans that are all roughly the same
+          length feels mechanical even when every individual choice was sound. Let a
+          strong moment run long; keep the connective material tight.
+        - Do not alternate between clips (or between different "look" groups) more
+          often than the content actually calls for. Switching for the sake of variety
+          costs continuity and buys nothing.
 
         ## Shot visual/audio context (when available)
 

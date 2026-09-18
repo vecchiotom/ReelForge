@@ -22,6 +22,7 @@ workflow engine (step types, executors, agents in general) see `CLAUDE.md`.
 - [Transcription (ASR)](#transcription-asr)
 - [Motion graphics (Phase 3)](#motion-graphics-phase-3)
 - [Background music](#background-music)
+- [Seam transitions and the program envelope](#seam-transitions-and-the-program-envelope)
 - [Semantic visual dimensions (Phase 4)](#semantic-visual-dimensions-phase-4)
 - [Security: why ffmpeg is not in the sandbox](#security-why-ffmpeg-is-not-in-the-sandbox)
 - [Explicitly not built](#explicitly-not-built)
@@ -337,7 +338,26 @@ before chunking it — wasted compute at best, a very large in-memory string at 
 | `MinMusicLiftWindowMs` | `1200` | Non-speech windows shorter than this (and shorter than twice the ramp) are never lifted at all |
 | `MaxMusicLiftWindows` | `12` | Caps the volume-envelope expression's length; excess windows dropped, longest first, then re-sorted chronologically |
 | `MusicLiftMergeMs` | `400` | Lift windows closer together than this are merged into one |
+| `TransitionPolicy` | `Off`* | `VideoTransitionPolicy` — gates the deterministic seam-transition system; `Off` is byte-identical to the pre-transition compile path. The `video-derush-edit*` templates opt in with `"Auto"`. See [Seam transitions and the program envelope](#seam-transitions-and-the-program-envelope) |
+| `AudioSeamRampMs` | — | Duration of the audio-only declick ramp treatment at a cut seam |
+| `SoftCutMs` | — | Duration of a soft-cut (brief cross-blend, shorter than a full dissolve) treatment |
+| `DissolveMs` | — | Duration of a full crossfade-dissolve treatment |
+| `DipToBlackMs` | — | Duration of a dip-to-black treatment (fades to black, then to the next shot) |
+| `DipCutMs` | — | Duration of a dip-cut treatment (a very brief dip, shorter than a full dip-to-black) |
+| `MaxTransitionMs` | — | Hard cap on any single transition's duration, regardless of treatment |
+| `MaxTransitionRatioPct` | — | Caps a transition's duration as a percentage of the SHORTER of its two neighbouring segments, so a transition can never eat a meaningful fraction of either one |
+| `MaxTransitionSegments` | — | Above this many segments in the compile, transitions are skipped entirely (every seam falls back to a hard cut) — a filtergraph-buffering guardrail, not a quality knob; see [Seam transitions and the program envelope](#seam-transitions-and-the-program-envelope) |
+| `SectionBreakGapMs` | — | Minimum silence-gap duration at a seam for the rule table to treat it as a section break rather than an ordinary mid-sentence cut |
+| `ProgramFadeInMs` / `ProgramFadeOutMs` | — | Video fade-in/fade-out duration at the very start/end of the whole compiled program (distinct from any inter-cut transition) |
+| `ProgramAudioFadeInMs` / `ProgramAudioFadeOutMs` | — | Audio fade-in/fade-out duration at the very start/end of the whole compiled program, tracked independently of the video program fade |
 | `Expect` | `null` | Optional structural checks (`MinOutputSeconds`, `MaxOutputSeconds`, `MinRetainedRatio` default `0.15`, `MaxRetainedRatio`) |
+
+\* `TransitionPolicy` and the twelve fields above it (`AudioSeamRampMs` through
+`ProgramAudioFadeOutMs`) belong to a sibling in-flight change adding the deterministic
+seam-transition system to `VideoCompileStepExecutor`/`VideoCompileStepConfig`; as of this doc edit
+they are not yet present on the shipped `VideoCompileStepConfig` type in this worktree, only
+referenced by name in the `video-derush-edit*` templates' seeded config JSON and in this section, so
+their defaults are intentionally left blank above pending that merge.
 
 ### The `video-derush-edit` template
 
@@ -1450,6 +1470,87 @@ soft-failure the table above allows, empty when music applied cleanly.
 
 ---
 
+## Seam transitions and the program envelope
+
+`VideoCompileStepExecutor` can apply a short transition treatment at each cut-seam between two kept
+spans, and a fade at the very start/end of the whole compiled program — both **entirely
+deterministic**, selected from the same measured shot/seam evidence surfaced to `VideoReviewAgent`
+(see [Review evidence](#review-evidence-1) below), never from an agent. No step in this pipeline can
+request, add, remove, lengthen, or shorten a transition: `VideoStoryEditorAgent`'s prompt states
+outright it "cannot create, request, or describe a transition, fade, dissolve, or effect of any
+kind," and `VideoReviewAgentImpl`'s prompt is told the same choice is made "deterministically by the
+compile step" and to never phrase a fix as "add a fade" or "soften that cut" — only ever as a
+different choice of WHICH SPANS to keep. This is the same "rule table, not a model" discipline
+[Motion graphics](#motion-graphics-phase-3)'s `Duration`/`Emphasis` words and [Background
+music](#background-music)'s `Intensity`/`Ducking`/`Fit` words already established for this feature —
+except here there is no agent step in the loop at all, deterministic end to end.
+
+### Inter-cut transitions vs. the program envelope
+
+Two independent things, controlled by separate config, and easy to conflate:
+
+- **Inter-cut transitions** happen at every internal seam between two kept spans — a hard cut, a
+  brief audio-only declick ramp (`AudioSeamRampMs`), a short crossfade dissolve (`DissolveMs`), or a
+  dip-to-black/dip-cut (`DipToBlackMs`/`DipCutMs`) — chosen per seam from that seam's own measured
+  properties, capped by `MaxTransitionMs`/`MaxTransitionRatioPct` so a transition can never eat a
+  meaningful fraction of either neighbouring segment.
+- **The program envelope** is the single fade-in at the very start and fade-out at the very end of
+  the WHOLE compiled file — video (`ProgramFadeInMs`/`ProgramFadeOutMs`) and audio
+  (`ProgramAudioFadeInMs`/`ProgramAudioFadeOutMs`) tracked separately, since a video dip-to-black and
+  an audio fade need not move in lockstep. This has nothing to do with any internal seam; it exists
+  purely so a finished piece never starts or ends on a hard, un-eased frame — the same weight
+  `VideoStoryEditorAgent`'s own "The opening and the closing" prompt section already places on the
+  first and last kept span, applied here at the encode instead of the edit-decision stage.
+
+### `TransitionPolicy`
+
+`VideoCompileStepConfig.TransitionPolicy` (a `VideoTransitionPolicy` enum) gates the whole inter-cut
+system: at its most permissive setting — `"Auto"`, what all three `video-derush-edit*` templates now
+request — the rule table is free to apply whichever treatment a seam's own measurements call for;
+turned off entirely, every seam falls back to a hard cut and the compile path is byte-identical to
+the pre-transition behavior, the same "off by default, byte-identical without it" guarantee
+`EnableGraphics`/`EnableMusic` already give this feature. The full set of intermediate levels the
+enum exposes belongs to the sibling change that introduces `VideoTransitionPolicy` itself; the
+contract fixed here, and depended on by every other piece of this feature (the prompts above
+included), is that the policy selects a treatment FROM measured data — an agent never overrides it,
+and no policy level can turn a measurement-driven choice into a model-driven one.
+
+### `SectionBreakGapMs` and silence-anchored seams
+
+A seam that falls on a long-enough silence gap (`SectionBreakGapMs`) reads as a genuine section
+break rather than an ordinary mid-sentence cut, and the rule table treats it differently from a seam
+with no silence on either side — the same kind of distinction [`seamCheck`](#review-evidence-1)
+already exposes to the reviewer via `cutOutMotion`/`cutInMotion` for motion, applied here to silence
+instead.
+
+### `MaxTransitionSegments`: the filtergraph-buffering guardrail
+
+A segmented single-source encode already writes one `select`/`aselect` filtergraph entry per kept
+segment (see `MaxSegments` above); a crossfade-style transition needs to buffer and blend TWO
+adjacent segments at once instead of switching between them instantaneously, which multiplies the
+filtergraph's memory/CPU cost per transition rather than per segment. `MaxTransitionSegments` caps
+how many segments a compile is willing to apply transitions across at all — above the cap,
+transitions are skipped for the WHOLE compile (every seam falls back to a hard cut) rather than
+risking an ffmpeg process that OOMs or times out on a long, heavily-cut edit. This mirrors
+`MaxSegments`'s own "switch to a scratch-file filtergraph above ~64 segments" guardrail in spirit: a
+structural limit protecting the ffmpeg process, not a quality knob.
+
+### Review evidence
+
+`VideoCompileStepExecutor`'s output JSON surfaces `transitions` (`policy`, `appliedCount`, and a
+`treatments` breakdown) and `programFade` alongside the existing `sentenceCheck`/`graphics`/`music`
+blocks, plus three more deterministic checks that arrived alongside the transition system:
+`openingCheck` (the `sentenceCheck` mirror for the FIRST kept span instead of the last),
+`seamCheck` (every inter-cut seam's measured look/motion continuity, both an aggregate count and an
+itemized list of the notable ones), and `pacing` (`segmentCount`/`meanSegmentSec`/
+`medianSegmentSec`/`shortSegmentPct`). All of these are computed once per compile and read — never
+re-derived — by `AgentType.VideoReviewAgent`'s `ReviewLoop` step exactly like `sentenceCheck`/
+`graphics`/`music` already are; see `VideoReviewAgentImpl`'s prompt for the exact score caps and
+remediation rules each one drives. When the `transitions` node is absent entirely, transitions were
+switched off for that workflow and the reviewer is told explicitly not to penalize hard cuts.
+
+---
+
 ## Semantic visual dimensions (Phase 4)
 
 Seven deterministic dimensions (D1-D7) added on top of Phase 1's scene/visual analysis, plus
@@ -1621,7 +1722,9 @@ spans within one clip); no arbitrary unanalyzed asset/image insertion (cutting a
 pre-declared, analyzed `Sources` clips — including B-roll — is supported, see
 [Multiple source clips](#multiple-source-clips), but inserting an image or a clip that was never
 fed in as a `Source` is not); no multicam (no automatic multi-angle sync/switching); no
-picture-in-picture; no speed ramps; no transitions between cuts (hard cuts only).
+picture-in-picture; no speed ramps; no agent-requested or agent-authored transitions — only the
+deterministic, measurement-driven seam treatments and program fade described in
+[Seam transitions and the program envelope](#seam-transitions-and-the-program-envelope).
 
 **Post scope:** no colour grading / LUTs / filters / stabilization (Phase 4's D1-D3 color
 dimensions are measured/reported only, same as `loudnorm` below, never applied); no loudness

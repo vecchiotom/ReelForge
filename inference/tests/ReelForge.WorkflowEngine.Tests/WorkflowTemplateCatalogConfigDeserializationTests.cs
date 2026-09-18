@@ -112,6 +112,14 @@ public class WorkflowTemplateCatalogConfigDeserializationTests
         config.Preset.Should().Be("veryfast");
         config.AllowKeyframeSnapping.Should().BeFalse();
         config.RegisterProjectFile.Should().BeTrue();
+
+        // Seam-transition / program-envelope config (see docs/video-editing.md "Seam transitions
+        // and the program envelope"). Only MinSegmentMs exists on VideoCompileStepConfig as of
+        // this template edit — TransitionPolicy/ProgramFadeInMs/ProgramFadeOutMs/
+        // ProgramAudioFadeInMs/ProgramAudioFadeOutMs are seeded in the literal for the sibling
+        // transition-system effort to pick up once its VideoCompileStepConfig fields land; System.Text.Json
+        // ignores unmapped JSON properties by default, so the extra keys are harmless today.
+        config.MinSegmentMs.Should().Be(800);
     }
 
     [Fact]
@@ -192,6 +200,11 @@ public class WorkflowTemplateCatalogConfigDeserializationTests
         config.OverlayHoldMs.Should().Be(6000);
         config.OverlayFontColor.Should().Be("white");
         config.OverlayBoxColor.Should().Be("black@0.45");
+
+        // See the seam-transition/program-envelope comment on
+        // VideoCompile_step_literal_deserializes_against_the_real_config_type above — only
+        // MinSegmentMs round-trips today.
+        config.MinSegmentMs.Should().Be(800);
     }
 
     [Fact]
@@ -201,8 +214,8 @@ public class WorkflowTemplateCatalogConfigDeserializationTests
         step.AgentType.Should().Be(AgentType.VideoReviewAgent);
         step.StepType.Should().Be(StepType.ReviewLoop);
         step.LoopTargetStepOrder.Should().Be(2, "must loop back to the story-editor step, not the deterministic VideoAnalyze step");
-        step.MaxIterations.Should().Be(2);
-        step.MinScore.Should().Be(7);
+        step.MaxIterations.Should().Be(3);
+        step.MinScore.Should().Be(8);
         step.AgentInputContextMode.Should().Be(AgentInputContextMode.FullWorkflow);
     }
 
@@ -213,8 +226,8 @@ public class WorkflowTemplateCatalogConfigDeserializationTests
         step.AgentType.Should().Be(AgentType.VideoReviewAgent);
         step.StepType.Should().Be(StepType.ReviewLoop);
         step.LoopTargetStepOrder.Should().Be(2, "must loop back to the story-editor step so the story editor, motion-graphics planner, and compile all re-run");
-        step.MaxIterations.Should().Be(2);
-        step.MinScore.Should().Be(7);
+        step.MaxIterations.Should().Be(3);
+        step.MinScore.Should().Be(8);
         step.AgentInputContextMode.Should().Be(AgentInputContextMode.FullWorkflow);
     }
 
@@ -290,6 +303,11 @@ public class WorkflowTemplateCatalogConfigDeserializationTests
         config.MusicDuckLightDb.Should().Be(-6);
         config.MusicDuckNormalDb.Should().Be(-11);
         config.MusicDuckHeavyDb.Should().Be(-18);
+
+        // See the seam-transition/program-envelope comment on
+        // VideoCompile_step_literal_deserializes_against_the_real_config_type above — only
+        // MinSegmentMs round-trips today.
+        config.MinSegmentMs.Should().Be(800);
     }
 
     [Fact]
@@ -299,8 +317,8 @@ public class WorkflowTemplateCatalogConfigDeserializationTests
         step.AgentType.Should().Be(AgentType.VideoReviewAgent);
         step.StepType.Should().Be(StepType.ReviewLoop);
         step.LoopTargetStepOrder.Should().Be(2, "must loop back to the story-editor step so the story editor, music supervisor, and compile all re-run");
-        step.MaxIterations.Should().Be(2);
-        step.MinScore.Should().Be(7);
+        step.MaxIterations.Should().Be(3);
+        step.MinScore.Should().Be(8);
         step.AgentInputContextMode.Should().Be(AgentInputContextMode.FullWorkflow);
     }
 
