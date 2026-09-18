@@ -118,6 +118,21 @@ public record WorkflowStepProgress
     /// <summary>0-100 when a real percentage is available (e.g. ffmpeg encode progress); null otherwise — the frontend falls back to showing just the stage label.</summary>
     public int? PercentComplete { get; init; }
 
+    /// <summary>
+    /// Running cumulative token total observed so far for this step, when a step executor has
+    /// genuine mid-run visibility into token usage (e.g. per-turn usage in a <c>StepType.EditRoom</c>
+    /// group-chat run). Optional and additive — every pre-existing publisher of this event leaves
+    /// this (and <see cref="InputTokensSoFar"/>/<see cref="OutputTokensSoFar"/>) null, and the
+    /// frontend must treat null as "no token data for this stage", not as zero.
+    /// </summary>
+    public int? TokensUsedSoFar { get; init; }
+
+    /// <summary>Running cumulative input/prompt token total so far, mirroring <see cref="TokensUsedSoFar"/>'s optionality.</summary>
+    public int? InputTokensSoFar { get; init; }
+
+    /// <summary>Running cumulative output/completion token total so far, mirroring <see cref="TokensUsedSoFar"/>'s optionality.</summary>
+    public int? OutputTokensSoFar { get; init; }
+
     public DateTime OccurredAt { get; init; } = DateTime.UtcNow;
 }
 

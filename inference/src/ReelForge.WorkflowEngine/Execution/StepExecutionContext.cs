@@ -67,25 +67,36 @@ public class StepExecutionContext
     /// <c>WorkflowStepProgress</c> event via <see cref="IWorkflowEventPublisher"/>. Null in any
     /// context built without that wiring (e.g. a unit test constructing this directly) — callers
     /// should always go through <see cref="ReportProgressAsync"/>, which no-ops when this is null,
-    /// rather than invoking the delegate directly.
+    /// rather than invoking the delegate directly. The three trailing <c>int?</c> parameters carry
+    /// an optional running cumulative token tally (total/input/output) — see
+    /// <see cref="ReportProgressAsync"/>'s doc comment.
     /// </summary>
-    public Func<string, int?, CancellationToken, Task>? ProgressReporter { get; set; }
+    public Func<string, int?, int?, int?, int?, CancellationToken, Task>? ProgressReporter { get; set; }
 
     /// <summary>
     /// Reports a lightweight, best-effort progress checkpoint for a long-running step (e.g.
-    /// <c>VideoAnalyze</c>/<c>VideoCompile</c>) — a short stage label, and a 0-100 percent when one
-    /// is naturally available (e.g. real ffmpeg encode progress). Never persisted, never throws
-    /// (progress reporting must never be able to fail the step it is reporting on); a no-op when
-    /// <see cref="ProgressReporter"/> was never wired.
+    /// <c>VideoAnalyze</c>/<c>VideoCompile</c>/<c>EditRoom</c>) — a short stage label, a 0-100
+    /// percent when one is naturally available (e.g. real ffmpeg encode progress), and an optional
+    /// running cumulative token tally when the caller has genuine mid-run visibility into token
+    /// usage (e.g. <c>EditRoomStepExecutor</c> summing each completed turn's usage). Never
+    /// persisted, never throws (progress reporting must never be able to fail the step it is
+    /// reporting on); a no-op when <see cref="ProgressReporter"/> was never wired. Token parameters
+    /// default to null — a step executor with no such visibility (the overwhelming majority) must
+    /// leave them unset rather than guess/estimate a value.
     /// </summary>
-    public async Task ReportProgressAsync(string stage, int? percentComplete = null)
+    public async Task ReportProgressAsync(
+        string stage,
+        int? percentComplete = null,
+        int? tokensUsedSoFar = null,
+        int? inputTokensSoFar = null,
+        int? outputTokensSoFar = null)
     {
         if (ProgressReporter is null)
             return;
 
         try
         {
-            await ProgressReporter(stage, percentComplete, CancellationToken);
+            await ProgressReporter(stage, percentComplete, tokensUsedSoFar, inputTokensSoFar, outputTokensSoFar, CancellationToken);
         }
         catch (OperationCanceledException) when (CancellationToken.IsCancellationRequested)
         {

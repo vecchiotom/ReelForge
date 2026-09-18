@@ -156,7 +156,8 @@ namespace ReelForge.WorkflowEngine.Tests
                 StepExecutionResult stepExecutionResult, CancellationToken ct) => Task.CompletedTask;
             public Task PublishStepProgressAsync(
                 WorkflowExecution execution, WorkflowStep step, WorkflowStepResult stepResult,
-                string stage, int? percentComplete, CancellationToken ct) => Task.CompletedTask;
+                string stage, int? percentComplete, CancellationToken ct,
+                int? tokensUsedSoFar = null, int? inputTokensSoFar = null, int? outputTokensSoFar = null) => Task.CompletedTask;
             public Task PublishStepChatTurnAsync(
                 WorkflowExecution execution, WorkflowStep step, WorkflowStepResult stepResult,
                 int turnIndex, int? totalTurns, string speaker, string speakerRole, string text,

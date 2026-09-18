@@ -25,13 +25,21 @@ public interface IWorkflowEventPublisher
     /// for a step that is still running. Best-effort only — never persisted, never awaited by the
     /// caller's own correctness (see the event's doc comment).
     /// </summary>
+    /// <param name="tokensUsedSoFar">
+    /// Optional trailing parameters (default null) so every pre-existing call site keeps compiling
+    /// unchanged. Set only by step executors with genuine mid-run token visibility (e.g.
+    /// <c>EditRoomStepExecutor</c>'s per-turn usage) — never invented/estimated.
+    /// </param>
     Task PublishStepProgressAsync(
         WorkflowExecution execution,
         WorkflowStep step,
         WorkflowStepResult stepResult,
         string stage,
         int? percentComplete,
-        CancellationToken ct);
+        CancellationToken ct,
+        int? tokensUsedSoFar = null,
+        int? inputTokensSoFar = null,
+        int? outputTokensSoFar = null);
 
     /// <summary>
     /// Publishes an append-only <see cref="Shared.IntegrationEvents.WorkflowStepChatTurn"/> for one
