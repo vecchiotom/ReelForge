@@ -177,12 +177,21 @@ public class EditRoomStepExecutor : IStepExecutor
             int observedTurnCount = 0;
             string terminationReason = "room-not-run";
             string? transcriptArtifactStorageKey = null;
+            string? chatTranscriptJson = null;
 
             try
             {
                 RoomRunResult roomResult = await RunRoomAsync(context, config, viewJson, offeredIds, sw, step.StepOrder);
                 observedTurnCount = roomResult.Transcript.Count;
                 terminationReason = roomResult.TerminationReason;
+
+                // Built unconditionally (unlike the MinIO artifact below, which is gated behind
+                // PersistTranscript) — this is DB persistence for the execution detail page, not an
+                // opt-in audit artifact, so it must be available even when PersistTranscript is off.
+                if (roomResult.Turns.Count > 0)
+                {
+                    chatTranscriptJson = BuildChatTranscriptJson(roomResult.Turns, offeredIds, config.ClampedMaxTurns);
+                }
 
                 if (config.PersistTranscript && roomResult.Transcript.Count > 0)
                 {
@@ -226,11 +235,11 @@ public class EditRoomStepExecutor : IStepExecutor
             if (degraded)
             {
                 if (!config.FallbackToSoloEditor)
-                    return Failure(context, sw, "EDIT_ROOM_FAILED", degradeReason!, transcriptArtifactStorageKey);
+                    return Failure(context, sw, "EDIT_ROOM_FAILED", degradeReason!, transcriptArtifactStorageKey, chatTranscriptJson);
 
                 (decision, int soloDropped, string? soloError) = await RunSoloFallbackAsync(context, viewJson, offeredIds);
                 if (decision is null)
-                    return Failure(context, sw, "EDIT_ROOM_FAILED", soloError ?? degradeReason!, transcriptArtifactStorageKey);
+                    return Failure(context, sw, "EDIT_ROOM_FAILED", soloError ?? degradeReason!, transcriptArtifactStorageKey, chatTranscriptJson);
 
                 droppedSpanCount = soloDropped;
             }
@@ -261,7 +270,8 @@ public class EditRoomStepExecutor : IStepExecutor
                 DurationMs = sw.ElapsedMilliseconds,
                 TokensUsed = 0,
                 Status = StepStatus.Completed,
-                ArtifactStorageKey = transcriptArtifactStorageKey
+                ArtifactStorageKey = transcriptArtifactStorageKey,
+                ChatTranscriptJson = chatTranscriptJson
             };
         }
         catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
@@ -279,7 +289,8 @@ public class EditRoomStepExecutor : IStepExecutor
     // The group chat run
     // ---------------------------------------------------------------------
 
-    private sealed record RoomRunResult(IReadOnlyList<ChatMessage> Transcript, string TerminationReason);
+    private sealed record RoomRunResult(
+        IReadOnlyList<ChatMessage> Transcript, string TerminationReason, IReadOnlyList<EditRoomTurnResult> Turns);
 
     private async Task<RoomRunResult> RunRoomAsync(
         StepExecutionContext context, EditRoomStepConfig config, string viewJson, HashSet<string> offeredIds,
@@ -298,6 +309,15 @@ public class EditRoomStepExecutor : IStepExecutor
         int cumulativeOutputTokens = 0;
         bool anyUsageObserved = false;
 
+        // Captured for EVERY turn (regardless of config.StreamTurns, which only gates the live SSE
+        // broadcast) so the DB-persisted ChatTranscriptJson can be built from this — the seat's/
+        // director's ACTUAL persona name, not the raw group-chat transcript's ChatMessage.AuthorName,
+        // which carries the underlying model agent's name (e.g. "VideoStoryEditor") rather than the
+        // seat's display name, since EditRoomSeatAgent only overrides AuthorName on its fallback
+        // path, not on a normal successful turn. Using this list instead of the raw transcript keeps
+        // the persisted history attributed exactly the way a live SSE-connected tab already saw it.
+        var capturedTurns = new List<EditRoomTurnResult>();
+
         async Task OnTurnCompleted(EditRoomTurnResult result)
         {
             int idx = turnCounter++;
@@ -307,6 +327,8 @@ public class EditRoomStepExecutor : IStepExecutor
                 ? "Director is reviewing"
                 : $"{result.SeatName} is proposing a cut (turn {idx + 1}/{config.ClampedMaxTurns})";
             int percent = (int)Math.Clamp(Math.Round(100.0 * (idx + 1) / Math.Max(1, config.ClampedMaxTurns)), 0, 100);
+
+            capturedTurns.Add(result);
 
             if (result.InputTokens.HasValue || result.OutputTokens.HasValue)
             {
@@ -413,7 +435,7 @@ public class EditRoomStepExecutor : IStepExecutor
         if (terminationReason == "ceiling" && capturedManager?.TerminationReason is { } managerReason)
             terminationReason = managerReason;
 
-        return new RoomRunResult(transcript ?? [], terminationReason);
+        return new RoomRunResult(transcript ?? [], terminationReason, capturedTurns);
     }
 
     private async Task<AIAgent> BuildInnerAgentAsync(AgentType agentType, Guid? agentDefinitionId, CancellationToken ct)
@@ -702,7 +724,8 @@ public class EditRoomStepExecutor : IStepExecutor
     }
 
     private StepExecutionResult Failure(
-        StepExecutionContext context, Stopwatch sw, string code, string message, string? artifactStorageKey = null)
+        StepExecutionContext context, Stopwatch sw, string code, string message,
+        string? artifactStorageKey = null, string? chatTranscriptJson = null)
     {
         _logger.LogWarning("EditRoom step {StepOrder} failed: [{Code}] {Message}", context.Step.StepOrder, code, message);
 
@@ -721,7 +744,42 @@ public class EditRoomStepExecutor : IStepExecutor
             TokensUsed = 0,
             Status = StepStatus.Failed,
             ErrorDetails = message,
-            ArtifactStorageKey = artifactStorageKey
+            ArtifactStorageKey = artifactStorageKey,
+            ChatTranscriptJson = chatTranscriptJson
         };
+    }
+
+    /// <summary>
+    /// Builds the DB-persisted transcript array for <see cref="StepExecutionResult.ChatTranscriptJson"/>
+    /// — per-turn shape mirrors <see cref="Shared.IntegrationEvents.WorkflowStepChatTurn"/> (turnIndex,
+    /// speaker, speakerRole, text, truncated, idsMentioned, totalTurns) but always carries the FULL
+    /// untruncated turn text, since this is DB persistence rather than the ~600-char-truncated SSE
+    /// broadcast <see cref="WorkflowEventPublisher.ClipChatTurn"/> produces — so <c>truncated</c> is
+    /// always <c>false</c> here. Built from the SAME <see cref="EditRoomTurnResult"/> list the live
+    /// <c>WorkflowStepChatTurn</c> SSE events are reported from (<c>RunRoomAsync</c>'s captured
+    /// turns), NOT the raw group-chat <c>ChatMessage</c> transcript — that transcript's
+    /// <c>AuthorName</c> carries the underlying model agent's name (e.g. "VideoStoryEditor"), not the
+    /// seat's persona display name, on a normal successful turn. Using the same source as the live
+    /// events keeps the persisted history attributed exactly the way a live SSE-connected tab saw it.
+    /// Returns <c>null</c> for zero turns.
+    /// </summary>
+    private static string? BuildChatTranscriptJson(
+        IReadOnlyList<EditRoomTurnResult> turns, HashSet<string> offeredIds, int totalTurns)
+    {
+        if (turns.Count == 0)
+            return null;
+
+        var persisted = turns.Select((t, index) => new
+        {
+            turnIndex = index,
+            totalTurns,
+            speaker = t.SeatName,
+            speakerRole = string.Equals(t.SeatName, DirectorSeatName, StringComparison.Ordinal) ? "director" : "editor",
+            text = t.Text,
+            truncated = false,
+            idsMentioned = EditRoomGroupChatManager.ExtractOfferedIdMentions(t.Text, offeredIds)
+        }).ToList();
+
+        return JsonSerializer.Serialize(persisted, EnvelopeJsonOptions);
     }
 }

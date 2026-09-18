@@ -208,6 +208,12 @@ public class InferenceApiDbContext : DbContext
                 .HasColumnType("jsonb");
             entity.Property(e => e.OutputJson)
                 .HasColumnType("jsonb");
+            entity.Property(e => e.ToolCallsJson)
+                .HasColumnType("jsonb");
+            entity.Property(e => e.ReasoningJson)
+                .HasColumnType("jsonb");
+            entity.Property(e => e.ChatTranscriptJson)
+                .HasColumnType("jsonb");
             entity.Property(e => e.Status)
                 .HasConversion<string>();
             entity.ToTable("workflow_step_results", t => t.ExcludeFromMigrations());

@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using ReelForge.Shared.Data.Models;
+using ReelForge.WorkflowEngine.Agents;
 using ReelForge.WorkflowEngine.Agents.Tools;
 using ReelForge.WorkflowEngine.Services.Messaging;
 using Microsoft.EntityFrameworkCore;
@@ -496,6 +497,175 @@ namespace ReelForge.WorkflowEngine.Tests
 
             copied.ArtifactStorageKey.Should().Be(expectedArtifactKey);
             copied.OutputStorageKey.Should().Be(original.OutputStorageKey);
+        }
+
+        [Fact]
+        public void WithAttemptMetadata_copies_ToolCalls_Reasoning_and_ChatTranscriptJson_onto_the_retried_result()
+        {
+            // Same R3 hand-copy hazard as the ArtifactStorageKey test above, now covering the three
+            // diagnostics-persistence fields: ToolCalls/Reasoning feed ToolCallsJson/ReasoningJson,
+            // and ChatTranscriptJson is copied directly — none of these were copied here before this
+            // change, so a step that retried at least once would silently lose all three before they
+            // ever reached WorkflowStepResult.
+            var original = new StepExecutionResult
+            {
+                Output = "{}",
+                NextStepIndex = 1,
+                Status = StepStatus.Completed,
+                ToolCalls = new List<AgentToolCallTrace>
+                {
+                    new() { ToolName = "ReadProjectFile", Arguments = "{}", Result = "ok" }
+                },
+                Reasoning = new List<string> { "considered the offered ids" },
+                ChatTranscriptJson = "[{\"turnIndex\":0,\"speaker\":\"Seat0\",\"speakerRole\":\"editor\",\"text\":\"keep s1\"}]"
+            };
+
+            System.Reflection.MethodInfo method = typeof(WorkflowExecutorService).GetMethod(
+                "WithAttemptMetadata", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+
+            var copied = (StepExecutionResult)method.Invoke(null, [original, 2])!;
+
+            copied.ToolCalls.Should().BeEquivalentTo(original.ToolCalls);
+            copied.Reasoning.Should().BeEquivalentTo(original.Reasoning);
+            copied.ChatTranscriptJson.Should().Be(original.ChatTranscriptJson);
+        }
+
+        [Fact]
+        public async Task ExecuteAsync_persists_ToolCallsJson_and_ReasoningJson_when_the_step_reports_them()
+        {
+            var options = new DbContextOptionsBuilder<WorkflowEngineDbContext>()
+                .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
+            using var db = new WorkflowEngineDbContext(options);
+
+            Guid projectId = Guid.NewGuid();
+            Guid workflowDefId = Guid.NewGuid();
+            Guid executionId = Guid.NewGuid();
+
+            AgentDefinition agent = new() { Id = Guid.NewGuid(), Name = "Agent", AgentType = AgentType.VideoStoryEditor, SystemPrompt = "" };
+            WorkflowStep step1 = new()
+            {
+                Id = Guid.NewGuid(), StepOrder = 1, StepType = StepType.Agent,
+                AgentDefinitionId = agent.Id, AgentDefinition = agent
+            };
+            WorkflowDefinition definition = new()
+            {
+                Id = workflowDefId, Name = "test", ProjectId = projectId,
+                Steps = new List<WorkflowStep> { step1 }
+            };
+            WorkflowExecution execution = new()
+            {
+                Id = executionId, WorkflowDefinitionId = workflowDefId, ProjectId = projectId,
+                Status = ExecutionStatus.Queued, WorkflowDefinition = definition
+            };
+
+            db.AgentDefinitions.Add(agent);
+            db.WorkflowDefinitions.Add(definition);
+            db.WorkflowExecutions.Add(execution);
+            await db.SaveChangesAsync();
+
+            var scopeFactory = new FakeScopeFactory(db);
+            var toolCallsReasoningExecutor = new ToolCallsAndReasoningExecutor(
+                toolCalls: new List<AgentToolCallTrace> { new() { ToolName = "ReadProjectFile", Arguments = "{\"path\":\"a.txt\"}", Result = "contents" } },
+                reasoning: new List<string> { "step one", "step two" });
+
+            var runner = new WorkflowExecutorService(
+                scopeFactory: scopeFactory,
+                eventPublisher: new NoOpEventPublisher(),
+                logger: NullLogger<WorkflowExecutorService>.Instance,
+                executors: new IStepExecutor[] { toolCallsReasoningExecutor },
+                rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()),
+                hardeningOptions: Options.Create(new WorkflowHardeningOptions()),
+                cancellationRegistry: new ReelForge.WorkflowEngine.Execution.ExecutionCancellationRegistry());
+
+            await runner.ExecuteAsync(executionId, "corr-1", CancellationToken.None);
+
+            WorkflowStepResult? stepResult = await db.WorkflowStepResults
+                .FirstOrDefaultAsync(r => r.WorkflowExecutionId == executionId);
+            stepResult.Should().NotBeNull();
+            stepResult!.ToolCallsJson.Should().NotBeNullOrEmpty();
+            stepResult.ToolCallsJson.Should().Contain("ReadProjectFile");
+            stepResult.ReasoningJson.Should().NotBeNullOrEmpty();
+            stepResult.ReasoningJson.Should().Contain("step one").And.Contain("step two");
+        }
+
+        [Fact]
+        public async Task ExecuteAsync_leaves_ToolCallsJson_and_ReasoningJson_null_when_the_step_reports_none()
+        {
+            var options = new DbContextOptionsBuilder<WorkflowEngineDbContext>()
+                .UseInMemoryDatabase(Guid.NewGuid().ToString()).Options;
+            using var db = new WorkflowEngineDbContext(options);
+
+            Guid projectId = Guid.NewGuid();
+            Guid workflowDefId = Guid.NewGuid();
+            Guid executionId = Guid.NewGuid();
+
+            AgentDefinition agent = new() { Id = Guid.NewGuid(), Name = "Agent", AgentType = AgentType.VideoStoryEditor, SystemPrompt = "" };
+            WorkflowStep step1 = new()
+            {
+                Id = Guid.NewGuid(), StepOrder = 1, StepType = StepType.Agent,
+                AgentDefinitionId = agent.Id, AgentDefinition = agent
+            };
+            WorkflowDefinition definition = new()
+            {
+                Id = workflowDefId, Name = "test", ProjectId = projectId,
+                Steps = new List<WorkflowStep> { step1 }
+            };
+            WorkflowExecution execution = new()
+            {
+                Id = executionId, WorkflowDefinitionId = workflowDefId, ProjectId = projectId,
+                Status = ExecutionStatus.Queued, WorkflowDefinition = definition
+            };
+
+            db.AgentDefinitions.Add(agent);
+            db.WorkflowDefinitions.Add(definition);
+            db.WorkflowExecutions.Add(execution);
+            await db.SaveChangesAsync();
+
+            var scopeFactory = new FakeScopeFactory(db);
+            var emptyExecutor = new ToolCallsAndReasoningExecutor(
+                toolCalls: new List<AgentToolCallTrace>(), reasoning: new List<string>());
+
+            var runner = new WorkflowExecutorService(
+                scopeFactory: scopeFactory,
+                eventPublisher: new NoOpEventPublisher(),
+                logger: NullLogger<WorkflowExecutorService>.Instance,
+                executors: new IStepExecutor[] { emptyExecutor },
+                rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()),
+                hardeningOptions: Options.Create(new WorkflowHardeningOptions()),
+                cancellationRegistry: new ReelForge.WorkflowEngine.Execution.ExecutionCancellationRegistry());
+
+            await runner.ExecuteAsync(executionId, "corr-1", CancellationToken.None);
+
+            WorkflowStepResult? stepResult = await db.WorkflowStepResults
+                .FirstOrDefaultAsync(r => r.WorkflowExecutionId == executionId);
+            stepResult.Should().NotBeNull();
+            stepResult!.ToolCallsJson.Should().BeNull();
+            stepResult.ReasoningJson.Should().BeNull();
+        }
+
+        private sealed class ToolCallsAndReasoningExecutor : IStepExecutor
+        {
+            private readonly IReadOnlyList<AgentToolCallTrace> _toolCalls;
+            private readonly IReadOnlyList<string> _reasoning;
+
+            public ToolCallsAndReasoningExecutor(IReadOnlyList<AgentToolCallTrace> toolCalls, IReadOnlyList<string> reasoning)
+            {
+                _toolCalls = toolCalls;
+                _reasoning = reasoning;
+            }
+
+            public StepType StepType => StepType.Agent;
+
+            public Task<StepExecutionResult> ExecuteAsync(StepExecutionContext context) =>
+                Task.FromResult(new StepExecutionResult
+                {
+                    Output = "{}",
+                    NextStepIndex = context.CurrentStepIndex + 1,
+                    NewIterationCount = context.IterationCount,
+                    Status = StepStatus.Completed,
+                    ToolCalls = _toolCalls,
+                    Reasoning = _reasoning
+                });
         }
 
         // Regression coverage for a bug found by e2e QA: writing arbitrary non-JSON text (e.g. a

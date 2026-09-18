@@ -49,6 +49,21 @@ public class InferenceApiDbContextMappingTests
         property!.GetColumnType().Should().Be("jsonb");
     }
 
+    [Theory]
+    [InlineData(nameof(WorkflowStepResult.ToolCallsJson))]
+    [InlineData(nameof(WorkflowStepResult.ReasoningJson))]
+    [InlineData(nameof(WorkflowStepResult.ChatTranscriptJson))]
+    public void WorkflowStepResult_diagnostics_columns_are_mapped_as_jsonb(string propertyName)
+    {
+        using InferenceApiDbContext db = CreateContext();
+
+        var entityType = db.Model.FindEntityType(typeof(WorkflowStepResult));
+        var property = entityType?.FindProperty(propertyName);
+
+        property.Should().NotBeNull();
+        property!.GetColumnType().Should().Be("jsonb");
+    }
+
     [Fact]
     public void InferenceProvider_has_a_composite_unique_index_on_capability_and_is_default_not_is_default_alone()
     {

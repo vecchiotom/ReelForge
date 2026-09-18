@@ -663,6 +663,10 @@ namespace ReelForge.WorkflowEngine.Migrations
                         .HasColumnType("text")
                         .HasColumnName("artifact_storage_key");
 
+                    b.Property<string>("ChatTranscriptJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("chat_transcript_json");
+
                     b.Property<DateTime?>("CompletedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("completed_at");
@@ -700,6 +704,10 @@ namespace ReelForge.WorkflowEngine.Migrations
                         .HasColumnType("text")
                         .HasColumnName("output_storage_key");
 
+                    b.Property<string>("ReasoningJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("reasoning_json");
+
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasColumnType("text")
@@ -708,6 +716,10 @@ namespace ReelForge.WorkflowEngine.Migrations
                     b.Property<int>("TokensUsed")
                         .HasColumnType("integer")
                         .HasColumnName("tokens_used");
+
+                    b.Property<string>("ToolCallsJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("tool_calls_json");
 
                     b.Property<Guid>("WorkflowExecutionId")
                         .HasColumnType("uuid")

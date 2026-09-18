@@ -262,4 +262,103 @@ public class EditRoomStepExecutorTests
         keep![0]!["fromId"]!.GetValue<string>().Should().Be("s0");
         doc.RootElement.GetProperty("room").GetProperty("droppedSpanCount").GetInt32().Should().Be(1);
     }
+
+    [Fact]
+    public async Task A_completed_room_run_persists_ChatTranscriptJson_with_one_entry_per_turn()
+    {
+        EditRoomStepExecutor executor = CreateExecutor(
+            out Mock<IAgentChatClientProvider> chatClients, out _, out Mock<IAgentRegistry> agentRegistry, out _);
+
+        // Every room-participant agent (each seat and the director) resolves through this same
+        // provider call — a single canned FakeChatClient stands in for a real model, mentioning
+        // the offered id "s1" so ExtractOfferedIdMentions has something to find.
+        chatClients
+            .Setup(c => c.GetAsync(It.IsAny<AgentType>(), It.IsAny<Guid?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new FakeChatClient("Let's keep s1 through the intro."));
+
+        // Outside the live chat loop, the director's STANDALONE synthesis call (via IAgentRegistry,
+        // not IAgentChatClientProvider) converts the room's discussion into the final decision.
+        string decisionJson = JsonSerializer.Serialize(new
+        {
+            keep = new[] { new { fromId = "s1", toId = "s1", reason = "room agreed" } },
+            editRationale = "room synthesis",
+            suggestedTitle = "Room Edit"
+        });
+        var directorAgent = new Mock<IReelForgeAgent>();
+        directorAgent
+            .Setup(a => a.RunAsync(It.IsAny<string>(), It.IsAny<Guid?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new AgentRunResult { Output = decisionJson, Success = true });
+        agentRegistry
+            .Setup(r => r.GetByType(AgentType.VideoEditDirector, null))
+            .Returns(directorAgent.Object);
+
+        // One seat, one round, a 2-turn ceiling, FixedTurns (ignore the sentinel/convergence
+        // checks) — the smallest room shape that still produces a deterministic "seat then
+        // director" transcript: turn 0 is the seat, turn 1 is the director.
+        var config = new EditRoomStepConfig(
+            View: new ExtractInputRef(ExtractInputSource.Previous),
+            Seats: [new EditRoomSeat("Seat0", "first")],
+            Rounds: 1,
+            MaxTurns: 2,
+            Termination: EditRoomTerminationMode.FixedTurns,
+            RoomTimeoutSeconds: 20,
+            PersistTranscript: false);
+        string configJson = JsonSerializer.Serialize(config, ConfigOptions);
+        string viewJson = BuildViewJson("s0", "s1");
+        StepExecutionContext context = CreateContext(configJson, history: [new StepOutputHistoryEntry(1, "Analyze", viewJson)]);
+
+        StepExecutionResult result = await executor.ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed);
+        result.ChatTranscriptJson.Should().NotBeNullOrEmpty();
+
+        using JsonDocument transcriptDoc = JsonDocument.Parse(result.ChatTranscriptJson!);
+        JsonElement.ArrayEnumerator turns = transcriptDoc.RootElement.EnumerateArray();
+        List<JsonElement> turnList = turns.ToList();
+
+        turnList.Should().HaveCount(2, "one seat turn plus one director turn, per the 1-seat/1-round/2-turn-ceiling config");
+
+        turnList[0].GetProperty("turnIndex").GetInt32().Should().Be(0);
+        turnList[0].GetProperty("speaker").GetString().Should().Be("Seat0");
+        turnList[0].GetProperty("speakerRole").GetString().Should().Be("editor");
+        turnList[0].GetProperty("text").GetString().Should().Be("Let's keep s1 through the intro.",
+            "DB persistence uses the FULL untruncated turn text, unlike the ~600-char SSE broadcast");
+        turnList[0].GetProperty("truncated").GetBoolean().Should().BeFalse();
+        turnList[0].GetProperty("idsMentioned").EnumerateArray().Select(e => e.GetString()).Should().Contain("s1");
+
+        turnList[1].GetProperty("turnIndex").GetInt32().Should().Be(1);
+        turnList[1].GetProperty("speaker").GetString().Should().Be("Director");
+        turnList[1].GetProperty("speakerRole").GetString().Should().Be("director");
+    }
+
+    /// <summary>
+    /// Trivial canned <see cref="IChatClient"/> — always returns the same fixed assistant text
+    /// regardless of the messages sent to it, on both the streaming path (what the group chat host
+    /// actually drives participants through — see <c>EditRoomSeatAgent</c>'s doc comment) and the
+    /// non-streaming path. Zero network calls.
+    /// </summary>
+    private sealed class FakeChatClient : IChatClient
+    {
+        private readonly string _text;
+
+        public FakeChatClient(string text) => _text = text;
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, _text)));
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            yield return new ChatResponseUpdate(ChatRole.Assistant, _text);
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose()
+        {
+        }
+    }
 }

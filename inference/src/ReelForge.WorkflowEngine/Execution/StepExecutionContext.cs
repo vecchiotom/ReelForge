@@ -385,4 +385,15 @@ public class StepExecutionResult
     /// so a JSON artifact must never be confused with one.
     /// </summary>
     public string? ArtifactStorageKey { get; init; }
+
+    /// <summary>
+    /// For a <see cref="StepType.EditRoom"/> step only: the full room transcript (every turn, in
+    /// order) as a JSON array, mirroring <see cref="Shared.IntegrationEvents.WorkflowStepChatTurn"/>'s
+    /// per-turn shape but with the FULL untruncated turn text (this is DB persistence, not the
+    /// ~600-char-truncated SSE broadcast). Copied verbatim onto
+    /// <see cref="WorkflowStepResult.ChatTranscriptJson"/> by <c>WorkflowExecutorService</c> so
+    /// reopening the execution page later shows the complete discussion, not just whatever a live
+    /// SSE-connected tab happened to see. Null for every non-EditRoom step type.
+    /// </summary>
+    public string? ChatTranscriptJson { get; init; }
 }

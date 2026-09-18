@@ -2,18 +2,21 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
-using ReelForge.Inference.Api.Data;
+using ReelForge.WorkflowEngine.Data;
 
 #nullable disable
 
-namespace ReelForge.Inference.Api.Migrations
+namespace ReelForge.WorkflowEngine.Migrations
 {
-    [DbContext(typeof(InferenceApiDbContext))]
-    partial class InferenceApiDbContextModelSnapshot : ModelSnapshot
+    [DbContext(typeof(WorkflowEngineDbContext))]
+    [Migration("20260918131714_AddWorkflowStepResultDiagnosticsPersistence")]
+    partial class AddWorkflowStepResultDiagnosticsPersistence
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -88,7 +91,7 @@ namespace ReelForge.Inference.Api.Migrations
                         .HasColumnName("name");
 
                     b.Property<string>("OutputSchemaJson")
-                        .HasColumnType("jsonb")
+                        .HasColumnType("text")
                         .HasColumnName("output_schema_json");
 
                     b.Property<string>("OutputSchemaName")
@@ -113,7 +116,10 @@ namespace ReelForge.Inference.Api.Migrations
                     b.HasIndex("OwnerId")
                         .HasDatabaseName("ix_agent_definitions_owner_id");
 
-                    b.ToTable("agent_definitions");
+                    b.ToTable("agent_definitions", null, t =>
+                        {
+                            t.ExcludeFromMigrations();
+                        });
                 });
 
             modelBuilder.Entity("ReelForge.Shared.Data.Models.ApplicationUser", b =>
@@ -156,7 +162,10 @@ namespace ReelForge.Inference.Api.Migrations
                     b.HasIndex("Email")
                         .IsUnique();
 
-                    b.ToTable("application_users");
+                    b.ToTable("application_users", null, t =>
+                        {
+                            t.ExcludeFromMigrations();
+                        });
                 });
 
             modelBuilder.Entity("ReelForge.Shared.Data.Models.InferenceProvider", b =>
@@ -240,14 +249,10 @@ namespace ReelForge.Inference.Api.Migrations
                     b.HasKey("Id")
                         .HasName("pk_inference_providers");
 
-                    b.HasIndex("Name")
-                        .IsUnique();
-
-                    b.HasIndex("Capability", "IsDefault")
-                        .IsUnique()
-                        .HasFilter("is_default");
-
-                    b.ToTable("inference_providers");
+                    b.ToTable("inference_providers", null, t =>
+                        {
+                            t.ExcludeFromMigrations();
+                        });
                 });
 
             modelBuilder.Entity("ReelForge.Shared.Data.Models.Project", b =>
@@ -289,7 +294,10 @@ namespace ReelForge.Inference.Api.Migrations
                     b.HasIndex("OwnerId")
                         .HasDatabaseName("ix_projects_owner_id");
 
-                    b.ToTable("projects");
+                    b.ToTable("projects", null, t =>
+                        {
+                            t.ExcludeFromMigrations();
+                        });
                 });
 
             modelBuilder.Entity("ReelForge.Shared.Data.Models.ProjectFile", b =>
@@ -391,7 +399,10 @@ namespace ReelForge.Inference.Api.Migrations
 
                     b.HasIndex("ProjectId", "Category", "UploadedAt");
 
-                    b.ToTable("project_files");
+                    b.ToTable("project_files", null, t =>
+                        {
+                            t.ExcludeFromMigrations();
+                        });
                 });
 
             modelBuilder.Entity("ReelForge.Shared.Data.Models.ReviewScore", b =>
@@ -428,10 +439,7 @@ namespace ReelForge.Inference.Api.Migrations
                     b.HasIndex("WorkflowExecutionId")
                         .HasDatabaseName("ix_review_scores_workflow_execution_id");
 
-                    b.ToTable("review_scores", null, t =>
-                        {
-                            t.ExcludeFromMigrations();
-                        });
+                    b.ToTable("review_scores");
                 });
 
             modelBuilder.Entity("ReelForge.Shared.Data.Models.WorkflowDefinition", b =>
@@ -468,10 +476,7 @@ namespace ReelForge.Inference.Api.Migrations
                     b.HasIndex("ProjectId")
                         .HasDatabaseName("ix_workflow_definitions_project_id");
 
-                    b.ToTable("workflow_definitions", null, t =>
-                        {
-                            t.ExcludeFromMigrations();
-                        });
+                    b.ToTable("workflow_definitions");
                 });
 
             modelBuilder.Entity("ReelForge.Shared.Data.Models.WorkflowExecution", b =>
@@ -543,10 +548,7 @@ namespace ReelForge.Inference.Api.Migrations
                     b.HasIndex("WorkflowDefinitionId")
                         .HasDatabaseName("ix_workflow_executions_workflow_definition_id");
 
-                    b.ToTable("workflow_executions", null, t =>
-                        {
-                            t.ExcludeFromMigrations();
-                        });
+                    b.ToTable("workflow_executions");
                 });
 
             modelBuilder.Entity("ReelForge.Shared.Data.Models.WorkflowStep", b =>
@@ -650,10 +652,7 @@ namespace ReelForge.Inference.Api.Migrations
                     b.HasIndex("WorkflowDefinitionId")
                         .HasDatabaseName("ix_workflow_steps_workflow_definition_id");
 
-                    b.ToTable("workflow_steps", null, t =>
-                        {
-                            t.ExcludeFromMigrations();
-                        });
+                    b.ToTable("workflow_steps");
                 });
 
             modelBuilder.Entity("ReelForge.Shared.Data.Models.WorkflowStepResult", b =>
@@ -688,7 +687,7 @@ namespace ReelForge.Inference.Api.Migrations
                         .HasColumnName("executed_at");
 
                     b.Property<string>("InputJson")
-                        .HasColumnType("jsonb")
+                        .HasColumnType("text")
                         .HasColumnName("input_json");
 
                     b.Property<int?>("IterationNumber")
@@ -742,10 +741,7 @@ namespace ReelForge.Inference.Api.Migrations
                     b.HasIndex("WorkflowStepId")
                         .HasDatabaseName("ix_workflow_step_results_workflow_step_id");
 
-                    b.ToTable("workflow_step_results", null, t =>
-                        {
-                            t.ExcludeFromMigrations();
-                        });
+                    b.ToTable("workflow_step_results");
                 });
 
             modelBuilder.Entity("ReelForge.Shared.Data.Models.AgentDefinition", b =>
@@ -753,7 +749,6 @@ namespace ReelForge.Inference.Api.Migrations
                     b.HasOne("ReelForge.Shared.Data.Models.InferenceProvider", "InferenceProvider")
                         .WithMany("AgentDefinitions")
                         .HasForeignKey("InferenceProviderId")
-                        .OnDelete(DeleteBehavior.SetNull)
                         .HasConstraintName("fk_agent_definitions__inference_providers_inference_provider_id");
 
                     b.HasOne("ReelForge.Shared.Data.Models.ApplicationUser", "Owner")
@@ -826,7 +821,7 @@ namespace ReelForge.Inference.Api.Migrations
                     b.HasOne("ReelForge.Shared.Data.Models.Project", "Project")
                         .WithMany("WorkflowExecutions")
                         .HasForeignKey("ProjectId")
-                        .OnDelete(DeleteBehavior.Restrict)
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_workflow_executions_projects_project_id");
 
