@@ -121,7 +121,8 @@ public sealed class WorkflowTemplateProvisioningService
                 ParallelAgentIdsJson = BuildParallelAgentIdsJson(stepDefinition, agentsByType),
                 ExtractConfigJson = stepDefinition.ExtractConfigJson,
                 VideoAnalyzeConfigJson = stepDefinition.VideoAnalyzeConfigJson,
-                VideoCompileConfigJson = stepDefinition.VideoCompileConfigJson
+                VideoCompileConfigJson = stepDefinition.VideoCompileConfigJson,
+                EditRoomConfigJson = stepDefinition.EditRoomConfigJson
             };
 
             workflow.Steps.Add(step);

@@ -2,11 +2,12 @@
 
 Automatic derushing and editing of real, uploaded or rendered video files — silence and shot
 detection, optional ASR transcription, an LLM editorial decision, and a frame-accurate ffmpeg cut,
-extended with multi-clip cutting, motion graphics, and background music — implemented as two new
-deterministic workflow step types plus four new built-in LLM agents (`VideoStoryEditor`,
-`MotionGraphicsPlanner`, `VideoReviewAgent`, `MusicSupervisor`) and one deterministic placeholder
-agent (`VideoTransform`). This document is the reference for that feature; for the surrounding
-workflow engine (step types, executors, agents in general) see `CLAUDE.md`.
+extended with multi-clip cutting, motion graphics, background music, and a multi-agent "edit room"
+deliberation — implemented as three new deterministic-or-orchestrating workflow step types plus
+five new built-in LLM agents (`VideoStoryEditor`, `MotionGraphicsPlanner`, `VideoReviewAgent`,
+`MusicSupervisor`, `VideoEditDirector`) and one deterministic placeholder agent (`VideoTransform`).
+This document is the reference for that feature; for the surrounding workflow engine (step types,
+executors, agents in general) see `CLAUDE.md`.
 
 ---
 
@@ -24,6 +25,7 @@ workflow engine (step types, executors, agents in general) see `CLAUDE.md`.
 - [Background music](#background-music)
 - [Seam transitions and the program envelope](#seam-transitions-and-the-program-envelope)
 - [Semantic visual dimensions (Phase 4)](#semantic-visual-dimensions-phase-4)
+- [The edit room](#the-edit-room)
 - [Security: why ffmpeg is not in the sandbox](#security-why-ffmpeg-is-not-in-the-sandbox)
 - [Explicitly not built](#explicitly-not-built)
 
@@ -1659,6 +1661,208 @@ See [Prompt priming, contact sheets, and persisted keyframes (Phase 4)](#prompt-
 under Vision captioning, and the multi-source hoist fix noted at the top of
 [Executor wiring](#executor-wiring) — both are Phase 4 changes to the Phase 2 captioning path,
 documented alongside Phase 2 rather than duplicated here.
+
+---
+
+## The edit room
+
+`StepType.EditRoom` replaces the single `AgentType.VideoStoryEditor` decision step with a
+multi-agent deliberation: several editor-role seats plus a director converse in a live
+`Microsoft.Agents.AI.Workflows` group chat over the same bounded `VideoAnalyze` view a solo editor
+would see, and the director synthesizes their discussion into ONE schema-validated
+`VideoEditDecisionOutput` — the exact same schema and the exact same rushcut invariant (never a
+timestamp, only offered ids) `AgentType.VideoStoryEditor` already produces. **`VideoCompileStepExecutor`
+needs zero changes** to consume it: `Decision` just points at the `EditRoom` step's `StepOrder`
+instead of a solo `VideoStoryEditor` step's.
+
+```
+┌─────────────────┐     ┌──────────────────────────┐     ┌──────────────────┐
+│  StepType.       │     │  StepType.EditRoom        │     │  StepType.        │
+│  VideoAnalyze    │────▶│  several editor seats +   │────▶│  VideoCompile     │
+│                  │     │  a director, live group   │     │                   │
+│  (unchanged)     │     │  chat, then one synthesis  │     │  (unchanged)      │
+│                  │     │  call outside the chat     │     │                   │
+└─────────────────┘     └──────────────────────────┘     └──────────────────┘
+                            emits VideoEditDecisionOutput
+                            (+ an additive "room" metadata
+                             block) — identical shape to a
+                             solo VideoStoryEditor step
+```
+
+### Why a group chat, and why it's deterministic-scheduled
+
+Every seat sees the identical bounded view and can speak to any part of it — there is no
+information asymmetry between seats that would make an LLM-driven "who should speak next" routing
+decision meaningful. `EditRoomGroupChatManager` (`WorkflowEngine/Agents/EditRoom/EditRoomGroupChatManager.cs`)
+is therefore a plain, deterministic round-robin scheduler over the configured seats, followed by
+the director: it makes zero model/network calls itself, only orchestrating which
+already-constructed `AIAgent` speaks next. Routing this through an LLM would double the room's cost
+for a decision that doesn't need intelligence.
+
+### The two agents
+
+- **The editor seats** (`EditRoomStepConfig.Seats`, three by default — `PacingEditor`/
+  `StoryEditor`/`CraftEditor`, argued personas for rhythm/narrative/material-quality respectively)
+  all resolve to the SAME built-in `AgentType.VideoStoryEditor` agent (its own seeded
+  prompt/tools/provider) — no new `AgentType` enum member exists per seat, since only the persona
+  differs, and personas are injected per-turn, not baked into separate agent definitions.
+- **`AgentType.VideoEditDirector`** is used TWICE, through two different code paths: once per-turn
+  as a ROOM PARTICIPANT (free-form prose, moderates disagreement, ends the room by emitting the
+  literal sentinel `ROOM_DECIDED` once satisfied), and once more, entirely OUTSIDE the group chat,
+  for a single ordinary structured-output SYNTHESIS call (`ReelForgeAgentBase.RunAsync`, the same
+  mechanism every other structured-output agent uses) that converts the room's transcript into the
+  final `VideoEditDecisionOutput`. Same minimal read-only tool scope as `VideoStoryEditor` (no
+  sandbox, no write/render tools — it only decides).
+
+### How a turn is built: `EditRoomSeatAgent`
+
+`EditRoomSeatAgent` (`WorkflowEngine/Agents/EditRoom/EditRoomSeatAgent.cs`) wraps each
+already-constructed inner `AIAgent` (built by `EditRoomStepExecutor` via the same chat-client-
+resolution path `ReelForgeAgentBase.CreateAgentAsync` uses) as a `DelegatingAIAgent`, overriding
+BOTH `RunCoreAsync` and `RunCoreStreamingAsync` — the group chat host always invokes participants
+through the STREAMING path, so a wrapper that only overrides the non-streaming one is silently
+bypassed (measured live against the real rc2 package). Three things happen on every turn:
+
+1. **Per-turn sampling options are injected**, since the group chat host always passes
+   `options == null` to a participant — this wrapper is the only way to control
+   temperature/reasoning-effort/`MaxOutputTokens` per turn (`EditRoomStepConfig.Temperature`/
+   `DirectorTemperature`/`ReasoningEffort`/`MaxTurnTokens`), via the same `RawRepresentationFactory`
+   + `OPENAI001` mechanism `ReelForgeAgentBase.BuildChatOptions` already uses for
+   `reasoning_effort`.
+2. **The seat's persona is appended as the LAST message**, after the identical
+   `[system instructions][bounded-view opening message]` prefix every seat/the director share —
+   measured live as a ~2-3x latency win, since it lets that identical prefix keep hitting the
+   backend's prompt-prefix cache. Putting per-seat identity earlier defeats the cache; this
+   ordering must not be changed.
+3. **A seat's turn throwing never aborts the room.** Wrapped in try/catch: on failure, a synthetic
+   `"[{SeatName} had no input this round]"` turn is recorded instead, and the room continues.
+
+### Scheduling and termination
+
+`EditRoomGroupChatManager.SelectNextAgentAsync` round-robins the editor seats for
+`EditRoomStepConfig.Rounds` full passes, then always returns the director:
+
+```
+editorCount = seats.Count
+turn i: i < editorCount * Rounds  → editors[i % editorCount]
+        otherwise                 → director
+```
+
+`EditRoomStepConfig.Termination` gates how the room can end EARLY, on top of the hard
+`MaxTurns` ceiling (mapped to `GroupChatManager.MaximumIterationCount`, clamped 2..20 — deliberately
+far below the framework's own default of 40, which is a multi-hour runaway on this backend, not a
+safety net):
+
+| Mode | Behavior |
+|---|---|
+| `SentinelOnly` | Ends when the director's most recent turn contains the literal `ROOM_DECIDED` token. |
+| `Converged` | Ends when the offered-id-vocabulary mentions across the last `MinConvergenceRounds` consecutive editor rounds are identical — the seats have stopped proposing anything new. |
+| `SentinelOrConverged` (default) | Either check ends the room early. |
+| `FixedTurns` | Neither check runs — only the `MaxTurns` ceiling ends the room. |
+
+Both checks are evaluated in `ShouldTerminateAsync`, called BEFORE any agent has spoken too
+(iteration 0, history = just the opening message) — the checks must not assume at least one turn
+has happened, and don't. `UpdateHistoryAsync` is a pure pass-through: it observes every new message
+for the executor's own transcript/progress bookkeeping but always returns the input history
+unchanged — returning anything else would corrupt the framework's canonical transcript, since this
+return value is NOT a per-turn view.
+
+### The executor: `EditRoomStepExecutor`
+
+Same never-throws, always-valid-JSON discipline as `VideoAnalyzeStepExecutor`/
+`VideoCompileStepExecutor` (see [The three-stage shape](#the-three-stage-shape)):
+
+1. Deserializes `EditRoomConfigJson`; resolves the bounded view via `EditRoomStepConfig.View` (an
+   `ExtractInputRef`, reused verbatim from `VideoAnalyzeStepConfig` — the same `Previous`/`Step`
+   resolution `VideoCompileStepExecutor.ResolveDecisionJson` already established for `Decision`/
+   `GraphicsPlan`/`MusicPlan`) and extracts the offered shot/silence/segment id vocabulary from it.
+2. Builds every seat's and the director's `AIAgent`, wraps each in `EditRoomSeatAgent`, and runs
+   them through `AgentWorkflowBuilder.CreateGroupChatBuilderWith(...).AddParticipants(...).Build()`
+   via `InProcessExecution.RunStreamingAsync`, bounded by `EditRoomStepConfig.RoomTimeoutSeconds`.
+   The bounded view is sent as ONE opening chat message (not folded into the agent instructions),
+   since that message becomes the shared prefix every seat's every turn hits the prompt-prefix
+   cache against.
+3. Reads the transcript back off the `WorkflowOutputEvent` the workflow emits once it completes.
+4. Makes ONE standalone structured-output synthesis call (`AgentType.VideoEditDirector.RunAsync`,
+   outside the group chat) with the view + rendered transcript, retried up to
+   `MaxSynthesisAttempts` on an empty/unparseable result.
+5. **Validates deterministically, never trusting the model**: any `Keep` span whose `FromId`/`ToId`
+   isn't in the offered-id set is dropped (recorded in the output's `room.droppedSpanCount`) — the
+   identical discipline `VideoCompileStepExecutor` already applies when resolving a solo editor's
+   decision.
+6. If the room failed outright, produced zero usable turns, the synthesis call never produced a
+   usable decision, or every Keep span got dropped as unoffered — and `FallbackToSoloEditor`
+   (default `true`) — falls back to ONE ordinary solo `AgentType.VideoStoryEditor` call: today's
+   existing single-editor pipeline, unchanged. The step still completes successfully with a valid
+   decision; `room.degraded`/`room.degradeReason` record what happened.
+7. Emits `output_json` = the validated `VideoEditDecisionOutput`, camelCase-serialized, plus an
+   ADDITIVE sibling `"room"` object (seats, rounds, turn count, how the room terminated, whether it
+   converged, synthesis attempts, dropped-span count, whether it degraded and why, the transcript
+   artifact's storage key). This is safe because `VideoCompileStepExecutor`'s own deserialization of
+   `VideoEditDecisionOutput` uses no `UnmappedMemberHandling.Disallow` — the extra `"room"` key is
+   silently ignored by that step exactly like any other consumer expecting the plain schema.
+
+### The transcript artifact — NEVER authoritative
+
+When `EditRoomStepConfig.PersistTranscript` (default `true`), the full, unabridged room transcript
+is uploaded as this step's `ArtifactStorageKey`, under the same `projects/{projectId}/agentFiles/
+video-analysis/{executionId}/step-{order}-room-transcript.json` prefix convention `VideoAnalyze`/
+`VideoCompile` already use for non-playable JSON artifacts (see [Where artifacts
+live](#where-artifacts-live)) — reachable through the same `GET /api/v1/projects/{projectId}/
+step-results/{stepResultId}/artifact` endpoint. **This transcript is free-form model prose and must
+never be parsed back into a decision.** A seat or the director can say something that sounds like a
+timestamp in passing prose ("that pause feels like it's about three seconds") — harmless as
+commentary, but nothing downstream may ever try to extract a number from it. The only authoritative
+output of an `EditRoom` step is the synthesized, deterministically-validated
+`VideoEditDecisionOutput` on `output_json`.
+
+### Live progress and the transcript event
+
+Every completed turn reports a `context.ReportProgressAsync` stage/percent update (e.g.
+"PacingEditor is proposing a cut (turn 3/8)" / "Director is reviewing") — the same ephemeral,
+supersedable `WorkflowStepProgress` signal every other long-running step uses. Additionally, when
+`EditRoomStepConfig.StreamTurns` (default `true`), each completed turn also publishes an
+append-only `WorkflowStepChatTurn` integration event — a structural twin of
+`WorkflowStepReasoningCaptured` (sequence-numbered, every turn preserved), deliberately NOT a reuse
+of `WorkflowStepProgress`, whose "a later progress event supersedes any earlier one" semantics are
+wrong for a transcript where every turn matters. `WorkflowStepChatTurn.IdsMentioned` is
+server-extracted (the same regex `EditRoomGroupChatManager` uses for convergence checking, filtered
+against the offered-id set) — display/audit only, never trusted as the decision itself. The Go
+API/frontend relay of this new event type is a separate, follow-up pass.
+
+### Config reference
+
+| Field | Default | Notes |
+|---|---|---|
+| `Version` | `1` | Config schema version |
+| `View` | `null` | `ExtractInputRef` (`Previous`/`Step` only, reused verbatim from `VideoAnalyzeStepConfig`) — which step's bounded `{view, meta}` envelope every seat and the director see. `null` resolves to `Previous` |
+| `Seats` | `null` | `IReadOnlyList<EditRoomSeat>` — `null`/empty resolves to the three validated-live defaults (`PacingEditor`/`StoryEditor`/`CraftEditor`), each `{Name, Persona, AgentDefinitionId}` |
+| `Rounds` | `2` | Full round-robin passes over every seat before the director speaks |
+| `MaxTurns` | `8` | Hard ceiling (`GroupChatManager.MaximumIterationCount`), clamped 2..20 — NOT the framework's own default of 40 |
+| `DirectorAgentDefinitionId` | `null` | Per-agent-definition override for the director seat |
+| `Termination` | `SentinelOrConverged` | `SentinelOnly` / `Converged` / `SentinelOrConverged` / `FixedTurns` — see the table above |
+| `MinConvergenceRounds` | `2` | Consecutive rounds with an unchanged offered-id-mention set required for `Converged`/`SentinelOrConverged` to fire |
+| `MaxTurnTokens` | `220` | Per-turn `MaxOutputTokens`, injected via `EditRoomSeatAgent` |
+| `MaxHistoryChars` | `40000` | Soft cap on how much of the room transcript is rendered into the synthesis prompt (oldest turns dropped first beyond this) |
+| `Temperature` | `0.7` | Sampling temperature for every editor seat's turn |
+| `DirectorTemperature` | `0.3` | Sampling temperature for the director's ROOM-PARTICIPANT turns only — the standalone synthesis call uses `VideoEditDirectorAgent`'s own `AgentModelSettings` default (`0.3`/`"low"`) instead |
+| `ReasoningEffort` | `"none"` | Injected into every seat's (and the room-participant director's) turn — measured ~3x latency reduction on this backend. Must pass `ReelForgeAgentBase.ValidReasoningEfforts` |
+| `RoomTimeoutSeconds` | `1200` | Hard wall-clock budget for the whole group-chat run (not the later synthesis call) |
+| `PersistTranscript` | `true` | Whether the full transcript is uploaded as `ArtifactStorageKey` — see above |
+| `StreamTurns` | `true` | Whether a `WorkflowStepChatTurn` event is published per turn (progress reporting always happens regardless) |
+| `FallbackToSoloEditor` | `true` | Whether a failed/empty room decision falls back to one ordinary solo `AgentType.VideoStoryEditor` call |
+| `MaxSynthesisAttempts` | `2` | Retry attempts for the standalone structured-output synthesis call |
+
+### The `video-derush-edit-room` template
+
+A sixth opt-in template (`AutoCreateOnProject: false`), replacing `video-derush-edit`'s middle
+`Agent(VideoStoryEditor)` step with the room: `VideoAnalyze` (`Source: ProjectFile`) → `EditRoom`
+(`View: Previous`) → `VideoCompile` (`Decision: Step 2`, `AnalysisStepOrder: 1`) → `ReviewLoop`
+(`AgentType.VideoReviewAgent`, looping back to step 2). The `EditRoom` step's own `AgentDefinitionId`
+FK is satisfied by the same `AgentType.VideoTransform` deterministic placeholder `VideoAnalyze`/
+`VideoCompile` steps already use — the room's real seats/director are resolved independently, from
+`EditRoomConfigJson`, never from the step's own `AgentDefinitionId`. Deserialization-tested the same
+way as the other video templates (`WorkflowTemplateCatalogConfigDeserializationTests.cs`).
 
 ---
 

@@ -142,6 +142,65 @@ public class WorkflowEventPublisher : IWorkflowEventPublisher
         }, ct);
     }
 
+    private const int MaxChatTurnLength = 600;
+
+    public Task PublishStepChatTurnAsync(
+        WorkflowExecution execution,
+        WorkflowStep step,
+        WorkflowStepResult stepResult,
+        int turnIndex,
+        int? totalTurns,
+        string speaker,
+        string speakerRole,
+        string text,
+        IReadOnlyList<string> idsMentioned,
+        CancellationToken ct)
+    {
+        (string clipped, bool truncated) = ClipChatTurn(text);
+
+        _logger.LogDebug(
+            "Publishing step chat turn event: ExecutionId={ExecutionId}, StepId={StepId}, Turn={TurnIndex}, Speaker={Speaker}",
+            execution.Id,
+            step.Id,
+            turnIndex,
+            speaker);
+
+        return _publishEndpoint.Publish(new WorkflowStepChatTurn
+        {
+            ExecutionId = execution.Id,
+            StepId = step.Id,
+            StepResultId = stepResult.Id,
+            ProjectId = execution.ProjectId,
+            WorkflowDefinitionId = execution.WorkflowDefinitionId,
+            StepOrder = step.StepOrder,
+            StepLabel = step.Label,
+            CorrelationId = execution.CorrelationId,
+            TurnIndex = turnIndex,
+            TotalTurns = totalTurns,
+            Speaker = speaker,
+            SpeakerRole = speakerRole,
+            Text = clipped,
+            Truncated = truncated,
+            IdsMentioned = idsMentioned,
+            OccurredAt = DateTime.UtcNow
+        }, ct);
+    }
+
+    /// <summary>Truncates to <see cref="MaxChatTurnLength"/> characters at the last whitespace boundary at or before the limit, so a turn is never cut mid-word.</summary>
+    private static (string Text, bool Truncated) ClipChatTurn(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return (string.Empty, false);
+
+        string trimmed = value.Trim();
+        if (trimmed.Length <= MaxChatTurnLength)
+            return (trimmed, false);
+
+        int cut = trimmed.LastIndexOf(' ', MaxChatTurnLength - 1);
+        string clipped = cut > 0 ? trimmed[..cut] : trimmed[..MaxChatTurnLength];
+        return (clipped.TrimEnd() + "…", true);
+    }
+
     public async Task PublishStepDiagnosticsAsync(
         WorkflowExecution execution,
         WorkflowStep step,

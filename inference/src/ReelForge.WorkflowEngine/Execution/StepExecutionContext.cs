@@ -99,6 +99,44 @@ public class StepExecutionContext
     }
 
     /// <summary>
+    /// Wired by <see cref="WorkflowExecutorService"/> to publish an append-only
+    /// <c>WorkflowStepChatTurn</c> event via <see cref="IWorkflowEventPublisher"/>, alongside (not
+    /// instead of) <see cref="ProgressReporter"/> — see <see cref="ReportChatTurnAsync"/>. Null in
+    /// any context built without that wiring; callers should always go through
+    /// <see cref="ReportChatTurnAsync"/>, which no-ops when this is null.
+    /// </summary>
+    public Func<int, int?, string, string, string, IReadOnlyList<string>, CancellationToken, Task>? ChatTurnReporter { get; set; }
+
+    /// <summary>
+    /// Reports one completed turn of a <c>StepType.EditRoom</c> group-chat run (a seat's or the
+    /// director's) as an append-only, sequence-numbered event — see
+    /// <see cref="Shared.IntegrationEvents.WorkflowStepChatTurn"/>'s doc comment for why this is a
+    /// separate mechanism from the ephemeral/supersedable <see cref="ReportProgressAsync"/>. Never
+    /// throws (best-effort, like progress reporting); a no-op when <see cref="ChatTurnReporter"/>
+    /// was never wired.
+    /// </summary>
+    public async Task ReportChatTurnAsync(
+        int turnIndex, int? totalTurns, string speaker, string speakerRole, string text, IReadOnlyList<string> idsMentioned)
+    {
+        if (ChatTurnReporter is null)
+            return;
+
+        try
+        {
+            await ChatTurnReporter(turnIndex, totalTurns, speaker, speakerRole, text, idsMentioned, CancellationToken);
+        }
+        catch (OperationCanceledException) when (CancellationToken.IsCancellationRequested)
+        {
+            // Execution is winding down anyway — swallow, same as any other best-effort signal.
+        }
+        catch
+        {
+            // Chat-turn reporting is transcript/UI signal, not execution history — a publish
+            // failure must never fail the step itself.
+        }
+    }
+
+    /// <summary>
     /// Stores retry feedback (for example schema validation errors) so the next
     /// agent attempt can self-correct based on the previous failure.
     /// </summary>

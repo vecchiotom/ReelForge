@@ -52,6 +52,12 @@ public class VideoStoryEditorPromptConsistencyTests
         AssertFallbackMatchesSeeded(typeof(MusicSupervisorAgent), AgentType.MusicSupervisor);
     }
 
+    [Fact]
+    public void VideoEditDirector_fallback_prompt_matches_the_seeded_built_in_agent_prompt_verbatim()
+    {
+        AssertFallbackMatchesSeeded(typeof(VideoEditDirectorAgent), AgentType.VideoEditDirector);
+    }
+
     private static void AssertFallbackMatchesSeeded(System.Type agentType, AgentType builtInAgentType)
     {
         FieldInfo? promptField = agentType.GetField("DefaultPrompt", BindingFlags.NonPublic | BindingFlags.Static);

@@ -155,6 +155,8 @@ public class WorkflowEngineDbContext : DbContext
                 .HasColumnType("jsonb");
             entity.Property(e => e.VideoCompileConfigJson)
                 .HasColumnType("jsonb");
+            entity.Property(e => e.EditRoomConfigJson)
+                .HasColumnType("jsonb");
             entity.Property(e => e.StepType)
                 .HasConversion<string>();
             entity.Property(e => e.AgentInputContextMode)

@@ -203,6 +203,19 @@ public static class ToolGroupCatalog
         ],
 
         // ──────────────────────────────────────────────────────────────────
+        // VideoEditDirector: read-only project context + FailWorkflow only, identical scope to
+        // VideoStoryEditor above. Used both as a StepType.EditRoom group-chat participant (via a
+        // raw AIAgent the executor builds directly from these same tools) and for the standalone
+        // structured-output synthesis call — neither role produces or touches media.
+        // ──────────────────────────────────────────────────────────────────
+
+        AgentType.VideoEditDirector =>
+        [
+            ToolGroup.ProjectRead,
+            ToolGroup.WorkflowControl
+        ],
+
+        // ──────────────────────────────────────────────────────────────────
         // MusicSupervisor: read-only project context + FailWorkflow only, identical scope to
         // VideoStoryEditor/VideoReviewAgent above. It only picks among offered "m{n}" track
         // ids and enum-word settings — it never produces or touches media directly (no render,

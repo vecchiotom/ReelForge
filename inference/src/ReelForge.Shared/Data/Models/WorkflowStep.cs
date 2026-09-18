@@ -51,6 +51,12 @@ public class WorkflowStep
     /// </summary>
     public string? VideoCompileConfigJson { get; set; }
 
+    /// <summary>
+    /// JSON configuration for StepType.EditRoom. Deserialised to EditRoomStepConfig.
+    /// Null for every other step type.
+    /// </summary>
+    public string? EditRoomConfigJson { get; set; }
+
     public WorkflowDefinition WorkflowDefinition { get; set; } = null!;
     public AgentDefinition AgentDefinition { get; set; } = null!;
     public ICollection<WorkflowStepResult> Results { get; set; } = new List<WorkflowStepResult>();

@@ -33,6 +33,24 @@ public interface IWorkflowEventPublisher
         int? percentComplete,
         CancellationToken ct);
 
+    /// <summary>
+    /// Publishes an append-only <see cref="Shared.IntegrationEvents.WorkflowStepChatTurn"/> for one
+    /// completed turn in a <c>StepType.EditRoom</c> group-chat run — see that event's doc comment
+    /// for why this is a structural twin of <c>WorkflowStepReasoningCaptured</c>, not a reuse of
+    /// the ephemeral/supersedable <see cref="PublishStepProgressAsync"/> event.
+    /// </summary>
+    Task PublishStepChatTurnAsync(
+        WorkflowExecution execution,
+        WorkflowStep step,
+        WorkflowStepResult stepResult,
+        int turnIndex,
+        int? totalTurns,
+        string speaker,
+        string speakerRole,
+        string text,
+        IReadOnlyList<string> idsMentioned,
+        CancellationToken ct);
+
     Task PublishStepDiagnosticsAsync(
         WorkflowExecution execution,
         WorkflowStep step,

@@ -323,6 +323,81 @@ public class WorkflowTemplateCatalogConfigDeserializationTests
     }
 
     [Fact]
+    public void VideoAnalyze_edit_room_step_literal_deserializes_against_the_real_config_type()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-room", 0);
+        step.StepType.Should().Be(StepType.VideoAnalyze);
+        step.VideoAnalyzeConfigJson.Should().NotBeNullOrWhiteSpace();
+
+        VideoAnalyzeStepConfig? config = JsonSerializer.Deserialize<VideoAnalyzeStepConfig>(
+            step.VideoAnalyzeConfigJson!, ConfigJsonOptions);
+
+        config.Should().NotBeNull();
+        config!.Version.Should().Be(1);
+        config.Source.Kind.Should().Be(VideoSourceKind.ProjectFile);
+    }
+
+    [Fact]
+    public void The_second_video_derush_edit_room_step_is_an_EditRoom_step_referencing_the_previous_view()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-room", 1);
+        step.StepType.Should().Be(StepType.EditRoom);
+        step.AgentType.Should().Be(AgentType.VideoTransform, "the step's own AgentDefinitionId FK is a placeholder — the room's real seats/director are resolved from EditRoomConfigJson");
+        step.EditRoomConfigJson.Should().NotBeNullOrWhiteSpace();
+
+        EditRoomStepConfig? config = JsonSerializer.Deserialize<EditRoomStepConfig>(
+            step.EditRoomConfigJson!, ConfigJsonOptions);
+
+        config.Should().NotBeNull();
+        config!.Version.Should().Be(1);
+        config.View.Should().NotBeNull();
+        config.View!.From.Should().Be(ExtractInputSource.Previous);
+
+        // Defaults not set by the literal — confirm they fall back to the validated-live values
+        // rather than being silently nulled/zeroed by a future property-name mismatch.
+        config.EffectiveSeats.Should().HaveCount(3);
+        config.Rounds.Should().Be(2);
+        config.MaxTurns.Should().Be(8);
+        config.ClampedMaxTurns.Should().Be(8);
+        config.Termination.Should().Be(EditRoomTerminationMode.SentinelOrConverged);
+        config.Temperature.Should().Be(0.7f);
+        config.DirectorTemperature.Should().Be(0.3f);
+        config.ReasoningEffort.Should().Be("none");
+        config.RoomTimeoutSeconds.Should().Be(1200);
+        config.FallbackToSoloEditor.Should().BeTrue();
+    }
+
+    [Fact]
+    public void VideoCompile_edit_room_step_literal_deserializes_against_the_real_config_type()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-room", 2);
+        step.StepType.Should().Be(StepType.VideoCompile);
+        step.VideoCompileConfigJson.Should().NotBeNullOrWhiteSpace();
+
+        VideoCompileStepConfig? config = JsonSerializer.Deserialize<VideoCompileStepConfig>(
+            step.VideoCompileConfigJson!, ConfigJsonOptions);
+
+        config.Should().NotBeNull();
+        config!.Version.Should().Be(1);
+        config.Decision.From.Should().Be(ExtractInputSource.Step);
+        config.Decision.StepOrder.Should().Be(2, "must reference the EditRoom step, which emits the same VideoEditDecisionOutput shape a solo VideoStoryEditor step would");
+        config.AnalysisStepOrder.Should().Be(1);
+        config.MinSegmentMs.Should().Be(800);
+    }
+
+    [Fact]
+    public void The_fourth_video_derush_edit_room_step_is_a_ReviewLoop_looping_back_to_the_edit_room()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-room", 3);
+        step.AgentType.Should().Be(AgentType.VideoReviewAgent);
+        step.StepType.Should().Be(StepType.ReviewLoop);
+        step.LoopTargetStepOrder.Should().Be(2, "must loop back to the EditRoom step, not the deterministic VideoAnalyze step");
+        step.MaxIterations.Should().Be(3);
+        step.MinScore.Should().Be(8);
+        step.AgentInputContextMode.Should().Be(AgentInputContextMode.FullWorkflow);
+    }
+
+    [Fact]
     public void Lean_context_promo_Extract_step_literal_still_deserializes_against_the_real_config_type()
     {
         // Precedent check (R7): this template predates video editing but is the same
