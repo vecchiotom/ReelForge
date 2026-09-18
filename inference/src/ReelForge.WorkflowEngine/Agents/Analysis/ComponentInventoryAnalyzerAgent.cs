@@ -51,12 +51,14 @@ public class ComponentInventoryAnalyzerAgent : ReelForgeAgentBase
     public ComponentInventoryAnalyzerAgent(
         IAgentChatClientProvider chatClients,
         IConfiguration configuration,
-        IAgentToolProvider toolProvider)
+        IAgentToolProvider toolProvider,
+        ISkillAgentToolsFactory skillAgentToolsFactory)
         // Structured extraction, not exploratory reasoning: low temperature for consistency,
         // low reasoning effort — enumerating components doesn't benefit from deliberation.
         : base(chatClients, configuration, "ComponentInventoryAnalyzer",
             "Enumerates all UI components, their props and basic responsibilities.",
             AgentType.ComponentInventoryAnalyzer, DefaultPrompt,
+            skillAgentToolsFactory,
             toolProvider.GetTools(AgentType.ComponentInventoryAnalyzer),
             agentId: null,
             outputSchemaType: typeof(ComponentInventoryOutput),

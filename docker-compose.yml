@@ -194,6 +194,7 @@ services:
       VideoEditing__AnalyzeTimeoutSeconds: ${VIDEO_ANALYZE_TIMEOUT_SECONDS:-900}
       VideoEditing__CompileTimeoutSeconds: ${VIDEO_COMPILE_TIMEOUT_SECONDS:-1800}
       VideoEditing__FontFilePath: ${VIDEO_FONT_FILE:-/usr/share/fonts/dejavu/DejaVuSans.ttf}
+      Skills__CorpusPath: /app/skills
     volumes:
       - dpkeys:/keys
       - videoscratch:/var/tmp/reelforge-video

@@ -85,13 +85,15 @@ public class MusicSupervisorAgent : ReelForgeAgentBase
     public MusicSupervisorAgent(
         IAgentChatClientProvider chatClients,
         IConfiguration configuration,
-        IAgentToolProvider toolProvider)
+        IAgentToolProvider toolProvider,
+        ISkillAgentToolsFactory skillAgentToolsFactory)
         // A bounded pick-one-of-N-offered-tracks decision plus enum settings, minimal read-only
         // tool scope, same reasoning as VideoStoryEditorAgent: disable reasoning rather than
         // rely on the soft "low" prompt steer, which has no enforced cap.
         : base(chatClients, configuration, "MusicSupervisor",
             "Picks a single background-music track (or none) plus intensity/ducking/fit settings for the video-editing pipeline's optional background music.",
             AgentType.MusicSupervisor, DefaultPrompt,
+            skillAgentToolsFactory,
             toolProvider.GetTools(AgentType.MusicSupervisor),
             agentId: null,
             outputSchemaType: typeof(MusicPlanOutput),

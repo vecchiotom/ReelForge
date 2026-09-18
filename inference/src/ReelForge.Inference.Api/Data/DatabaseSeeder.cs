@@ -201,10 +201,12 @@ public static class DatabaseSeeder
              Always call `EnsureSandbox` before any file or exec operation. Write component files
              to `src/<ComponentName>.tsx`. Do not render video — that is the AuthorAgent's job.
 
-             ## Remotion Knowledge Base
-             Use `SearchRemotionSkills`, `ReadRemotionSkill`, and `ListAllRemotionSkills` to
-             consult official Remotion documentation before writing components. Always check the
-             relevant skill docs for correct API usage (e.g. compositions, animations, timing).
+             ## Skills
+             Use `UseSkill(name)` to load official Remotion documentation before writing
+             components (see the "Available skills" list in your instructions), and
+             `ReadSkillResource(skill, resourcePath)` for any supplementary file a loaded skill's
+             own instructions point you to. Always check the relevant skill for correct API usage
+             (e.g. compositions, animations, timing).
 
              If at any time you determine that the workflow cannot continue due to an
              unrecoverable problem (e.g. missing data, inconsistent state, or other critical
@@ -236,9 +238,11 @@ public static class DatabaseSeeder
 
              Always read the Remotion components and component inventory before designing the plan.
 
-             ## Remotion Knowledge Base
-             Use `SearchRemotionSkills` and `ReadRemotionSkill` to consult official documentation
-             on timing, transitions, sequencing, and animation patterns before designing your plan.
+             ## Skills
+             Use `UseSkill(name)` to load official Remotion documentation on timing, transitions,
+             sequencing, and animation patterns before designing your plan (see the "Available
+             skills" list in your instructions), and `ReadSkillResource(skill, resourcePath)` for
+             any supplementary file a loaded skill's own instructions point you to.
              Output a structured JSON plan with scene ordering, transitions, animation timing,
              pacing, and frame-accurate sequencing matching the AnimationStrategyOutput schema.
 
@@ -332,7 +336,7 @@ public static class DatabaseSeeder
                          - Scene/screen components are building blocks only; they are not the final composition.
                          - You must document yourself using sandbox files: list sandbox file names first, then read files as needed for context.
                          - Your job is to put all pieces together and deliver a perfect final video.
-                         - You must always use Remotion skill tools to document yourself and your implementation decisions.
+                         - You must always use your skills (`UseSkill`/`ReadSkillResource`) to ground your implementation decisions.
 
              ## Tools
 
@@ -345,9 +349,10 @@ public static class DatabaseSeeder
                          5. Call `ListSandboxFiles` (e.g., `"src/"`) to list sandbox file names first.
                          6. Call `ReadSandboxFile` to inspect the existing Remotion components produced by the
                                 RemotionComponentTranslator, reading only the files needed for context.
-                         7. Call `SearchRemotionSkills` and `ReadRemotionSkill` to document the Remotion patterns
-                                you rely on before making or finalizing implementation changes.
-                                Use `ListAllRemotionSkills` when needed to discover relevant topics.
+                         7. Call `UseSkill` with the name of any skill relevant to the Remotion patterns you
+                                rely on (see the "Available skills" list in your instructions) before making or
+                                finalizing implementation changes, and `ReadSkillResource` for any supplementary
+                                file a loaded skill's own instructions point you to.
                          8. If the components need any final adjustments, use `WriteSandboxFile` to update them.
                                 You are responsible for composing all scenes into a single timeline composition in `root.tsx`
                                 (using Remotion sequencing patterns such as `Sequence`, `Series`, or `TransitionSeries` as appropriate).
@@ -425,24 +430,28 @@ public static class DatabaseSeeder
                          missing assets or uninstalled dependencies, install packages and rebuild until the
                          final video is produced successfully.
 
-             ## Remotion Knowledge Base
-                         You have access to the official Remotion skills documentation via these tools:
-                         - `SearchRemotionSkills(query)` — Search for documentation on a specific Remotion topic
-                             (e.g. "compositions", "animations", "transitions", "timing", "sequencing", "audio").
-                         - `ReadRemotionSkill(topicOrPath)` — Read the full documentation for a topic.
+             ## Skills
+                         You have access to skills containing official Remotion documentation, each with a
+                         name and a one-line description of what it covers — see the "Available skills" list
+                         in your instructions. Call `UseSkill(name)` with a skill's exact name to load its
+                         full instructions, and `ReadSkillResource(skill, resourcePath)` to read a
+                         supplementary file a loaded skill's own instructions point you to.
 
-                         **You MUST consult the Remotion knowledge base proactively at these points:**
-                         - Before modifying `root.tsx` or any composition registration — search for "compositions"
-                         - Before adjusting animation timing or springs — search for "timing" or "animations"
-                         - Before dealing with transitions between scenes — search for "transitions"
-                         - Before adding or adjusting audio, voiceover, or sound effects — search for "audio" / "voiceover"
-                         - Before working with video embedding, trimming, or looping — search for "videos"
-                         - Before working with images or fonts — search for "images" / "fonts"
-                         - When encountering build errors, rendering issues, or unfamiliar Remotion APIs — search
-                             for the relevant topic to find correct usage patterns before attempting fixes
+                         **You MUST consult your skills proactively at these points:**
+                         - Before modifying `root.tsx`, registering compositions, or scaffolding the project —
+                             load the skill covering project/composition creation
+                         - Before adjusting animation timing, springs, or transitions between scenes — load
+                             the skill covering markup/timing/transitions
+                         - Before adding or adjusting captions or voiceover — load the skill covering captions
+                         - Before probing audio/video duration or dimensions — load the skill covering multimedia
+                         - Before the final render, or when tuning render/output flags (including
+                             transparent/alpha-channel output) — load the skill covering render configuration
+                         - When encountering build errors, rendering issues, or unfamiliar Remotion APIs —
+                             load whichever skill covers that area to find correct usage patterns before
+                             attempting fixes
 
-                         Do NOT guess at Remotion API usage. Always read the relevant skill document first to
-                         ensure you are using the correct patterns, props, and imports.
+                         Do NOT guess at Remotion API usage. Always load the relevant skill first to ensure
+                         you are using the correct patterns, props, and imports.
 
              If at any time you determine that the workflow cannot continue due to an
              unrecoverable problem (e.g. missing data, inconsistent state, or other critical
@@ -801,9 +810,9 @@ public static class DatabaseSeeder
 
              If you choose to render a graphic, use the sandbox tools in this order:
              1. `EnsureSandbox`, then `GetSandboxStatus` or `GetSandbox` to confirm it is ready.
-             2. `SearchRemotionSkills("transparent")` and `ReadRemotionSkill` on the result
-                to confirm the current transparent-video render recipe before writing any
-                code — do not guess the flags.
+             2. `UseSkill("remotion-render")` to confirm the current transparent-video render
+                recipe before writing any code — do not guess the flags. `ReadSkillResource`
+                for any supplementary file that skill's own instructions point you to.
              3. `WriteSandboxFile` a small, self-contained composition (do not modify
                 `src/index.ts`; use explicit `.tsx` import extensions). Register it with
                 its own composition id. Keep it simple: one lower-third/title/callout
@@ -836,8 +845,8 @@ public static class DatabaseSeeder
                 ["--image-format=png", "--pixel-format=yuva420p", "--codec=vp9"])` —
                 these exact flags are required for a real alpha-channel WebM export; a
                 `.mp4`/no-alpha render cannot be composited transparently and will look
-                wrong. Confirm this against `ReadRemotionSkill` yourself before relying on
-                it — the flags can change between Remotion versions.
+                wrong. Confirm this against the `remotion-render` skill yourself before
+                relying on it — the flags can change between Remotion versions.
              8. `CompleteSandbox` when done.
 
              If rendering fails and you cannot fix it within the retry budget above,
@@ -1182,6 +1191,23 @@ public static class DatabaseSeeder
             return seededPrompt;
         }
 
+        // The old live-GitHub-fetch Remotion-skills tool pair (SearchRemotionSkills/
+        // ReadRemotionSkill/ListAllRemotionSkills) was replaced by the named-skill pattern
+        // (UseSkill/ReadSkillResource — see SkillCatalog.cs/SkillAgentTools.cs) for every
+        // built-in agent that used to reference it (RemotionComponentTranslator,
+        // AnimationStrategyAgent, AuthorAgent, ReviewAgent, MotionGraphicsPlanner). Without this
+        // case, an already-seeded deployment's stored prompt would keep referencing a tool that
+        // no longer exists forever, since the general rule above never overwrites a non-empty
+        // existing prompt. Detect that literal legacy tool name and let the new seeded prompt win
+        // — the same "let a known-stale built-in prompt be replaced" escape hatch as
+        // IsLegacyBuiltInAuthorPrompt above, generalized to any built-in agent by string content
+        // instead of being scoped to one AgentType.
+        if (existing.IsBuiltIn &&
+            existing.SystemPrompt.Contains("SearchRemotionSkills", StringComparison.Ordinal))
+        {
+            return seededPrompt;
+        }
+
         return existing.SystemPrompt;
     }
 
@@ -1223,9 +1249,14 @@ public static class DatabaseSeeder
         "FailWorkflow"
     ];
 
-    private static readonly string[] RemotionSkillsTools =
+    // Replaces the old live-GitHub-fetch RemotionSkillsTools (SearchRemotionSkills/
+    // ReadRemotionSkill/ListAllRemotionSkills) — these two are bound per agent construction to
+    // that agent's resolved skill set (SkillCatalog.DefaultsFor), not registered as static
+    // per-AgentType tools by AgentToolProvider, but still listed here for display purposes since
+    // every agent below unconditionally receives a non-empty skill set (see SkillCatalog.cs).
+    private static readonly string[] SkillTools =
     [
-        "SearchRemotionSkills", "ReadRemotionSkill", "ListAllRemotionSkills"
+        "UseSkill", "ReadSkillResource"
     ];
 
     private static string GetAvailableToolsJson(AgentType agentType)
@@ -1242,7 +1273,7 @@ public static class DatabaseSeeder
         // MotionGraphicsPlanner used to share this minimal scope too, but was widened to the same
         // full sandbox+render pipeline as AuthorAgent (see AgentToolProvider.GetTools and
         // docs/video-editing.md "Motion graphics (Phase 3)") — it now falls through to the
-        // BaseTools+RemotionSkillsTools case below like AuthorAgent, not this one.
+        // BaseTools+SkillTools case below like AuthorAgent, not this one.
         // VideoReviewAgent gets the identical minimal scope: its review evidence is already in
         // the pipeline history it is given, so it never needs sandbox/Remotion-skill tools.
         // MusicSupervisor gets the same minimal scope too: it only picks among offered "m{n}"
@@ -1257,11 +1288,11 @@ public static class DatabaseSeeder
             AgentType.ComponentInventoryAnalyzer => ["ReadFileContent", "ListFilesByExtension"],
             AgentType.RouteAndApiAnalyzer => ["ReadFileContent", "SearchPatterns"],
             AgentType.StyleAndThemeExtractor => ["ReadStyleConfig", "ReadFileContent"],
-            AgentType.RemotionComponentTranslator => [.. RemotionSkillsTools],
-            AgentType.AnimationStrategyAgent => [.. RemotionSkillsTools],
-            AgentType.AuthorAgent => [.. RemotionSkillsTools],
-            AgentType.ReviewAgent => [.. RemotionSkillsTools],
-            AgentType.MotionGraphicsPlanner => [.. RemotionSkillsTools],
+            AgentType.RemotionComponentTranslator => [.. SkillTools],
+            AgentType.AnimationStrategyAgent => [.. SkillTools],
+            AgentType.AuthorAgent => [.. SkillTools],
+            AgentType.ReviewAgent => [.. SkillTools],
+            AgentType.MotionGraphicsPlanner => [.. SkillTools],
             _ => []
         };
         string[] all = [.. BaseTools, .. extra];

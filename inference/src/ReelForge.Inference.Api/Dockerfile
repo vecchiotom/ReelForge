@@ -28,4 +28,9 @@ RUN dotnet publish "ReelForge.Inference.Api.csproj" -c $BUILD_CONFIGURATION -o /
 FROM base AS final
 WORKDIR /app
 COPY --from=publish /app/publish .
+# Vendored SKILL.md corpus (see inference/skills/UPSTREAM.md) — the Inference API doesn't run
+# agents itself (only the WorkflowEngine does, via SkillCorpusService), but ships the same corpus
+# alongside its own copy of the built-in agent prompts for consistency and any future admin-side
+# skill diagnostics.
+COPY skills/ /app/skills/
 ENTRYPOINT ["dotnet", "ReelForge.Inference.Api.dll"]

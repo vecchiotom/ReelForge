@@ -206,7 +206,8 @@ public class VideoStoryEditorAgent : ReelForgeAgentBase
     public VideoStoryEditorAgent(
         IAgentChatClientProvider chatClients,
         IConfiguration configuration,
-        IAgentToolProvider toolProvider)
+        IAgentToolProvider toolProvider,
+        ISkillAgentToolsFactory skillAgentToolsFactory)
         // This is a bounded KEEP/DROP selection over an already-curated, id-anchored view
         // (minimal read-only tool scope, no sandbox) -- reasoning is disabled outright rather
         // than just set low, since on this deployment even "low" is only a soft "think briefly"
@@ -217,6 +218,7 @@ public class VideoStoryEditorAgent : ReelForgeAgentBase
         : base(chatClients, configuration, "VideoStoryEditor",
             "Decides which shots, silence gaps, and transcript spans to keep from a bounded, id-anchored view of a source video.",
             AgentType.VideoStoryEditor, DefaultPrompt,
+            skillAgentToolsFactory,
             toolProvider.GetTools(AgentType.VideoStoryEditor),
             agentId: null,
             outputSchemaType: typeof(VideoEditDecisionOutput),

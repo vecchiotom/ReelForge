@@ -8,18 +8,15 @@ public class AgentToolProvider : IAgentToolProvider
     private readonly ProjectFileAgentTools _projectFileTools;
     private readonly ReactRemotionSandboxTools _sandboxTools;
     private readonly WorkflowControlAgentTools _workflowControlTools;
-    private readonly RemotionSkillsAgentTools _remotionSkillsTools;
 
     public AgentToolProvider(
         ProjectFileAgentTools projectFileTools,
         ReactRemotionSandboxTools sandboxTools,
-        WorkflowControlAgentTools workflowControlTools,
-        RemotionSkillsAgentTools remotionSkillsTools)
+        WorkflowControlAgentTools workflowControlTools)
     {
         _projectFileTools = projectFileTools;
         _sandboxTools = sandboxTools;
         _workflowControlTools = workflowControlTools;
-        _remotionSkillsTools = remotionSkillsTools;
     }
 
     public IReadOnlyList<AIFunction> GetTools(AgentType agentType) =>
@@ -97,9 +94,6 @@ public class AgentToolProvider : IAgentToolProvider
                 AIFunctionFactory.Create(_sandboxTools.InstallNpmPackages),
                 AIFunctionFactory.Create(_sandboxTools.CheckLintAndTypeErrors),
                 AIFunctionFactory.Create(_sandboxTools.RunSandboxNpmScript),
-                AIFunctionFactory.Create(_remotionSkillsTools.SearchRemotionSkills),
-                AIFunctionFactory.Create(_remotionSkillsTools.ReadRemotionSkill),
-                AIFunctionFactory.Create(_remotionSkillsTools.ListAllRemotionSkills),
                 AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
             ],
 
@@ -113,8 +107,6 @@ public class AgentToolProvider : IAgentToolProvider
                 AIFunctionFactory.Create(_sandboxTools.GetSandbox),
                 AIFunctionFactory.Create(_sandboxTools.ListSandboxFiles),
                 AIFunctionFactory.Create(_sandboxTools.ReadSandboxFile),
-                AIFunctionFactory.Create(_remotionSkillsTools.SearchRemotionSkills),
-                AIFunctionFactory.Create(_remotionSkillsTools.ReadRemotionSkill),
                 AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
             ],
 
@@ -165,8 +157,6 @@ public class AgentToolProvider : IAgentToolProvider
                 AIFunctionFactory.Create(_sandboxTools.RunSandboxRemotionCommand),
                 AIFunctionFactory.Create(_sandboxTools.RenderVideoAndUploadToStorage),
                 AIFunctionFactory.Create(_sandboxTools.CompleteSandbox),
-                AIFunctionFactory.Create(_remotionSkillsTools.SearchRemotionSkills),
-                AIFunctionFactory.Create(_remotionSkillsTools.ReadRemotionSkill),
                 AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
             ],
 
@@ -186,8 +176,6 @@ public class AgentToolProvider : IAgentToolProvider
                 AIFunctionFactory.Create(_sandboxTools.ListSandboxFiles),
                 AIFunctionFactory.Create(_sandboxTools.ReadSandboxFile),
                 AIFunctionFactory.Create(_sandboxTools.CheckLintAndTypeErrors),
-                AIFunctionFactory.Create(_remotionSkillsTools.SearchRemotionSkills),
-                AIFunctionFactory.Create(_remotionSkillsTools.ReadRemotionSkill),
                 AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
             ],
 
@@ -277,8 +265,6 @@ public class AgentToolProvider : IAgentToolProvider
                 AIFunctionFactory.Create(_sandboxTools.RunSandboxRemotionCommand),
                 AIFunctionFactory.Create(_sandboxTools.RenderVideoAndUploadToStorage),
                 AIFunctionFactory.Create(_sandboxTools.CompleteSandbox),
-                AIFunctionFactory.Create(_remotionSkillsTools.SearchRemotionSkills),
-                AIFunctionFactory.Create(_remotionSkillsTools.ReadRemotionSkill),
                 AIFunctionFactory.Create(_workflowControlTools.FailWorkflow)
             ],
 

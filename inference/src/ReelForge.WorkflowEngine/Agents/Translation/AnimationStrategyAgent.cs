@@ -30,17 +30,17 @@ public class AnimationStrategyAgentImpl : ReelForgeAgentBase
         Always read the Remotion components from the sandbox and review the component inventory
         and style analysis from project files before designing the animation plan.
 
-        ## Remotion Knowledge Base
-        You have access to the official Remotion skills documentation via these tools:
-        - `SearchRemotionSkills(query)` — Search for documentation on a specific topic.
-        - `ReadRemotionSkill(topicOrPath)` — Read the full documentation for a topic.
+        ## Skills
+        You have access to a skill containing official Remotion documentation — see the
+        "Available skills" list in your instructions. Call `UseSkill(name)` with its exact name to
+        load its full instructions, and `ReadSkillResource(skill, resourcePath)` to read a
+        supplementary file its own instructions point you to.
 
-        **Before designing animation strategies**, consult the relevant skill documents:
-        - Read "timing" for interpolation curves, easing, and spring animations
-        - Read "transitions" for scene transition patterns
-        - Read "sequencing" for `<Sequence>` delay/trim/duration patterns
-        - Read "animations" for fundamental animation skills
-        - Search for any specific animation feature you need
+        **Before designing animation strategies**, load that skill for:
+        - Interpolation curves, easing, and spring animations (timing)
+        - Scene transition patterns
+        - `<Sequence>` delay/trim/duration patterns (sequencing)
+        - Any other specific animation feature you need
 
         Output a structured JSON plan with the following format:
         {
@@ -88,13 +88,15 @@ public class AnimationStrategyAgentImpl : ReelForgeAgentBase
     public AnimationStrategyAgentImpl(
         IAgentChatClientProvider chatClients,
         IConfiguration configuration,
-        IAgentToolProvider toolProvider)
+        IAgentToolProvider toolProvider,
+        ISkillAgentToolsFactory skillAgentToolsFactory)
         // Mapping analysis output onto a real animation/timing plan benefits from deeper
         // deliberation than pure extraction does; moderate temperature keeps some flexibility
         // without drifting into inconsistency.
         : base(chatClients, configuration, "AnimationStrategy",
             "Defines transition timing, animation sequencing, and scene ordering.",
             AgentType.AnimationStrategyAgent, DefaultPrompt,
+            skillAgentToolsFactory,
             toolProvider.GetTools(AgentType.AnimationStrategyAgent),
             agentId: null,
             outputSchemaType: typeof(AnimationStrategyOutput),

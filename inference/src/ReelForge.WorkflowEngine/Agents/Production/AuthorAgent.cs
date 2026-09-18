@@ -22,7 +22,7 @@ public class AuthorAgentImpl : ReelForgeAgentBase
         - Scene/screen components are building blocks only; they are not the final composition.
         - You must document yourself using sandbox files: list sandbox file names first, then read files as needed for context.
         - Your job is to put all pieces together and deliver a perfect final video.
-        - You must always use Remotion skill tools to document yourself and your implementation decisions.
+        - You must always use your skills (`UseSkill`/`ReadSkillResource`) to ground your implementation decisions.
 
         ## Tools
 
@@ -40,9 +40,10 @@ public class AuthorAgentImpl : ReelForgeAgentBase
           6. Call `ListSandboxFiles` (e.g., `"src/"`) to list sandbox file names first.
           7. Call `ReadSandboxFile` to inspect the existing Remotion components produced by the
             RemotionComponentTranslator, reading only the files needed for context.
-          8. Call `SearchRemotionSkills` and `ReadRemotionSkill` to document the Remotion patterns
-            you rely on before making or finalizing implementation changes.
-            Use `ListAllRemotionSkills` when needed to discover relevant topics.
+          8. Call `UseSkill` with the name of any skill relevant to the Remotion patterns you rely
+            on (see the "Available skills" list in your instructions) before making or finalizing
+            implementation changes, and `ReadSkillResource` for any supplementary file a loaded
+            skill's own instructions point you to.
           9. If the components need any final adjustments, use `WriteSandboxFile` to update them.
             You are responsible for composing all scenes into a single timeline composition in `root.tsx`
             (using Remotion sequencing patterns such as `Sequence`, `Series`, or `TransitionSeries` as appropriate).
@@ -124,24 +125,27 @@ public class AuthorAgentImpl : ReelForgeAgentBase
         missing assets or uninstalled dependencies, install packages and rebuild until the
         final video is produced successfully.
 
-        ## Remotion Knowledge Base
-        You have access to the official Remotion skills documentation via these tools:
-        - `SearchRemotionSkills(query)` — Search for documentation on a specific Remotion topic
-          (e.g. "compositions", "animations", "transitions", "timing", "sequencing", "audio").
-        - `ReadRemotionSkill(topicOrPath)` — Read the full documentation for a topic.
+        ## Skills
+        You have access to skills containing official Remotion documentation, each with a name
+        and a one-line description of what it covers — see the "Available skills" list in your
+        instructions. Call `UseSkill(name)` with a skill's exact name to load its full
+        instructions, and `ReadSkillResource(skill, resourcePath)` to read a supplementary file a
+        loaded skill's own instructions point you to.
 
-        **You MUST consult the Remotion knowledge base proactively at these points:**
-        - Before modifying `root.tsx` or any composition registration — search for "compositions"
-        - Before adjusting animation timing or springs — search for "timing" or "animations"
-        - Before dealing with transitions between scenes — search for "transitions"
-        - Before adding or adjusting audio, voiceover, or sound effects — search for "audio" / "voiceover"
-        - Before working with video embedding, trimming, or looping — search for "videos"
-        - Before working with images or fonts — search for "images" / "fonts"
-        - When encountering build errors, rendering issues, or unfamiliar Remotion APIs — search
-          for the relevant topic to find correct usage patterns before attempting fixes
+        **You MUST consult your skills proactively at these points:**
+        - Before modifying `root.tsx`, registering compositions, or scaffolding the project — load
+          the skill covering project/composition creation
+        - Before adjusting animation timing, springs, or transitions between scenes — load the
+          skill covering markup/timing/transitions
+        - Before adding or adjusting captions or voiceover — load the skill covering captions
+        - Before probing audio/video duration or dimensions — load the skill covering multimedia
+        - Before the final render, or when tuning render/output flags (including transparent/
+          alpha-channel output) — load the skill covering render configuration
+        - When encountering build errors, rendering issues, or unfamiliar Remotion APIs — load
+          whichever skill covers that area to find correct usage patterns before attempting fixes
 
-        Do NOT guess at Remotion API usage. Always read the relevant skill document first to
-        ensure you are using the correct patterns, props, and imports.
+        Do NOT guess at Remotion API usage. Always load the relevant skill first to ensure you are
+        using the correct patterns, props, and imports.
 
         If at any point you determine the workflow cannot proceed due to an unrecoverable
         condition (missing data, inconsistent state, etc.), call the `FailWorkflow(reason)`
@@ -152,13 +156,15 @@ public class AuthorAgentImpl : ReelForgeAgentBase
     public AuthorAgentImpl(
         IAgentChatClientProvider chatClients,
         IConfiguration configuration,
-        IAgentToolProvider toolProvider)
+        IAgentToolProvider toolProvider,
+        ISkillAgentToolsFactory skillAgentToolsFactory)
         // The most complex code-generation step in the pipeline (full sandbox access, assembles
         // everything downstream reads): low temperature for precision, high reasoning effort
         // since correctness here is worth the extra latency.
         : base(chatClients, configuration, "Author",
             "Assembles all outputs into a RenderManifest for Remotion.",
             AgentType.AuthorAgent, DefaultPrompt,
+            skillAgentToolsFactory,
             toolProvider.GetTools(AgentType.AuthorAgent),
             outputSchemaType: typeof(RenderManifestOutput),
             defaultModelSettings: new AgentModelSettings(Temperature: 0.3f, ReasoningEffort: "xhigh"))

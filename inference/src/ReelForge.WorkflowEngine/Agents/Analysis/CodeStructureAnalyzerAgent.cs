@@ -45,13 +45,15 @@ public class CodeStructureAnalyzerAgent : ReelForgeAgentBase
     public CodeStructureAnalyzerAgent(
         IAgentChatClientProvider chatClients,
         IConfiguration configuration,
-        IAgentToolProvider toolProvider)
+        IAgentToolProvider toolProvider,
+        ISkillAgentToolsFactory skillAgentToolsFactory)
         // Structured extraction, not exploratory reasoning: low temperature for consistency,
         // low reasoning effort since this runs early in every pipeline and there's little for
         // deep thinking to add over a straight directory/module read.
         : base(chatClients, configuration, "CodeStructureAnalyzer",
             "Maps the overall directory/module structure of the webapp source.",
             AgentType.CodeStructureAnalyzer, DefaultPrompt,
+            skillAgentToolsFactory,
             toolProvider.GetTools(AgentType.CodeStructureAnalyzer),
             agentId: null,
             outputSchemaType: typeof(CodeStructureOutput),

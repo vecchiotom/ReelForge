@@ -60,26 +60,27 @@ public class ReviewAgentImpl : ReelForgeAgentBase
         Be rigorous: only score 9 or above if the output is production-ready with no
         significant issues.
 
-        ## Remotion Knowledge Base
-        You have access to the official Remotion skills documentation via these tools:
-        - `SearchRemotionSkills(query)` — Search for documentation on a specific Remotion topic
-          (e.g. "compositions", "animations", "transitions", "timing", "sequencing", "audio").
-        - `ReadRemotionSkill(topicOrPath)` — Read the full documentation for a topic.
+        ## Skills
+        You have access to skills containing official Remotion documentation, each with a name
+        and a one-line description of what it covers — see the "Available skills" list in your
+        instructions. Call `UseSkill(name)` with a skill's exact name to load its full
+        instructions, and `ReadSkillResource(skill, resourcePath)` to read a supplementary file a
+        loaded skill's own instructions point you to.
 
         **Use these tools during your review to verify correctness:**
-        - Before scoring `visualAccuracy`, search for relevant Remotion topics (e.g. "animations",
-          "transitions") and read the skill documents to verify the components follow official
-          Remotion best practices and API patterns.
-        - Before scoring `timing`, read the "timing" and "sequencing" skill documents to confirm
-          that interpolation curves, spring configs, and sequence durations are correctly used.
-        - Before scoring `completeness`, search for any Remotion features the project uses
-          (e.g. "audio", "fonts", "images", "3d") and verify the implementation matches the
-          documented patterns.
-        - If you spot code that looks incorrect or uses deprecated APIs, consult the knowledge
-          base to confirm before flagging it in `improvementAreas`.
+        - Before scoring `visualAccuracy`, load the skill covering markup/animation/transition
+          patterns and confirm the components follow official Remotion best practices and API
+          patterns.
+        - Before scoring `timing`, consult the same skill for interpolation curves, spring
+          configs, and sequence/timing correctness.
+        - Before scoring `completeness`, load whichever skills cover the Remotion features the
+          project actually uses (rendering, captions, media probing, etc.) and verify the
+          implementation matches the documented patterns.
+        - If you spot code that looks incorrect or uses deprecated APIs, load the relevant skill
+          to confirm before flagging it in `improvementAreas`.
 
-        Do NOT rely solely on lint/type checks for quality. Use the Remotion knowledge base to
-        assess whether the code follows idiomatic Remotion patterns and best practices.
+        Do NOT rely solely on lint/type checks for quality. Use your skills to assess whether the
+        code follows idiomatic Remotion patterns and best practices.
 
         If at any point you determine the workflow cannot proceed due to an unrecoverable
         condition (missing data, inconsistent state, etc.), call the `FailWorkflow(reason)`
@@ -90,13 +91,15 @@ public class ReviewAgentImpl : ReelForgeAgentBase
     public ReviewAgentImpl(
         IAgentChatClientProvider chatClients,
         IConfiguration configuration,
-        IAgentToolProvider toolProvider)
+        IAgentToolProvider toolProvider,
+        ISkillAgentToolsFactory skillAgentToolsFactory)
         // Low temperature for consistent, comparable scores across iterations; low reasoning
         // effort since a ReviewLoop step can re-run this agent up to MaxIterations times and
         // slow per-call reasoning compounds directly into loop latency.
         : base(chatClients, configuration, "Review",
             "Scores output quality and provides structured feedback.",
             AgentType.ReviewAgent, DefaultPrompt,
+            skillAgentToolsFactory,
             toolProvider.GetTools(AgentType.ReviewAgent),
             agentId: null,
             outputSchemaType: typeof(ReviewOutput),
