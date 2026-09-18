@@ -33,10 +33,20 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
         AgentType = agentType;
         AgentId = agentId;
         _tools = tools?.ToList() ?? new List<AIFunction>();
+        // Ceiling raised from 1800 (30 min) to 3600 (1 hour): a from-scratch retry (no partial
+        // progress carries over between attempts — see AgentStepExecutor) hits the SAME wall every
+        // time if the true per-attempt duration for a given task sits close to or above the
+        // configured limit, so a config value sitting AT the old ceiling could never actually be
+        // raised past it. Observed live: MotionGraphicsPlanner (tool-bound, occasionally renders a
+        // real Remotion asset) has both succeeded in ~28 minutes and been cut off by the 30-minute
+        // timeout on a different run of the exact same step — normal variance for a reasoning-
+        // heavy model's "thinking" time on a complex multi-round tool-calling task, not a stuck
+        // loop (verified: the underlying vLLM server answers a trivial request in ~1.5s immediately
+        // afterward, so it isn't globally wedged).
         _agentRunTimeoutSeconds = Math.Clamp(
             configuration.GetValue("WorkflowEngine:AgentRunTimeoutSeconds", 300),
             30,
-            1800);
+            3600);
 
         string configKey = $"Agents:{name}:SystemPrompt";
         SystemPrompt = BuildSystemPrompt(
