@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import {
-  Stack, Select, TextInput, NumberInput, Switch, Collapse, Button, Text, Divider, Group,
+  Stack, Select, TextInput, NumberInput, Switch, Collapse, Button, Text, Divider, SimpleGrid,
 } from '@mantine/core';
 import { IconChevronDown, IconChevronUp, IconSettings } from '@tabler/icons-react';
 import type {
@@ -19,10 +19,10 @@ const AUDIO_CODEC_OPTIONS = ['aac'];
 const PRESET_OPTIONS = ['ultrafast', 'veryfast', 'fast', 'medium'];
 const PROGRAM_FADE_COLOR_OPTIONS = ['black', 'white'];
 const TRANSITION_POLICY_OPTIONS: { value: VideoTransitionPolicy; label: string }[] = [
-  { value: 'Off', label: 'Off — hard cuts (default)' },
-  { value: 'AudioOnly', label: 'Audio only — declick every splice' },
-  { value: 'Auto', label: 'Auto — pick a treatment per cut' },
-  { value: 'Expressive', label: 'Expressive — allow noticeable transitions' },
+  { value: 'Off', label: 'Off: hard cuts (default)' },
+  { value: 'AudioOnly', label: 'Audio only: declick every splice' },
+  { value: 'Auto', label: 'Auto: pick a treatment per cut' },
+  { value: 'Expressive', label: 'Expressive: allow noticeable transitions' },
 ];
 
 /** Builds a sensible default config for a freshly-added VideoCompile step. Mirrors the C# record defaults exactly. */
@@ -147,8 +147,8 @@ export function VideoCompileStepConfig({
         size="xs"
         value={config.mode}
         data={[
-          { value: 'Reencode', label: 'Re-encode — frame-accurate (default)' },
-          { value: 'StreamCopy', label: 'Stream copy — fast, cuts snap to keyframes' },
+          { value: 'Reencode', label: 'Re-encode: frame-accurate (default)' },
+          { value: 'StreamCopy', label: 'Stream copy: fast, cuts snap to keyframes' },
         ]}
         onChange={(v) => {
           if (!v) return;
@@ -164,13 +164,13 @@ export function VideoCompileStepConfig({
       {config.mode === 'StreamCopy' && (
         <Switch
           label="Allow keyframe snapping"
-          description="Required for stream copy — cut points drift to the nearest keyframe"
+          description="Required for stream copy. Cut points drift to the nearest keyframe."
           checked={config.allowKeyframeSnapping}
           onChange={(e) => patch({ allowKeyframeSnapping: e.currentTarget.checked })}
         />
       )}
 
-      <Group grow>
+      <SimpleGrid cols={{ base: 1, sm: 2, md: 4 }}>
         <Select
           label="Video codec"
           size="xs"
@@ -205,10 +205,10 @@ export function VideoCompileStepConfig({
           onChange={(v) => patch({ crf: typeof v === 'number' ? Math.min(51, Math.max(0, v)) : 20 })}
           disabled={config.mode === 'StreamCopy'}
         />
-      </Group>
+      </SimpleGrid>
 
       <Divider label="Cut assembly" labelPosition="left" />
-      <Group grow>
+      <SimpleGrid cols={{ base: 1, sm: 2, md: 4 }}>
         <NumberInput
           label="Pre-padding (ms)"
           size="xs"
@@ -237,10 +237,10 @@ export function VideoCompileStepConfig({
           value={config.maxSegments}
           onChange={(v) => patch({ maxSegments: typeof v === 'number' ? v : 200 })}
         />
-      </Group>
+      </SimpleGrid>
 
       <Divider label="Output" labelPosition="left" />
-      <Group grow align="flex-end">
+      <SimpleGrid cols={{ base: 1, sm: 2 }}>
         <TextInput
           label="Output file name"
           size="xs"
@@ -253,7 +253,7 @@ export function VideoCompileStepConfig({
           checked={config.registerProjectFile}
           onChange={(e) => patch({ registerProjectFile: e.currentTarget.checked })}
         />
-      </Group>
+      </SimpleGrid>
 
       <Divider label="Motion graphics (optional)" labelPosition="left" />
       <Switch
@@ -289,7 +289,7 @@ export function VideoCompileStepConfig({
       />
 
       <Text size="xs" fw={500}>Program open/close fade</Text>
-      <Group grow>
+      <SimpleGrid cols={{ base: 1, sm: 2, md: 4 }}>
         <NumberInput
           label="Video fade in (ms)"
           size="xs"
@@ -318,10 +318,10 @@ export function VideoCompileStepConfig({
           value={config.programAudioFadeOutMs ?? 0}
           onChange={(v) => patch({ programAudioFadeOutMs: typeof v === 'number' ? v : 0 })}
         />
-      </Group>
+      </SimpleGrid>
       <Select
         label="Fade color"
-        description="Color the video fades to/from — allowlisted at execution time"
+        description="Color the video fades to/from (allowlisted at execution time)"
         size="xs"
         data={PROGRAM_FADE_COLOR_OPTIONS}
         value={config.programFadeColor ?? 'black'}
@@ -351,7 +351,7 @@ export function VideoCompileStepConfig({
         <Text size="xs" c="dimmed" mb="xs">
           Only take effect when the transition policy above is not Off.
         </Text>
-        <Group grow>
+        <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }}>
           <NumberInput
             label="Audio seam ramp (ms)"
             description="Crossfade applied to the audio at every seam, regardless of policy"
@@ -376,8 +376,8 @@ export function VideoCompileStepConfig({
             value={config.dissolveMs ?? 500}
             onChange={(v) => patch({ dissolveMs: typeof v === 'number' ? v : 500 })}
           />
-        </Group>
-        <Group grow mt="xs">
+        </SimpleGrid>
+        <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }} mt="xs">
           <NumberInput
             label="Dip to black (ms)"
             description="Duration of a dip-to-black treatment"
@@ -402,8 +402,8 @@ export function VideoCompileStepConfig({
             value={config.sectionBreakGapMs ?? 8000}
             onChange={(v) => patch({ sectionBreakGapMs: typeof v === 'number' ? v : 8000 })}
           />
-        </Group>
-        <Group grow mt="xs">
+        </SimpleGrid>
+        <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }} mt="xs">
           <NumberInput
             label="Max transition (ms)"
             description="Hard ceiling on any single transition's duration"
@@ -429,7 +429,7 @@ export function VideoCompileStepConfig({
             value={config.maxTransitionSegments ?? 80}
             onChange={(v) => patch({ maxTransitionSegments: typeof v === 'number' ? v : 80 })}
           />
-        </Group>
+        </SimpleGrid>
       </Collapse>
 
       <Button
@@ -442,7 +442,7 @@ export function VideoCompileStepConfig({
         Expectations (fail fast before encoding starts)
       </Button>
       <Collapse in={expectOpen}>
-        <Group grow>
+        <SimpleGrid cols={{ base: 1, sm: 2, md: 4 }}>
           <NumberInput
             label="Min output seconds"
             min={0}
@@ -478,12 +478,12 @@ export function VideoCompileStepConfig({
             value={config.expect?.maxRetainedRatio ?? undefined}
             onChange={(v) => patch({ expect: { ...config.expect, maxRetainedRatio: typeof v === 'number' ? v : null } })}
           />
-        </Group>
+        </SimpleGrid>
       </Collapse>
 
       <Text size="xs" c="dimmed">
-        The editorial decision references opaque ids only — no timestamps. Ids are resolved to frame-accurate
-        times entirely server-side from the analysis step&apos;s full artifact.
+        The editorial decision references opaque ids only, never a timestamp. Ids are resolved to
+        frame-accurate times entirely server-side from the analysis step&apos;s full artifact.
       </Text>
     </Stack>
   );

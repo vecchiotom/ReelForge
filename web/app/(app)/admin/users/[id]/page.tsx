@@ -53,21 +53,21 @@ export default function AdminUserDetailPage({ params }: { params: Promise<{ id: 
       <Card withBorder>
         <Stack gap="sm">
           <Group>
-            <Text size="sm" fw={500} w={120}>Email</Text>
+            <Text size="sm" fw={500} w={{ base: '100%', sm: 120 }}>Email</Text>
             <Text size="sm">{user.email}</Text>
           </Group>
           <Group>
-            <Text size="sm" fw={500} w={120}>Display Name</Text>
+            <Text size="sm" fw={500} w={{ base: '100%', sm: 120 }}>Display Name</Text>
             <Text size="sm">{user.displayName}</Text>
           </Group>
           <Group>
-            <Text size="sm" fw={500} w={120}>Role</Text>
+            <Text size="sm" fw={500} w={{ base: '100%', sm: 120 }}>Role</Text>
             <Badge color={user.isAdmin ? 'violet' : 'gray'} variant="light">
               {user.isAdmin ? 'Admin' : 'User'}
             </Badge>
           </Group>
           <Group>
-            <Text size="sm" fw={500} w={120}>Status</Text>
+            <Text size="sm" fw={500} w={{ base: '100%', sm: 120 }}>Status</Text>
             {user.mustChangePassword ? (
               <Badge color="orange" variant="light">Must change password</Badge>
             ) : (
@@ -75,7 +75,7 @@ export default function AdminUserDetailPage({ params }: { params: Promise<{ id: 
             )}
           </Group>
           <Group>
-            <Text size="sm" fw={500} w={120}>Created</Text>
+            <Text size="sm" fw={500} w={{ base: '100%', sm: 120 }}>Created</Text>
             <Text size="sm">{formatDate(user.createdAt)}</Text>
           </Group>
         </Stack>

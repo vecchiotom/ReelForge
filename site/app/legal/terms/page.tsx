@@ -77,8 +77,8 @@ export default function TermsPage() {
 
       <h2 className={h2}>5. Intellectual property</h2>
       <p className={p}>
-        Unless otherwise indicated, all content on this website — including text, graphics, logos,
-        and the {siteConfig.name} name and marks — is owned by or licensed to us and is protected by
+        Unless otherwise indicated, all content on this website (including text, graphics, logos,
+        and the {siteConfig.name} name and marks) is owned by or licensed to us and is protected by
         applicable intellectual property laws. You may view and print pages from the website for
         your own personal or internal business use, but you may not otherwise reproduce, modify,
         distribute, or republish any content without our prior written consent.

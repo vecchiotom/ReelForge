@@ -62,14 +62,14 @@ export function AddStepModal({ opened, onClose, onAdd, nonLlmStepsDisabled = fal
       label: 'Extract Step',
       icon: <IconFilterCog size={24} />,
       color: 'grape',
-      description: 'Deterministically reduce data before an AI step — no model call',
+      description: 'Deterministically reduce data before an AI step. No model call.',
     },
     {
       type: 'VideoAnalyze',
       label: 'Analyze Video',
       icon: <IconWaveSine size={24} />,
       color: 'blue',
-      description: 'Deterministic ffmpeg-based derushing — silence, shot, and transcript analysis',
+      description: 'Deterministic ffmpeg-based derushing: silence, shot, and transcript analysis',
     },
     {
       type: 'VideoCompile',

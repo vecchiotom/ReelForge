@@ -42,8 +42,8 @@ export function Hero() {
         <div className="grid gap-10 py-12 lg:grid-cols-12">
           <div className="lg:col-span-4 lg:col-start-1">
             <p className="font-mono text-sm leading-relaxed text-ink-muted">
-              Agents analyze your project, script and direct a promo video, and Remotion renders it
-              — with a review loop that scores and refines every draft.
+              Agents analyze your project, script and direct a promo video, and Remotion renders
+              it, with a review loop that scores and refines every draft.
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
               <Button href="/contact" variant="accent" size="lg" skew>

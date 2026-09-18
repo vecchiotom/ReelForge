@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import {
-  Stack, Select, TextInput, NumberInput, TagsInput, Switch, Collapse, Button, Text, Divider, Code, Group, Paper,
+  Stack, Select, TextInput, NumberInput, TagsInput, Switch, Collapse, Button, Text, Divider, Code, Group, Paper, SimpleGrid,
 } from '@mantine/core';
 import { IconChevronDown, IconChevronUp, IconSettings } from '@tabler/icons-react';
 import type {
@@ -145,13 +145,13 @@ export function ExtractStepConfig({ config, onChange, allSteps = [], currentStep
     <Stack gap="md" onClick={(e) => e.stopPropagation()}>
       <Select
         label="Operation"
-        description="What this Extract step does — a fixed set of deterministic, code-only operations (no model call)"
+        description="What this Extract step does: a fixed set of deterministic, code-only operations (no model call)"
         size="sm"
         value={config.operation}
         data={[
-          { value: 'Project', label: 'Project — reduce an array to a bounded, whitelisted view' },
-          { value: 'Resolve', label: 'Resolve — look up full records for a list of ids, in order' },
-          { value: 'Files', label: 'Files — list/summarize project files' },
+          { value: 'Project', label: 'Project: reduce an array to a bounded, whitelisted view' },
+          { value: 'Resolve', label: 'Resolve: look up full records for a list of ids, in order' },
+          { value: 'Files', label: 'Files: list/summarize project files' },
         ]}
         onChange={(v) => {
           if (!v) return;
@@ -177,13 +177,13 @@ export function ExtractStepConfig({ config, onChange, allSteps = [], currentStep
           />
           <TagsInput
             label="Fields"
-            description="Whitelist of fields to keep per item — leave empty to keep the whole element"
+            description="Whitelist of fields to keep per item. Leave empty to keep the whole element."
             placeholder="name, filePath, responsibility"
             size="xs"
             value={config.fields ?? []}
             onChange={(fields) => patch({ fields: fields.length > 0 ? fields : null })}
           />
-          <Group grow>
+          <SimpleGrid cols={{ base: 1, sm: 2 }}>
             <TextInput
               label="ID field"
               description='Element key used as a stable id; blank uses "{idPrefix}{index}"'
@@ -198,8 +198,8 @@ export function ExtractStepConfig({ config, onChange, allSteps = [], currentStep
               value={config.idPrefix}
               onChange={(e) => patch({ idPrefix: e.target.value || 'i' })}
             />
-          </Group>
-          <Group grow>
+          </SimpleGrid>
+          <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }}>
             <TextInput
               label="Sort by"
               placeholder="name"
@@ -222,7 +222,7 @@ export function ExtractStepConfig({ config, onChange, allSteps = [], currentStep
               value={config.take ?? undefined}
               onChange={(v) => patch({ take: typeof v === 'number' ? v : null })}
             />
-          </Group>
+          </SimpleGrid>
         </Stack>
       )}
 
@@ -293,7 +293,7 @@ export function ExtractStepConfig({ config, onChange, allSteps = [], currentStep
             value={config.excludePathContains ?? []}
             onChange={(v) => patch({ excludePathContains: v.length > 0 ? v : null })}
           />
-          <Group grow>
+          <SimpleGrid cols={{ base: 1, sm: 2 }}>
             <Switch
               label="Include summaries"
               checked={config.includeSummaries}
@@ -304,7 +304,7 @@ export function ExtractStepConfig({ config, onChange, allSteps = [], currentStep
               checked={config.includeContent}
               onChange={(e) => patch({ includeContent: e.currentTarget.checked })}
             />
-          </Group>
+          </SimpleGrid>
           <NumberInput
             label="Max chars per file"
             min={1}
@@ -344,7 +344,7 @@ export function ExtractStepConfig({ config, onChange, allSteps = [], currentStep
             value={config.expect?.requiredPaths ?? []}
             onChange={(v) => patch({ expect: { ...config.expect, requiredPaths: v.length > 0 ? v : null } })}
           />
-          <Group grow>
+          <SimpleGrid cols={{ base: 1, sm: 2 }}>
             <NumberInput
               label="Min items"
               min={0}
@@ -359,7 +359,7 @@ export function ExtractStepConfig({ config, onChange, allSteps = [], currentStep
               value={config.expect?.maxItems ?? undefined}
               onChange={(v) => patch({ expect: { ...config.expect, maxItems: typeof v === 'number' ? v : null } })}
             />
-          </Group>
+          </SimpleGrid>
           <TagsInput
             label="Non-empty string paths"
             description="Paths that must resolve to a non-empty string"

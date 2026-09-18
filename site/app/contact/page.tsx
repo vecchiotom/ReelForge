@@ -9,7 +9,7 @@ import { buildMetadata } from '@/lib/seo';
 export const metadata = buildMetadata({
   title: 'Contact',
   description:
-    'Tell us about your project and what you want to use ReelForge for — reach our team directly and we will get back to you shortly.',
+    'Tell us about your project and what you want to use ReelForge for. Reach our team directly and we will get back to you shortly.',
   path: '/contact',
 });
 
@@ -23,8 +23,8 @@ export default function ContactPage() {
           Contact
         </h1>
         <p className="mt-4 max-w-2xl font-mono text-sm leading-relaxed text-ink-muted">
-          Tell us a bit about your project and what you&apos;d like to use ReelForge for — we&apos;ll
-          get back to you.
+          Tell us a bit about your project and what you&apos;d like to use ReelForge for, and
+          we&apos;ll get back to you.
         </p>
 
         <div className="mt-12 grid grid-cols-1 gap-10 lg:grid-cols-3 lg:gap-12">

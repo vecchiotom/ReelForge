@@ -62,7 +62,7 @@ export default function PrivacyPolicyPage() {
 
       <h2 className={h2}>2. Scope</h2>
       <p className={p}>
-        This policy covers only the public marketing website you are currently reading — the pages
+        This policy covers only the public marketing website you are currently reading: the pages
         served at the root domain, such as the homepage, features, about, and contact pages. If you
         sign up for and use the {siteConfig.name} application itself (reached through the
         &quot;Sign in&quot; link, under the <code>/app</code> path), that use is governed by
@@ -87,7 +87,7 @@ export default function PrivacyPolicyPage() {
           address, user-agent string, requested URL, referring page, and timestamp.
         </li>
         <li>
-          <strong>Analytics data.</strong> If — and only if — you affirmatively accept cookies via
+          <strong>Analytics data.</strong> Only if you affirmatively accept cookies via
           the cookie banner, we load Google Analytics, which collects usage data such as pages
           viewed, session duration, device/browser type, and approximate location derived from your
           IP address. No analytics data is collected before you make that choice.
@@ -121,7 +121,7 @@ export default function PrivacyPolicyPage() {
       <h2 className={h2}>5. Cookies and similar technologies</h2>
       <p className={p}>
         We use a small number of storage mechanisms, summarized below. We do not set any cookie
-        before you make a choice in the cookie banner — your initial choice itself is remembered in
+        before you make a choice in the cookie banner. Your initial choice itself is remembered in
         your browser&apos;s local storage, not a cookie.
       </p>
       <div className="mt-4 overflow-x-auto">
@@ -139,7 +139,7 @@ export default function PrivacyPolicyPage() {
               <td className="py-2 pr-4 font-mono text-xs">rf-cookie-consent</td>
               <td className="py-2 pr-4">Local storage (not a cookie)</td>
               <td className="py-2 pr-4">
-                Strictly necessary — remembers whether you accepted or rejected analytics cookies,
+                Strictly necessary: remembers whether you accepted or rejected analytics cookies,
                 so we don&apos;t ask again on every visit.
               </td>
               <td className="py-2 pr-4">Persistent, until you clear it or change your choice</td>
@@ -147,14 +147,14 @@ export default function PrivacyPolicyPage() {
             <tr className="border-b border-line align-top">
               <td className="py-2 pr-4 font-mono text-xs">_ga</td>
               <td className="py-2 pr-4">Cookie (Google Analytics)</td>
-              <td className="py-2 pr-4">Analytics — distinguishes unique visitors. Set only after you accept.</td>
+              <td className="py-2 pr-4">Analytics: distinguishes unique visitors. Set only after you accept.</td>
               <td className="py-2 pr-4">Typically 2 years</td>
             </tr>
             <tr className="align-top">
               <td className="py-2 pr-4 font-mono text-xs">_ga_&lt;container-id&gt;</td>
               <td className="py-2 pr-4">Cookie (Google Analytics)</td>
               <td className="py-2 pr-4">
-                Analytics — persists session state for a specific Google Analytics property. Set
+                Analytics: persists session state for a specific Google Analytics property. Set
                 only after you accept.
               </td>
               <td className="py-2 pr-4">Typically 2 years (session cookie variants: 24 hours)</td>

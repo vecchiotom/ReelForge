@@ -68,13 +68,13 @@ export default function AboutPage() {
           </h2>
           <div className="mt-4 max-w-3xl space-y-4 text-ink-muted">
             <p>
-              ReelForge is built as a set of microservices — a Go API for authentication, a REST API
+              ReelForge is built as a set of microservices: a Go API for authentication, a REST API
               for projects and workflows, and a workflow engine that executes agent runs consumed
               from a message queue. All of it is self-hostable via Docker Compose.
             </p>
             <p>
-              You bring your own inference provider — Azure OpenAI or any OpenAI-compatible
-              endpoint — so you control which model powers your agents. Your project data, files,
+              You bring your own inference provider, Azure OpenAI or any OpenAI-compatible
+              endpoint, so you control which model powers your agents. Your project data, files,
               and workflow history stay in your own PostgreSQL database and object storage, not a
               third-party data lake.
             </p>

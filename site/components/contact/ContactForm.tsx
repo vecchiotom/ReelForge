@@ -162,7 +162,7 @@ export function ContactForm() {
           className="border border-danger-border bg-danger-tint p-4 font-mono text-sm text-danger focus:outline-none"
         >
           {bannerError.kind === 'network' && (
-            <p>We couldn&apos;t reach the server — check your connection and try again.</p>
+            <p>We couldn&apos;t reach the server. Check your connection and try again.</p>
           )}
           {bannerError.kind === 'validation' && (
             <>
