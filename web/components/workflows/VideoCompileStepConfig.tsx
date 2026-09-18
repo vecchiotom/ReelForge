@@ -8,6 +8,7 @@ import { IconChevronDown, IconChevronUp, IconSettings } from '@tabler/icons-reac
 import type {
   VideoCompileStepConfig as VideoCompileStepConfigValue,
   VideoCompileMode,
+  VideoTransitionPolicy,
 } from '@/lib/types/workflow';
 import { InputRefPicker } from './ExtractStepConfig';
 import type { StepData } from './WorkflowStepList';
@@ -16,6 +17,13 @@ import type { StepData } from './WorkflowStepList';
 const VIDEO_CODEC_OPTIONS = ['libx264', 'libx265'];
 const AUDIO_CODEC_OPTIONS = ['aac'];
 const PRESET_OPTIONS = ['ultrafast', 'veryfast', 'fast', 'medium'];
+const PROGRAM_FADE_COLOR_OPTIONS = ['black', 'white'];
+const TRANSITION_POLICY_OPTIONS: { value: VideoTransitionPolicy; label: string }[] = [
+  { value: 'Off', label: 'Off — hard cuts (default)' },
+  { value: 'AudioOnly', label: 'Audio only — declick every splice' },
+  { value: 'Auto', label: 'Auto — pick a treatment per cut' },
+  { value: 'Expressive', label: 'Expressive — allow noticeable transitions' },
+];
 
 /** Builds a sensible default config for a freshly-added VideoCompile step. Mirrors the C# record defaults exactly. */
 export function createDefaultVideoCompileStepConfig(): VideoCompileStepConfigValue {
@@ -48,6 +56,21 @@ export function createDefaultVideoCompileStepConfig(): VideoCompileStepConfigVal
     overlayBoxColor: 'black@0.45',
     maxOverlayTextChars: 80,
     maxOverlaySubtextChars: 60,
+    programFadeInMs: 0,
+    programFadeOutMs: 0,
+    programAudioFadeInMs: 0,
+    programAudioFadeOutMs: 0,
+    programFadeColor: 'black',
+    transitionPolicy: 'Off',
+    audioSeamRampMs: 24,
+    softCutMs: 200,
+    dissolveMs: 500,
+    dipToBlackMs: 600,
+    dipCutMs: 220,
+    maxTransitionMs: 1200,
+    maxTransitionRatioPct: 35,
+    maxTransitionSegments: 80,
+    sectionBreakGapMs: 8000,
     expect: null,
   };
 }
@@ -255,6 +278,56 @@ export function VideoCompileStepConfig({
         />
       )}
 
+      <Divider label="Transitions & program fades" labelPosition="left" />
+      <Select
+        label="Transition policy"
+        description="How much transition treatment to apply between cuts. Off = today's hard cuts. Audio only = a short declick on every splice, no visual change. Auto = the compile step picks a treatment per cut from measured shot data. Expressive = allows more noticeable transitions."
+        size="xs"
+        data={TRANSITION_POLICY_OPTIONS}
+        value={config.transitionPolicy ?? 'Off'}
+        onChange={(v) => v && patch({ transitionPolicy: v as VideoTransitionPolicy })}
+      />
+
+      <Text size="xs" fw={500}>Program open/close fade</Text>
+      <Group grow>
+        <NumberInput
+          label="Video fade in (ms)"
+          size="xs"
+          min={0}
+          value={config.programFadeInMs ?? 0}
+          onChange={(v) => patch({ programFadeInMs: typeof v === 'number' ? v : 0 })}
+        />
+        <NumberInput
+          label="Video fade out (ms)"
+          size="xs"
+          min={0}
+          value={config.programFadeOutMs ?? 0}
+          onChange={(v) => patch({ programFadeOutMs: typeof v === 'number' ? v : 0 })}
+        />
+        <NumberInput
+          label="Audio fade in (ms)"
+          size="xs"
+          min={0}
+          value={config.programAudioFadeInMs ?? 0}
+          onChange={(v) => patch({ programAudioFadeInMs: typeof v === 'number' ? v : 0 })}
+        />
+        <NumberInput
+          label="Audio fade out (ms)"
+          size="xs"
+          min={0}
+          value={config.programAudioFadeOutMs ?? 0}
+          onChange={(v) => patch({ programAudioFadeOutMs: typeof v === 'number' ? v : 0 })}
+        />
+      </Group>
+      <Select
+        label="Fade color"
+        description="Color the video fades to/from — allowlisted at execution time"
+        size="xs"
+        data={PROGRAM_FADE_COLOR_OPTIONS}
+        value={config.programFadeColor ?? 'black'}
+        onChange={(v) => v && patch({ programFadeColor: v })}
+      />
+
       <Button
         variant="subtle"
         size="compact-xs"
@@ -273,6 +346,90 @@ export function VideoCompileStepConfig({
           value={config.analysisStepResultId ?? ''}
           onChange={(e) => patch({ analysisStepResultId: e.target.value || null })}
         />
+
+        <Text size="xs" fw={500} mt="sm">Seam transition tuning</Text>
+        <Text size="xs" c="dimmed" mb="xs">
+          Only take effect when the transition policy above is not Off.
+        </Text>
+        <Group grow>
+          <NumberInput
+            label="Audio seam ramp (ms)"
+            description="Crossfade applied to the audio at every seam, regardless of policy"
+            size="xs"
+            min={0}
+            value={config.audioSeamRampMs ?? 24}
+            onChange={(v) => patch({ audioSeamRampMs: typeof v === 'number' ? v : 24 })}
+          />
+          <NumberInput
+            label="Soft cut (ms)"
+            description="Duration of a soft-cut (short crossfade) treatment"
+            size="xs"
+            min={0}
+            value={config.softCutMs ?? 200}
+            onChange={(v) => patch({ softCutMs: typeof v === 'number' ? v : 200 })}
+          />
+          <NumberInput
+            label="Dissolve (ms)"
+            description="Duration of a dissolve treatment"
+            size="xs"
+            min={0}
+            value={config.dissolveMs ?? 500}
+            onChange={(v) => patch({ dissolveMs: typeof v === 'number' ? v : 500 })}
+          />
+        </Group>
+        <Group grow mt="xs">
+          <NumberInput
+            label="Dip to black (ms)"
+            description="Duration of a dip-to-black treatment"
+            size="xs"
+            min={0}
+            value={config.dipToBlackMs ?? 600}
+            onChange={(v) => patch({ dipToBlackMs: typeof v === 'number' ? v : 600 })}
+          />
+          <NumberInput
+            label="Dip cut (ms)"
+            description="Duration of a dip-cut (brief dip without a full dip-to-black) treatment"
+            size="xs"
+            min={0}
+            value={config.dipCutMs ?? 220}
+            onChange={(v) => patch({ dipCutMs: typeof v === 'number' ? v : 220 })}
+          />
+          <NumberInput
+            label="Section break gap (ms)"
+            description="Silence gap that qualifies as a section break rather than a plain cut"
+            size="xs"
+            min={0}
+            value={config.sectionBreakGapMs ?? 8000}
+            onChange={(v) => patch({ sectionBreakGapMs: typeof v === 'number' ? v : 8000 })}
+          />
+        </Group>
+        <Group grow mt="xs">
+          <NumberInput
+            label="Max transition (ms)"
+            description="Hard ceiling on any single transition's duration"
+            size="xs"
+            min={0}
+            value={config.maxTransitionMs ?? 1200}
+            onChange={(v) => patch({ maxTransitionMs: typeof v === 'number' ? v : 1200 })}
+          />
+          <NumberInput
+            label="Max transition ratio (%)"
+            description="Caps a transition to this percent of the shorter adjacent segment"
+            size="xs"
+            min={0}
+            max={100}
+            value={config.maxTransitionRatioPct ?? 35}
+            onChange={(v) => patch({ maxTransitionRatioPct: typeof v === 'number' ? v : 35 })}
+          />
+          <NumberInput
+            label="Max transition segments"
+            description="Caps how many cuts in the whole edit may receive a non-hard-cut treatment"
+            size="xs"
+            min={0}
+            value={config.maxTransitionSegments ?? 80}
+            onChange={(v) => patch({ maxTransitionSegments: typeof v === 'number' ? v : 80 })}
+          />
+        </Group>
       </Collapse>
 
       <Button

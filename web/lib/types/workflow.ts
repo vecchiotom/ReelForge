@@ -300,6 +300,14 @@ export interface VideoAnalyzeStepConfig {
 
 export type VideoCompileMode = 'Reencode' | 'StreamCopy';
 
+/**
+ * How much transition treatment VideoCompile applies between cuts. `Off` reproduces today's exact
+ * hard-cut behavior byte-for-byte. `AudioOnly` applies a short audio declick at every splice with
+ * no visual change. `Auto` lets the compile step pick a treatment per cut from measured shot data.
+ * `Expressive` allows more noticeable transitions (dissolves/dip-to-black) where warranted.
+ */
+export type VideoTransitionPolicy = 'Off' | 'AudioOnly' | 'Auto' | 'Expressive';
+
 export interface VideoCompileExpectation {
   minOutputSeconds?: number | null;
   maxOutputSeconds?: number | null;
@@ -347,6 +355,25 @@ export interface VideoCompileStepConfig {
   overlayBoxColor: string;
   maxOverlayTextChars: number;
   maxOverlaySubtextChars: number;
+  // -- Program open/close fades (deterministic, no transition treatment required) --
+  programFadeInMs?: number | null;
+  programFadeOutMs?: number | null;
+  programAudioFadeInMs?: number | null;
+  programAudioFadeOutMs?: number | null;
+  /** Allowlisted ('black' | 'white'), same discipline as videoCodec/audioCodec/preset above — constrain to a Select in the UI, never free text. */
+  programFadeColor?: string | null;
+  // -- Seam transitions between cuts. transitionPolicy='Off' (default) is byte-identical to the
+  //    pre-transitions compile path; the remaining knobs only take effect for non-Off policies. --
+  transitionPolicy?: VideoTransitionPolicy | null;
+  audioSeamRampMs?: number | null;
+  softCutMs?: number | null;
+  dissolveMs?: number | null;
+  dipToBlackMs?: number | null;
+  dipCutMs?: number | null;
+  maxTransitionMs?: number | null;
+  maxTransitionRatioPct?: number | null;
+  maxTransitionSegments?: number | null;
+  sectionBreakGapMs?: number | null;
   expect?: VideoCompileExpectation | null;
 }
 
