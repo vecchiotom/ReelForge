@@ -44,9 +44,12 @@ public static class ToolGroupCatalog
         [
             "WriteProjectFile"
         ],
+        // ReadSandboxFileLines/GetSandboxFileOutline are read-only locator/inspection tools —
+        // grouped with the other Browse tools since they never mutate the sandbox, unlike
+        // EditSandboxFile/ApplySandboxFileEdits below (SandboxAuthoring), which do.
         ToolGroup.SandboxBrowse =>
         [
-            "GetSandboxStatus", "ListSandboxFiles", "ReadSandboxFile"
+            "GetSandboxStatus", "ListSandboxFiles", "ReadSandboxFile", "ReadSandboxFileLines", "GetSandboxFileOutline"
         ],
         ToolGroup.SandboxMetadata =>
         [
@@ -56,9 +59,13 @@ public static class ToolGroupCatalog
         [
             "CheckLintAndTypeErrors"
         ],
+        // EditSandboxFile/ApplySandboxFileEdits mutate an existing file (a targeted alternative to
+        // WriteSandboxFile), so they belong in Authoring alongside it, not in the read-only Browse
+        // group above.
         ToolGroup.SandboxAuthoring =>
         [
-            "EnsureSandbox", "WriteSandboxFile", "DeleteSandboxPath", "InstallNpmPackages", "RunSandboxNpmScript"
+            "EnsureSandbox", "WriteSandboxFile", "EditSandboxFile", "ApplySandboxFileEdits",
+            "DeleteSandboxPath", "InstallNpmPackages", "RunSandboxNpmScript"
         ],
         ToolGroup.SandboxRender =>
         [

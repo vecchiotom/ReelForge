@@ -11,6 +11,19 @@ using ReelForge.WorkflowEngine.Services.Storage;
 
 namespace ReelForge.WorkflowEngine.Agents.Tools;
 
+/// <summary>
+/// One find/replace hunk for <see cref="ReactRemotionSandboxTools.ApplySandboxFileEdits"/>. Public
+/// (and per-property <c>[Description]</c>'d) because <c>AIFunctionFactory.Create</c> reflects over
+/// this type to build the tool call's JSON schema, so the model needs to see documented field
+/// names, not just an opaque array — mirrors <see cref="SandboxEdit"/> in <see cref="SandboxTextEditor"/>
+/// but stays a separate type so that class keeps zero dependency on the tool layer.
+/// </summary>
+[Description("One find/replace hunk: the exact old text, its replacement, and whether to replace every occurrence.")]
+public sealed record SandboxEditRequest(
+    [property: Description("Exact text to find, copied verbatim from a prior read")] string OldText,
+    [property: Description("Replacement text")] string NewText,
+    [property: Description("Replace every occurrence instead of requiring oldText to be unique in the file")] bool ReplaceAll = false);
+
 public class ReactRemotionSandboxTools
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -452,6 +465,212 @@ public class ReactRemotionSandboxTools
         return JsonSerializer.Serialize(new { result.Ok, path });
     }
 
+    // ──────────────────────────────────────────────
+    // 4.5 Targeted reads / edits — avoid whole-file rewrites
+    // ──────────────────────────────────────────────
+
+    [Description(
+        "Read a slice of lines (1-based, inclusive) from an existing sandbox file, instead of " +
+        "paying to read the whole file. Use GetSandboxFileOutline first on a large file to find " +
+        "which lines to request.")]
+    public async Task<string> ReadSandboxFileLines(
+        [Description("Relative file path inside sandbox workspace")] string path,
+        [Description("1-based line number to start from (clamped to >= 1)")] int startLine = 1,
+        [Description("Number of lines to return (clamped to 1-2000)")] int lineCount = 400)
+    {
+        string executionId = RequireContext().ExecutionId.ToString();
+        startLine = Math.Max(1, startLine);
+        lineCount = Math.Clamp(lineCount, 1, 2000);
+
+        _logger.LogInformation(
+            "Tool call read_sandbox_file_lines for execution {ExecutionId}: path={Path}, startLine={StartLine}, lineCount={LineCount}",
+            executionId,
+            path,
+            startLine,
+            lineCount);
+
+        string text = await ReadSandboxFileTextAsync(executionId, path);
+
+        // A file with no trailing content splits to a single empty-string "line" for an empty
+        // file, which we treat as zero lines rather than one — matches how SandboxFileOutline
+        // counts an empty file.
+        string[] lines = text.Length == 0
+            ? []
+            : text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        int totalLines = lines.Length;
+
+        int startIndex = Math.Min(startLine - 1, totalLines);
+        int endIndexExclusive = Math.Min(startIndex + lineCount, totalLines);
+
+        StringBuilder builder = new();
+        for (int i = startIndex; i < endIndexExclusive; i++)
+            builder.Append($"{i + 1,6}| ").Append(lines[i]).Append('\n');
+
+        int endLine = endIndexExclusive;
+        bool truncated = endIndexExclusive < totalLines;
+
+        _logger.LogInformation(
+            "Tool result read_sandbox_file_lines for execution {ExecutionId}: path={Path}, startLine={StartLine}, endLine={EndLine}, totalLines={TotalLines}, truncated={Truncated}",
+            executionId,
+            path,
+            startLine,
+            endLine,
+            totalLines,
+            truncated);
+
+        return JsonSerializer.Serialize(new
+        {
+            path,
+            startLine,
+            endLine,
+            totalLines,
+            truncated,
+            content = builder.ToString()
+        });
+    }
+
+    [Description(
+        "Get a compact JSON outline of a sandbox file — its imports and a capped list of exported " +
+        "components/functions/consts/types and Composition ids, each with its source line — to " +
+        "locate code before reading it. This is a heuristic locator aid (plain regexes over source " +
+        "lines), not a real parser. Use it before ReadSandboxFileLines on a large file instead of " +
+        "reading the whole thing.")]
+    public async Task<string> GetSandboxFileOutline(
+        [Description("Relative file path inside sandbox workspace")] string path)
+    {
+        string executionId = RequireContext().ExecutionId.ToString();
+        _logger.LogInformation(
+            "Tool call get_sandbox_file_outline for execution {ExecutionId}: path={Path}",
+            executionId,
+            path);
+
+        string text = await ReadSandboxFileTextAsync(executionId, path);
+        string outline = SandboxFileOutline.BuildOutline(text);
+
+        _logger.LogInformation(
+            "Tool result get_sandbox_file_outline for execution {ExecutionId}: path={Path}, chars={CharCount}",
+            executionId,
+            path,
+            text.Length);
+
+        return outline;
+    }
+
+    [Description(
+        "Preferred over WriteSandboxFile for changing an existing file: replace one exact snippet " +
+        "of text with new text, without re-sending the whole file. oldText must be copied verbatim " +
+        "from a prior read (including indentation and line endings) and must be unique in the file " +
+        "unless replaceAll is set. Fails cleanly with an explanatory `error` (never throws) if " +
+        "oldText is not found or is ambiguous, so you can correct it on the next call. Only use " +
+        "WriteSandboxFile to create a NEW file or when you are genuinely replacing the whole file.")]
+    public async Task<string> EditSandboxFile(
+        [Description("Relative file path inside sandbox workspace")] string path,
+        [Description("Exact text to find, copied verbatim from a prior read")] string oldText,
+        [Description("Replacement text")] string newText,
+        [Description("Replace every occurrence instead of requiring oldText to be unique in the file")] bool replaceAll = false)
+    {
+        string executionId = RequireContext().ExecutionId.ToString();
+        _logger.LogInformation(
+            "Tool call edit_sandbox_file for execution {ExecutionId}: path={Path}, replaceAll={ReplaceAll}",
+            executionId,
+            path,
+            replaceAll);
+
+        return await ApplyEditsAndWriteBackAsync(
+            executionId,
+            path,
+            [new SandboxEdit(oldText, newText, replaceAll)]);
+    }
+
+    [Description(
+        "Preferred over WriteSandboxFile for changing an existing file: apply several find/replace " +
+        "hunks to one file in a single read + single write, instead of one EditSandboxFile call per " +
+        "hunk or re-sending the whole file. All-or-nothing — if any hunk fails to match, none of " +
+        "them are applied and the file is left untouched; fix the failing hunk and retry. Fails " +
+        "cleanly with an explanatory `error` (never throws).")]
+    public async Task<string> ApplySandboxFileEdits(
+        [Description("Relative file path inside sandbox workspace")] string path,
+        [Description("Find/replace hunks to apply in order, each against the result of the previous one")]
+        SandboxEditRequest[] edits)
+    {
+        string executionId = RequireContext().ExecutionId.ToString();
+        _logger.LogInformation(
+            "Tool call apply_sandbox_file_edits for execution {ExecutionId}: path={Path}, editCount={EditCount}",
+            executionId,
+            path,
+            edits?.Length ?? 0);
+
+        if (edits is not { Length: > 0 })
+            return JsonSerializer.Serialize(new { ok = false, path, error = "at least one edit is required" });
+
+        List<SandboxEdit> sandboxEdits = edits
+            .Select(e => new SandboxEdit(e.OldText, e.NewText, e.ReplaceAll))
+            .ToList();
+
+        return await ApplyEditsAndWriteBackAsync(executionId, path, sandboxEdits);
+    }
+
+    private async Task<string> ApplyEditsAndWriteBackAsync(string executionId, string path, IReadOnlyList<SandboxEdit> edits)
+    {
+        string content;
+        try
+        {
+            content = await ReadSandboxFileTextAsync(executionId, path);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogInformation(
+                "Tool result edit for execution {ExecutionId}: path={Path}, ok=false (could not read file)",
+                executionId,
+                path);
+            return JsonSerializer.Serialize(new { ok = false, path, error = $"could not read file: {ex.Message}" });
+        }
+
+        SandboxEditOutcome outcome = SandboxTextEditor.Apply(content, edits);
+        if (!outcome.Ok)
+        {
+            _logger.LogInformation(
+                "Tool result edit for execution {ExecutionId}: path={Path}, ok=false ({Error})",
+                executionId,
+                path,
+                outcome.Error);
+            return JsonSerializer.Serialize(new { ok = false, path, error = outcome.Error });
+        }
+
+        int charsBefore = content.Length;
+        int charsAfter = outcome.Content!.Length;
+
+        try
+        {
+            await WriteSandboxFileInternal(executionId, path, outcome.Content!);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogInformation(
+                "Tool result edit for execution {ExecutionId}: path={Path}, ok=false (could not write file)",
+                executionId,
+                path);
+            return JsonSerializer.Serialize(new { ok = false, path, error = $"could not write file: {ex.Message}" });
+        }
+
+        _logger.LogInformation(
+            "Tool result edit for execution {ExecutionId}: path={Path}, ok=true, editsApplied={EditsApplied}, replacements={Replacements}",
+            executionId,
+            path,
+            outcome.EditsApplied,
+            outcome.Replacements);
+
+        return JsonSerializer.Serialize(new
+        {
+            ok = true,
+            path,
+            editsApplied = outcome.EditsApplied,
+            replacements = outcome.Replacements,
+            charsBefore,
+            charsAfter
+        });
+    }
+
     [Description("Delete a file or directory path from the current workflow sandbox.")]
     public async Task<string> DeleteSandboxPath(
         [Description("Relative file or directory path to remove")] string path)
@@ -629,6 +848,26 @@ public class ReactRemotionSandboxTools
             || extension.Equals(".ts", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".jsx", StringComparison.OrdinalIgnoreCase)
             || extension.Equals(".js", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Reads a sandbox file's decoded UTF-8 text content, throwing (via <see cref="ReadJsonAsync{T}"/>)
+    /// on any failure — used by the targeted read/outline tools above, which surface a read failure
+    /// as an ordinary tool exception the agent can retry against, the same way <see cref="ReadSandboxFile"/>
+    /// already does. <see cref="ApplyEditsAndWriteBackAsync"/> catches this itself so it can return
+    /// a clean <c>{"ok":false}</c> instead of throwing.
+    /// </summary>
+    private async Task<string> ReadSandboxFileTextAsync(string executionId, string path)
+    {
+        string encodedPath = Uri.EscapeDataString(path);
+        using HttpClient client = CreateClient();
+        HttpResponseMessage response = await client.GetAsync(
+            $"/api/v1/sandboxes/{executionId}/files/content?path={encodedPath}",
+            CancellationToken.None);
+
+        SandboxFileContent payload = await ReadJsonAsync<SandboxFileContent>(response);
+        byte[] data = Convert.FromBase64String(payload.ContentBase64);
+        return Encoding.UTF8.GetString(data);
     }
 
     private async Task<string> TryReadSandboxFileRaw(string executionId, string path)

@@ -49,6 +49,12 @@ public class AuthorAgentImpl : ReelForgeAgentBase
             (using Remotion sequencing patterns such as `Sequence`, `Series`, or `TransitionSeries` as appropriate).
            **NEVER modify `src/index.ts`** — the template's entry point is already configured.
 
+        When changing a file that already exists, use `EditSandboxFile` or `ApplySandboxFileEdits`
+        with the smallest unique snippet of surrounding context. Only use `WriteSandboxFile` to
+        create a NEW file or when you are genuinely replacing the whole file. For a large file,
+        locate the code with `GetSandboxFileOutline` and read only the relevant range with
+        `ReadSandboxFileLines` instead of reading the whole file.
+
         ## CRITICAL: Import Extensions
         - **Always use explicit `.tsx` extensions** when importing local TSX files.
         - Example: `import { MyComponent } from './MyComponent.tsx';` (NOT `./MyComponent` or `./MyComponent.js`)

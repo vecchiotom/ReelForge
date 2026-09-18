@@ -61,11 +61,15 @@ public class AgentToolProvider : IAgentToolProvider
             AIFunctionFactory.Create(_projectFileTools.WriteProjectFile)
         ],
 
+        // ReadSandboxFileLines/GetSandboxFileOutline are read-only — see ToolGroupCatalog's
+        // matching comment for why they sit in Browse rather than Authoring.
         ToolGroup.SandboxBrowse =>
         [
             AIFunctionFactory.Create(_sandboxTools.GetSandboxStatus),
             AIFunctionFactory.Create(_sandboxTools.ListSandboxFiles),
-            AIFunctionFactory.Create(_sandboxTools.ReadSandboxFile)
+            AIFunctionFactory.Create(_sandboxTools.ReadSandboxFile),
+            AIFunctionFactory.Create(_sandboxTools.ReadSandboxFileLines),
+            AIFunctionFactory.Create(_sandboxTools.GetSandboxFileOutline)
         ],
 
         ToolGroup.SandboxMetadata =>
@@ -78,10 +82,14 @@ public class AgentToolProvider : IAgentToolProvider
             AIFunctionFactory.Create(_sandboxTools.CheckLintAndTypeErrors)
         ],
 
+        // EditSandboxFile/ApplySandboxFileEdits mutate an existing file — see ToolGroupCatalog's
+        // matching comment for why they sit in Authoring alongside WriteSandboxFile.
         ToolGroup.SandboxAuthoring =>
         [
             AIFunctionFactory.Create(_sandboxTools.EnsureSandbox),
             AIFunctionFactory.Create(_sandboxTools.WriteSandboxFile),
+            AIFunctionFactory.Create(_sandboxTools.EditSandboxFile),
+            AIFunctionFactory.Create(_sandboxTools.ApplySandboxFileEdits),
             AIFunctionFactory.Create(_sandboxTools.DeleteSandboxPath),
             AIFunctionFactory.Create(_sandboxTools.InstallNpmPackages),
             AIFunctionFactory.Create(_sandboxTools.RunSandboxNpmScript)

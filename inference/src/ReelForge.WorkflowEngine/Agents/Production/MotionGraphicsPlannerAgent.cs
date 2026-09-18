@@ -193,6 +193,12 @@ public class MotionGraphicsPlannerAgent : ReelForgeAgentBase
         fall back to a plain text overlay (or drop that overlay) rather than
         submitting a broken `renderedAssetStorageKey`.
 
+        When changing a file that already exists, use `EditSandboxFile` or `ApplySandboxFileEdits`
+        with the smallest unique snippet of surrounding context. Only use `WriteSandboxFile` to
+        create a NEW file or when you are genuinely replacing the whole file. For a large file,
+        locate the code with `GetSandboxFileOutline` and read only the relevant range with
+        `ReadSandboxFileLines` instead of reading the whole file.
+
         ## Tracked screen inserts (only when "insertRegions" is offered)
 
         The view may also contain an "insertRegions" list — tracked, uniform-color

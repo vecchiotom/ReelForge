@@ -7,6 +7,8 @@ using ReelForge.Shared.IntegrationEvents;
 using ReelForge.WorkflowEngine.Data;
 using ReelForge.WorkflowEngine.Observability;
 using ReelForge.WorkflowEngine.Agents.Tools;
+using ReelForge.WorkflowEngine.Execution.Caching;
+using ReelForge.WorkflowEngine.Execution.Context;
 using ReelForge.WorkflowEngine.Execution.StepExecutors;
 using ReelForge.WorkflowEngine.Services.Messaging;
 
@@ -24,6 +26,31 @@ public class WorkflowExecutorService
     private readonly RabbitMqHelper _rabbitHelper;
     private readonly WorkflowHardeningOptions _hardeningOptions;
 
+    // Cross-execution step-result caching (Execution/Caching). All three are nullable/optional so
+    // every existing direct-construction call site (this type is resolved Scoped in production,
+    // but several unit tests new it up by hand with named arguments and no knowledge of caching)
+    // keeps compiling unchanged — omitting these three parameters simply means caching behaves as
+    // fully disabled. IStepCachePolicy/IStepCacheKeyBuilder are pure and stateless, so they are
+    // safe to accept via this OUTER constructor scope; IStepResultCache/
+    // IProjectFileFingerprintProvider are themselves Scoped services that depend on
+    // WorkflowEngineDbContext, and ExecuteAsync already creates its OWN inner scope (see
+    // `_scopeFactory.CreateScope()` below) to resolve that DbContext — so those two are resolved
+    // from that SAME inner scope inside ExecuteAsync instead, rather than injected here, to avoid
+    // silently pairing them with a DIFFERENT WorkflowEngineDbContext instance than the one the rest
+    // of the execution uses.
+    private readonly IStepCachePolicy? _cachePolicy;
+    private readonly IStepCacheKeyBuilder? _cacheKeyBuilder;
+    private readonly StepCacheOptions? _cacheOptions;
+
+    // Deterministic, PROMPT-ONLY bound on how much prior-step output is concatenated into an
+    // agent's input (Execution/Context). Optional for the same reason the cache collaborators
+    // above are: a null here means StepExecutionContext reproduces the previous, unbounded
+    // concatenation byte-for-byte, so every hand-constructing unit test is unaffected. This value
+    // is only ever handed to StepExecutionContext.BudgetOptions, which feeds BuildAgentInput and
+    // nothing else — it must never reach a persistence path, since StepOutputHistory and the
+    // persisted WorkflowStepResult.OutputJson always keep the raw, unbudgeted output.
+    private readonly AgentInputBudgetOptions? _budgetOptions;
+
     // Cancellation tokens for running executions live in a separate SINGLETON
     // (ExecutionCancellationRegistry — see its doc comment for why), not as an instance field
     // here: this service is registered Scoped (it depends on the Scoped IWorkflowEventPublisher),
@@ -39,7 +66,11 @@ public class WorkflowExecutorService
         IEnumerable<IStepExecutor> executors,
         RabbitMqHelper rabbitHelper,
         IOptions<WorkflowHardeningOptions> hardeningOptions,
-        ExecutionCancellationRegistry cancellationRegistry)
+        ExecutionCancellationRegistry cancellationRegistry,
+        IStepCachePolicy? cachePolicy = null,
+        IStepCacheKeyBuilder? cacheKeyBuilder = null,
+        IOptions<StepCacheOptions>? cacheOptions = null,
+        IOptions<AgentInputBudgetOptions>? budgetOptions = null)
     {
         _scopeFactory = scopeFactory;
         _eventPublisher = eventPublisher;
@@ -48,6 +79,10 @@ public class WorkflowExecutorService
         _rabbitHelper = rabbitHelper;
         _hardeningOptions = hardeningOptions.Value;
         _cancellationRegistry = cancellationRegistry;
+        _cachePolicy = cachePolicy;
+        _cacheKeyBuilder = cacheKeyBuilder;
+        _cacheOptions = cacheOptions?.Value;
+        _budgetOptions = budgetOptions?.Value;
     }
 
     public async Task ExecuteAsync(Guid executionId, string correlationId, CancellationToken ct)
@@ -65,6 +100,15 @@ public class WorkflowExecutorService
 
         using IServiceScope scope = _scopeFactory.CreateScope();
         WorkflowEngineDbContext db = scope.ServiceProvider.GetRequiredService<WorkflowEngineDbContext>();
+
+        // Resolved from THIS scope (not the constructor) so both share the same
+        // WorkflowEngineDbContext instance `db` above uses — see the constructor's doc comment on
+        // why. GetService (not GetRequiredService): unresolved simply means caching is disabled,
+        // which is also what happens in every unit test that constructs this service with a
+        // minimal scope/service provider that never registered them.
+        IStepResultCache? stepResultCache = scope.ServiceProvider.GetService<IStepResultCache>();
+        IProjectFileFingerprintProvider? projectFileFingerprintProvider =
+            scope.ServiceProvider.GetService<IProjectFileFingerprintProvider>();
 
         WorkflowExecution? execution = await db.WorkflowExecutions
             .Include(e => e.WorkflowDefinition)
@@ -177,6 +221,7 @@ public class WorkflowExecutorService
                     IterationCount = iterationCount,
                     CorrelationId = correlationId,
                     UserRequest = execution.UserRequest,
+                    BudgetOptions = _budgetOptions,
                     CancellationToken = ct
                 };
 
@@ -191,6 +236,20 @@ public class WorkflowExecutorService
                 {
                     string _ = context.BuildAgentInput();
                     initialInputJson = ResolveInputJsonForPersistence(context.LastResolvedAgentInput, accumulatedOutput);
+
+                    // Non-null only when the context budget actually digested or dropped something
+                    // (see Execution/Context/AgentInputBudget). Deliberately logged rather than
+                    // silently applied: a prompt that lost content is something an operator
+                    // diagnosing a surprising agent answer needs to be able to see.
+                    if (context.LastBudgetSummary is not null)
+                    {
+                        _logger.LogInformation(
+                            "Execution {ExecutionId} step {StepOrder} ({StepType}) agent input was budgeted — {BudgetSummary}",
+                            executionId,
+                            step.StepOrder,
+                            step.StepType,
+                            context.LastBudgetSummary);
+                    }
                 }
 
                 WorkflowStepResult stepResult = new()
@@ -233,10 +292,61 @@ public class WorkflowExecutorService
                     CreateLogPreview(initialInputJson, 800),
                     ct);
 
+                // Cross-execution step-result cache (Execution/Caching). Consulted BEFORE the
+                // executor runs so a hit skips the agent call / ffmpeg invocation entirely.
+                // servedFromCache/cachedTokensSaved are only ever set on the hit path below and
+                // flow into stepResult in the SAME persistence block every other result already
+                // goes through (see that block's own comment) — a hit is never special-cased past
+                // this point, including never going through the ReviewLoop score-parsing branch
+                // (automatic: ReviewLoop is never IStepCachePolicy.IsCacheable).
+                bool servedFromCache = false;
+                int? cachedTokensSaved = null;
+
                 StepExecutionResult result;
                 try
                 {
-                    result = await ExecuteStepWithRetryAsync(executor, context, step, ct);
+                    WorkflowStepCacheEntry? cacheEntry = await TryGetCachedStepResultAsync(
+                        stepResultCache, projectFileFingerprintProvider, execution, step, context, initialInputJson, ct);
+
+                    if (cacheEntry is not null)
+                    {
+                        result = new StepExecutionResult
+                        {
+                            Output = cacheEntry.Output,
+                            NextStepIndex = currentStepIndex + 1,
+                            NewIterationCount = context.IterationCount,
+                            TokensUsed = 0,
+                            InputTokens = 0,
+                            OutputTokens = 0,
+                            DurationMs = 0,
+                            Status = StepStatus.Completed,
+                            OutputStorageKey = cacheEntry.OutputStorageKey,
+                            ArtifactStorageKey = cacheEntry.ArtifactStorageKey,
+                            ChatTranscriptJson = cacheEntry.ChatTranscriptJson
+                        };
+                        servedFromCache = true;
+                        cachedTokensSaved = cacheEntry.TokensUsed;
+
+                        await context.ReportProgressAsync("Reusing cached result");
+
+                        _logger.LogInformation(
+                            "Step {StepOrder} ({StepType}) for execution {ExecutionId} served from the step-result cache (key {CacheKeyPrefix}..., saved {TokensSaved} tokens vs. the original run)",
+                            step.StepOrder,
+                            step.StepType,
+                            executionId,
+                            cacheEntry.CacheKey[..Math.Min(12, cacheEntry.CacheKey.Length)],
+                            cacheEntry.TokensUsed);
+                    }
+                    else
+                    {
+                        result = await ExecuteStepWithRetryAsync(executor, context, step, ct);
+
+                        if (result.Status == StepStatus.Completed)
+                        {
+                            await TryStoreCachedStepResultAsync(
+                                stepResultCache, projectFileFingerprintProvider, execution, step, context, initialInputJson, result, ct);
+                        }
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -301,6 +411,8 @@ public class WorkflowExecutorService
                 stepResult.ToolCallsJson = result.ToolCalls.Count > 0 ? JsonSerializer.Serialize(result.ToolCalls) : null;
                 stepResult.ReasoningJson = result.Reasoning.Count > 0 ? JsonSerializer.Serialize(result.Reasoning) : null;
                 stepResult.ChatTranscriptJson = result.ChatTranscriptJson;
+                stepResult.FromCache = servedFromCache;
+                stepResult.CachedTokensSaved = cachedTokensSaved;
 
                 // Handle review scores for ReviewLoop steps
                 if (step.StepType == StepType.ReviewLoop && result.IterationNumber.HasValue)
@@ -795,6 +907,150 @@ public class WorkflowExecutorService
     /// </summary>
     internal static bool IsWithinReviewFeedbackWindow(int stepOrder, int minStepOrderInclusive, int maxStepOrderExclusive) =>
         stepOrder >= minStepOrderInclusive && stepOrder < maxStepOrderExclusive;
+
+    // -----------------------------------------------------------------
+    // Cross-execution step-result cache (Execution/Caching). Both methods below are best-effort
+    // wrappers around IStepResultCache — that interface's own contract already guarantees it never
+    // throws, but building a StepCacheKeyInputs here also calls IProjectFileFingerprintProvider
+    // (this project's own code, no such guarantee) and AgentInputContextResolver, so the whole
+    // lookup/store is wrapped in its own try/catch as a second line of defense: the cache must
+    // never be able to fail a workflow step it is trying to speed up.
+    // -----------------------------------------------------------------
+
+    /// <summary>
+    /// Looks up a cached result for <paramref name="step"/>, when caching is fully wired
+    /// (<paramref name="cache"/>/<paramref name="fingerprintProvider"/> resolved, <see cref="_cacheKeyBuilder"/>/
+    /// <see cref="_cachePolicy"/> constructed) and the step is policy-eligible
+    /// (<see cref="IStepCachePolicy.IsCacheable"/>). Returns null — meaning "run the step
+    /// normally" — for every reason that isn't an actual cache MISS too: caching unresolved,
+    /// disabled, or the step ineligible in the first place. Never throws.
+    /// </summary>
+    private async Task<WorkflowStepCacheEntry?> TryGetCachedStepResultAsync(
+        IStepResultCache? cache,
+        IProjectFileFingerprintProvider? fingerprintProvider,
+        WorkflowExecution execution,
+        WorkflowStep step,
+        StepExecutionContext context,
+        string? resolvedInput,
+        CancellationToken ct)
+    {
+        if (cache is null || fingerprintProvider is null || _cacheKeyBuilder is null || _cachePolicy is null)
+            return null;
+        if (_cacheOptions is { Enabled: false })
+            return null;
+
+        try
+        {
+            if (!_cachePolicy.IsCacheable(step))
+                return null;
+
+            StepCacheKeyInputs inputs = await BuildCacheKeyInputsAsync(fingerprintProvider, execution, step, context, resolvedInput, ct);
+            StepCacheLookupResult lookup = await cache.TryGetAsync(inputs, ct);
+            return lookup.Hit ? lookup.Entry : null;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Step-result cache lookup failed for execution {ExecutionId} step {StepOrder} ({StepType}); running the step normally",
+                execution.Id, step.StepOrder, step.StepType);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Persists <paramref name="result"/> to the step-result cache under the same conditions
+    /// <see cref="TryGetCachedStepResultAsync"/> checks. Never throws — a store failure must not
+    /// undo the step's own already-successful completion.
+    /// </summary>
+    private async Task TryStoreCachedStepResultAsync(
+        IStepResultCache? cache,
+        IProjectFileFingerprintProvider? fingerprintProvider,
+        WorkflowExecution execution,
+        WorkflowStep step,
+        StepExecutionContext context,
+        string? resolvedInput,
+        StepExecutionResult result,
+        CancellationToken ct)
+    {
+        if (cache is null || fingerprintProvider is null || _cacheKeyBuilder is null || _cachePolicy is null)
+            return;
+        if (_cacheOptions is { Enabled: false })
+            return;
+
+        try
+        {
+            if (!_cachePolicy.IsCacheable(step))
+                return;
+
+            StepCacheKeyInputs inputs = await BuildCacheKeyInputsAsync(fingerprintProvider, execution, step, context, resolvedInput, ct);
+            await cache.StoreAsync(inputs, result, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Step-result cache store failed for execution {ExecutionId} step {StepOrder} ({StepType}); the step's own result is unaffected",
+                execution.Id, step.StepOrder, step.StepType);
+        }
+    }
+
+    /// <summary>
+    /// Gathers everything <see cref="IStepCacheKeyBuilder.Build"/> hashes for <paramref name="step"/>
+    /// out of the step definition, the resolved agent (when it is an Agent step), the execution's
+    /// user request, and the project's current file fingerprint. <paramref name="resolvedInput"/>
+    /// is the SAME value <see cref="ExecuteAsync"/> already computed for persistence
+    /// (<c>context.LastResolvedAgentInput</c> for an Agent step — already resolved via
+    /// <c>context.BuildAgentInput()</c> just above its call site — or the accumulated output for
+    /// every other step type) — passed in rather than recomputed, per R: "do NOT change how
+    /// inputs are built".
+    /// </summary>
+    private static async Task<StepCacheKeyInputs> BuildCacheKeyInputsAsync(
+        IProjectFileFingerprintProvider fingerprintProvider,
+        WorkflowExecution execution,
+        WorkflowStep step,
+        StepExecutionContext context,
+        string? resolvedInput,
+        CancellationToken ct)
+    {
+        string fingerprint = await fingerprintProvider.GetFingerprintAsync(execution.ProjectId, ct);
+
+        return new StepCacheKeyInputs
+        {
+            ProjectId = execution.ProjectId,
+            StepType = step.StepType,
+            AgentType = step.AgentDefinition?.AgentType ?? AgentType.Custom,
+            AgentDefinitionId = step.AgentDefinitionId,
+            AgentSystemPrompt = step.AgentDefinition?.SystemPrompt,
+            AgentOutputSchemaName = step.AgentDefinition?.OutputSchemaName,
+            AgentInferenceProviderId = step.AgentDefinition?.InferenceProviderId,
+            AgentAssignedSkillsJson = step.AgentDefinition?.AssignedSkillsJson,
+            AgentInputContextMode = AgentInputContextResolver.ResolveEffectiveMode(step),
+            SelectedPriorStepOrdersJson = step.SelectedPriorStepOrdersJson,
+            InputMappingJson = step.InputMappingJson,
+            ExtractConfigJson = step.ExtractConfigJson,
+            VideoAnalyzeConfigJson = step.VideoAnalyzeConfigJson,
+            VideoCompileConfigJson = step.VideoCompileConfigJson,
+            EditRoomConfigJson = step.EditRoomConfigJson,
+            GraphicsRoomConfigJson = step.GraphicsRoomConfigJson,
+            ColorGradeRoomConfigJson = step.ColorGradeRoomConfigJson,
+            ConditionExpression = step.ConditionExpression,
+            MaxIterations = step.MaxIterations,
+            MinScore = step.MinScore,
+            ResolvedInput = resolvedInput,
+            UserRequest = context.UserRequest,
+            ProjectFileFingerprint = fingerprint,
+            WorkflowDefinitionId = execution.WorkflowDefinitionId
+        };
+    }
 
     private static async Task EnsureAuthorArtifactProducedAsync(
         Guid executionId,
