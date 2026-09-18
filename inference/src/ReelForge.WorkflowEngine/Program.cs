@@ -120,6 +120,7 @@ builder.Services.AddSingleton<IReelForgeAgent, MotionGraphicsPlannerAgent>();
 builder.Services.AddSingleton<IReelForgeAgent, VideoReviewAgentImpl>();
 builder.Services.AddSingleton<IReelForgeAgent, MusicSupervisorAgent>();
 builder.Services.AddSingleton<IReelForgeAgent, VideoEditDirectorAgent>();
+builder.Services.AddSingleton<IReelForgeAgent, MotionGraphicsDirectorAgent>();
 builder.Services.AddSingleton<IAgentRegistry, AgentRegistry>();
 builder.Services.AddSingleton<IAgentToolProvider, AgentToolProvider>();
 builder.Services.AddSingleton<IProjectFileWorkspace, ProjectFileWorkspace>();
@@ -138,7 +139,8 @@ builder.Services.AddHttpClient();
 builder.Services.Configure<WorkflowHardeningOptions>(builder.Configuration.GetSection(WorkflowHardeningOptions.SectionName));
 
 // --- Step Executors ---
-// Consumed only by AgentStepExecutor, and only for AgentType.MotionGraphicsPlanner steps.
+// Consumed by AgentStepExecutor (AgentType.MotionGraphicsPlanner steps) and by
+// GraphicsRoomStepExecutor (StepType.GraphicsRoom's inEdit view enrichment).
 builder.Services.AddSingleton<IMotionGraphicsPlacementAnnotator, MotionGraphicsPlacementAnnotator>();
 builder.Services.AddSingleton<IStepExecutor, AgentStepExecutor>();
 builder.Services.AddSingleton<IStepExecutor, ConditionalStepExecutor>();
@@ -149,6 +151,7 @@ builder.Services.AddSingleton<IStepExecutor, ExtractStepExecutor>();
 builder.Services.AddSingleton<IStepExecutor, VideoAnalyzeStepExecutor>();
 builder.Services.AddSingleton<IStepExecutor, VideoCompileStepExecutor>();
 builder.Services.AddSingleton<IStepExecutor, EditRoomStepExecutor>();
+builder.Services.AddSingleton<IStepExecutor, GraphicsRoomStepExecutor>();
 
 // --- Workflow Executor ---
 // Singleton: WorkflowExecutorService is Scoped (a new instance per consumed message), so the

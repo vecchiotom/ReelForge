@@ -2,7 +2,7 @@ using System.Linq;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 
-namespace ReelForge.WorkflowEngine.Agents.EditRoom;
+namespace ReelForge.WorkflowEngine.Agents.Rooms;
 
 /// <summary>
 /// Reported to the turn-completed callback once a seat's (or the director's) turn finishes.
@@ -10,13 +10,13 @@ namespace ReelForge.WorkflowEngine.Agents.EditRoom;
 /// chat client didn't report usage for that turn (a provider that omits it, or the fallback/error
 /// path) — never a guessed/estimated value.
 /// </summary>
-public sealed record EditRoomTurnResult(
+public sealed record RoomTurnResult(
     string SeatName, string Text, bool IsError, TimeSpan Duration,
     int? InputTokens = null, int? OutputTokens = null);
 
 /// <summary>
 /// Wraps one already-constructed inner <see cref="AIAgent"/> (a seat's or the room-participant
-/// director's chat-client-backed agent) so it can participate in the edit room's group chat with:
+/// director's chat-client-backed agent) so it can participate in a room's group chat with:
 /// (1) room-specific sampling options injected on every turn — the group chat host always passes
 /// <c>options == null</c> to a participant, so this is the only way to control temperature/
 /// reasoning-effort/max-tokens per turn; (2) the seat's persona appended as the LAST message in the
@@ -27,6 +27,12 @@ public sealed record EditRoomTurnResult(
 /// the whole room.
 ///
 /// <para>
+/// Fully room-agnostic: nothing here knows which room (edit, graphics, ...) the seat belongs to —
+/// the persona directive, temperatures, and callback all arrive from the room's step executor.
+/// Formerly named <c>EditRoomSeatAgent</c>; renamed unchanged when the second room was built.
+/// </para>
+///
+/// <para>
 /// Overrides BOTH <see cref="RunCoreAsync"/> and <see cref="RunCoreStreamingAsync"/> deliberately:
 /// the group chat host invokes participants through the STREAMING path
 /// (<c>AIAgent.RunStreamingAsync</c> → <c>RunCoreStreamingAsync</c>), so a wrapper that only
@@ -34,7 +40,7 @@ public sealed record EditRoomTurnResult(
 /// package.
 /// </para>
 /// </summary>
-public sealed class EditRoomSeatAgent : DelegatingAIAgent
+public sealed class RoomSeatAgent : DelegatingAIAgent
 {
     private readonly string _seatName;
     private readonly string _turnDirective;
@@ -42,16 +48,16 @@ public sealed class EditRoomSeatAgent : DelegatingAIAgent
     private readonly float? _topP;
     private readonly int _maxOutputTokens;
     private readonly string? _reasoningEffort;
-    private readonly Func<EditRoomTurnResult, Task> _onTurnCompleted;
+    private readonly Func<RoomTurnResult, Task> _onTurnCompleted;
 
-    public EditRoomSeatAgent(
+    public RoomSeatAgent(
         AIAgent innerAgent,
         string seatName,
         string turnDirective,
         float temperature,
         int maxOutputTokens,
         string? reasoningEffort,
-        Func<EditRoomTurnResult, Task> onTurnCompleted,
+        Func<RoomTurnResult, Task> onTurnCompleted,
         float? topP = null)
         : base(innerAgent)
     {
@@ -82,7 +88,7 @@ public sealed class EditRoomSeatAgent : DelegatingAIAgent
             AgentResponse response = await InnerAgent.RunAsync(turnMessages, session, runOptions, cancellationToken);
             string text = response.Text ?? string.Empty;
             (int? inputTokens, int? outputTokens) = ExtractUsage(response.Usage);
-            await ReportAsync(new EditRoomTurnResult(_seatName, text, IsError: false, DateTime.UtcNow - startedAt, inputTokens, outputTokens));
+            await ReportAsync(new RoomTurnResult(_seatName, text, IsError: false, DateTime.UtcNow - startedAt, inputTokens, outputTokens));
             return response;
         }
         catch (OperationCanceledException)
@@ -174,14 +180,14 @@ public sealed class EditRoomSeatAgent : DelegatingAIAgent
 
         if (failed)
         {
-            EditRoomTurnResult fallback = BuildFallbackResult(startedAt);
+            RoomTurnResult fallback = BuildFallbackResult(startedAt);
             await ReportAsync(fallback);
             yield return new AgentResponseUpdate(ChatRole.Assistant, fallback.Text) { AuthorName = _seatName };
             yield break;
         }
 
         (int? inputTokens, int? outputTokens) = ExtractUsage(usage);
-        await ReportAsync(new EditRoomTurnResult(_seatName, accumulated.ToString(), IsError: false, DateTime.UtcNow - startedAt, inputTokens, outputTokens));
+        await ReportAsync(new RoomTurnResult(_seatName, accumulated.ToString(), IsError: false, DateTime.UtcNow - startedAt, inputTokens, outputTokens));
     }
 
     /// <summary>
@@ -237,15 +243,15 @@ public sealed class EditRoomSeatAgent : DelegatingAIAgent
 
     private async Task<AgentResponse> FallbackAsync(DateTime startedAt)
     {
-        EditRoomTurnResult fallback = BuildFallbackResult(startedAt);
+        RoomTurnResult fallback = BuildFallbackResult(startedAt);
         await ReportAsync(fallback);
         return new AgentResponse(new ChatMessage(ChatRole.Assistant, fallback.Text) { AuthorName = _seatName });
     }
 
-    private EditRoomTurnResult BuildFallbackResult(DateTime startedAt) =>
+    private RoomTurnResult BuildFallbackResult(DateTime startedAt) =>
         new(_seatName, $"[{_seatName} had no input this round]", IsError: true, DateTime.UtcNow - startedAt);
 
-    private async Task ReportAsync(EditRoomTurnResult result)
+    private async Task ReportAsync(RoomTurnResult result)
     {
         try
         {

@@ -360,9 +360,9 @@ public class EditRoomStepExecutorTests
         // multi-source support shipped; the room charter every seat (and the director's
         // room-participant turns) runs under must state the same hard rule, or the room can
         // converge on a cross-clip span the compile step then rejects as MIXED_SOURCE_SPAN.
-        EditRoomStepExecutor.RoomCharterPrompt.Should().Contain("\"src\"",
+        EditRoomStepExecutor.EditRoomCharterPrompt.Should().Contain("\"src\"",
             "seats must be told what the src index on every offered id means");
-        EditRoomStepExecutor.RoomCharterPrompt.Should().Contain("SAME clip",
+        EditRoomStepExecutor.EditRoomCharterPrompt.Should().Contain("SAME clip",
             "the one hard multi-source rule — a single kept run never bridges two clips — must be stated");
     }
 

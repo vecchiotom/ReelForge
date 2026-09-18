@@ -230,6 +230,18 @@ public class StepExecutionContext
             ? entry with { Output = overridden }
             : entry;
 
+    /// <summary>
+    /// Public accessor for the prompt-facing output of one history entry — the override installed
+    /// by <see cref="SetPromptOutputOverride"/> when one exists, otherwise the entry's own output
+    /// verbatim. Added for <c>RoomStepExecutorBase</c>'s bounded-view resolution, so a room step
+    /// (the graphics room's inEdit annotation) sees the same enriched rendering an Agent step's
+    /// prompt would — for a step with no override installed this is exactly
+    /// <see cref="StepOutputHistoryEntry.Output"/>. Deterministic by-StepOrder consumers
+    /// (e.g. <c>VideoCompileStepExecutor</c>) must keep reading the raw output instead — see
+    /// <see cref="SetPromptOutputOverride"/>'s contract.
+    /// </summary>
+    public string OutputForPrompt(StepOutputHistoryEntry entry) => ForPrompt(entry).Output;
+
     public void RecordRetryFeedback(int attemptNumber, string? reason)
     {
         if (string.IsNullOrWhiteSpace(reason))
@@ -387,13 +399,14 @@ public class StepExecutionResult
     public string? ArtifactStorageKey { get; init; }
 
     /// <summary>
-    /// For a <see cref="StepType.EditRoom"/> step only: the full room transcript (every turn, in
-    /// order) as a JSON array, mirroring <see cref="Shared.IntegrationEvents.WorkflowStepChatTurn"/>'s
-    /// per-turn shape but with the FULL untruncated turn text (this is DB persistence, not the
-    /// ~600-char-truncated SSE broadcast). Copied verbatim onto
-    /// <see cref="WorkflowStepResult.ChatTranscriptJson"/> by <c>WorkflowExecutorService</c> so
-    /// reopening the execution page later shows the complete discussion, not just whatever a live
-    /// SSE-connected tab happened to see. Null for every non-EditRoom step type.
+    /// For a room step (<see cref="StepType.EditRoom"/>/<see cref="StepType.GraphicsRoom"/>) only:
+    /// the full room transcript (every turn, in order) as a JSON array, mirroring
+    /// <see cref="Shared.IntegrationEvents.WorkflowStepChatTurn"/>'s per-turn shape but with the
+    /// FULL untruncated turn text (this is DB persistence, not the ~600-char-truncated SSE
+    /// broadcast). Copied verbatim onto <see cref="WorkflowStepResult.ChatTranscriptJson"/> by
+    /// <c>WorkflowExecutorService</c> so reopening the execution page later shows the complete
+    /// discussion, not just whatever a live SSE-connected tab happened to see. Null for every
+    /// non-room step type.
     /// </summary>
     public string? ChatTranscriptJson { get; init; }
 }

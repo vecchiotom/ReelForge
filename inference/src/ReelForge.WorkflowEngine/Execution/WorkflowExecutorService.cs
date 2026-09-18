@@ -678,16 +678,18 @@ public class WorkflowExecutorService
         if (step.StepType == StepType.Extract
             || step.StepType == StepType.VideoAnalyze
             || step.StepType == StepType.VideoCompile
-            || step.StepType == StepType.EditRoom)
+            || step.StepType == StepType.EditRoom
+            || step.StepType == StepType.GraphicsRoom)
         {
             // Deterministic, non-LLM steps: retrying the whole step reproduces the same failure
             // (Extract) or re-burns minutes of ffmpeg decode/encode to reproduce a deterministic
             // failure (VideoAnalyze/VideoCompile). ASR's own network call inside
             // VideoAnalyzeStepExecutor has its own small bounded retry around just that call —
-            // it does not go through this outer step-level retry mechanism. EditRoom is NOT
-            // deterministic (it makes many LLM calls), but an outer retry re-running the whole
-            // room from scratch is expensive — the step's own internal synthesis retry
-            // (EditRoomStepConfig.MaxSynthesisAttempts) is where retry value actually is.
+            // it does not go through this outer step-level retry mechanism. The room steps
+            // (EditRoom/GraphicsRoom) are NOT deterministic (they make many LLM calls), but an
+            // outer retry re-running a whole room from scratch is expensive — a room step's own
+            // internal synthesis retry (IRoomStepConfig.MaxSynthesisAttempts) is where retry
+            // value actually is.
             return 1;
         }
 

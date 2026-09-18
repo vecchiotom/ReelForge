@@ -117,7 +117,22 @@ public enum AgentType
     /// AgentType.VideoStoryEditor emits, and reused verbatim: same rushcut invariant (never a
     /// timestamp, only offered ids). See docs/video-editing.md "The edit room".
     /// </summary>
-    VideoEditDirector
+    VideoEditDirector,
+    /// <summary>
+    /// LLM agent used TWICE by a StepType.GraphicsRoom step — the motion-graphics analogue of
+    /// AgentType.VideoEditDirector: once per-turn as the lead-artist moderator participant in the
+    /// room's live group chat (free-form prose, emits the literal sentinel "ROOM_DECIDED" once
+    /// satisfied), and once more, OUTSIDE the group chat, for a single ordinary structured-output
+    /// synthesis call that converts the room's discussion into ONE schema-validated
+    /// MotionGraphicsPlanOutput — the exact same schema AgentType.MotionGraphicsPlanner emits,
+    /// reused verbatim: same extended rushcut invariant (never a timestamp OR a pixel coordinate,
+    /// only offered placement ids). Unlike VideoEditDirector, this agent's synthesis call carries
+    /// the same sandbox+Remotion+render tool set as MotionGraphicsPlanner (minus WriteProjectFile)
+    /// so a synthesized overlay can be backed by a real rendered transparent asset — see
+    /// ToolGroupCatalog's rationale. Room-participant turns are tool-restricted to read-only by
+    /// GraphicsRoomStepExecutor regardless. See docs/video-editing.md "The graphics room".
+    /// </summary>
+    MotionGraphicsDirector
 }
 
 /// <summary>
@@ -158,7 +173,20 @@ public enum StepType
     /// VideoCompileStepExecutor needs no changes to consume it. See
     /// ReelForge.Shared.Workflows.EditRoomStepConfig and docs/video-editing.md "The edit room".
     /// </summary>
-    EditRoom
+    EditRoom,
+    /// <summary>
+    /// Multi-agent "graphics room" — the motion-graphics analogue of EditRoom, built on the same
+    /// shared room infrastructure (RoomGroupChatManager/RoomStepExecutorBase): several
+    /// AgentType.MotionGraphicsPlanner-role seats plus an AgentType.MotionGraphicsDirector
+    /// moderator converse in a live group chat over the same offered view.placements candidates
+    /// (p{n} ids) a solo planner would see, then the director emits ONE schema-validated
+    /// MotionGraphicsPlanOutput in a normal structured call outside the chat loop — exactly the
+    /// shape a StepType.Agent + AgentType.MotionGraphicsPlanner step already produces, so
+    /// VideoCompileStepExecutor's GraphicsPlan resolution needs no changes to consume it. See
+    /// ReelForge.Shared.Workflows.GraphicsRoomStepConfig and docs/video-editing.md
+    /// "The graphics room".
+    /// </summary>
+    GraphicsRoom
 }
 
 /// <summary>

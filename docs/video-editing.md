@@ -26,6 +26,8 @@ executors, agents in general) see `CLAUDE.md`.
 - [Seam transitions and the program envelope](#seam-transitions-and-the-program-envelope)
 - [Semantic visual dimensions (Phase 4)](#semantic-visual-dimensions-phase-4)
 - [The edit room](#the-edit-room)
+- [The shared room infrastructure](#the-shared-room-infrastructure)
+- [The graphics room](#the-graphics-room)
 - [Security: why ffmpeg is not in the sandbox](#security-why-ffmpeg-is-not-in-the-sandbox)
 - [Explicitly not built](#explicitly-not-built)
 
@@ -1693,7 +1695,10 @@ instead of a solo `VideoStoryEditor` step's.
 
 Every seat sees the identical bounded view and can speak to any part of it — there is no
 information asymmetry between seats that would make an LLM-driven "who should speak next" routing
-decision meaningful. `EditRoomGroupChatManager` (`WorkflowEngine/Agents/EditRoom/EditRoomGroupChatManager.cs`)
+decision meaningful. `EditRoomGroupChatManager` (`WorkflowEngine/Agents/EditRoom/EditRoomGroupChatManager.cs`
+— since the graphics room landed, a thin binding of the room-generic `RoomGroupChatManager` base,
+contributing only the edit room's `[sgt]{n}` offered-id regex; see
+[The shared room infrastructure](#the-shared-room-infrastructure))
 is therefore a plain, deterministic round-robin scheduler over the configured seats, followed by
 the director: it makes zero model/network calls itself, only orchestrating which
 already-constructed `AIAgent` speaks next. Routing this through an LLM would double the room's cost
@@ -1714,9 +1719,10 @@ for a decision that doesn't need intelligence.
   final `VideoEditDecisionOutput`. Same minimal read-only tool scope as `VideoStoryEditor` (no
   sandbox, no write/render tools — it only decides).
 
-### How a turn is built: `EditRoomSeatAgent`
+### How a turn is built: `RoomSeatAgent`
 
-`EditRoomSeatAgent` (`WorkflowEngine/Agents/EditRoom/EditRoomSeatAgent.cs`) wraps each
+`RoomSeatAgent` (`WorkflowEngine/Agents/Rooms/RoomSeatAgent.cs` — named `EditRoomSeatAgent` until
+the graphics room landed; renamed unchanged since it was already fully room-agnostic) wraps each
 already-constructed inner `AIAgent` (built by `EditRoomStepExecutor` via the same chat-client-
 resolution path `ReelForgeAgentBase.CreateAgentAsync` uses) as a `DelegatingAIAgent`, overriding
 BOTH `RunCoreAsync` and `RunCoreStreamingAsync` — the group chat host always invokes participants
@@ -1776,7 +1782,7 @@ Same never-throws, always-valid-JSON discipline as `VideoAnalyzeStepExecutor`/
    `ExtractInputRef`, reused verbatim from `VideoAnalyzeStepConfig` — the same `Previous`/`Step`
    resolution `VideoCompileStepExecutor.ResolveDecisionJson` already established for `Decision`/
    `GraphicsPlan`/`MusicPlan`) and extracts the offered shot/silence/segment id vocabulary from it.
-2. Builds every seat's and the director's `AIAgent`, wraps each in `EditRoomSeatAgent`, and runs
+2. Builds every seat's and the director's `AIAgent`, wraps each in `RoomSeatAgent`, and runs
    them through `AgentWorkflowBuilder.CreateGroupChatBuilderWith(...).AddParticipants(...).Build()`
    via `InProcessExecution.RunStreamingAsync`, bounded by `EditRoomStepConfig.RoomTimeoutSeconds`.
    The bounded view is sent as ONE opening chat message (not folded into the agent instructions),
@@ -1851,7 +1857,7 @@ API/frontend relay of this new event type is a separate, follow-up pass.
 | `DirectorAgentDefinitionId` | `null` | Per-agent-definition override for the director seat |
 | `Termination` | `SentinelOrConverged` | `SentinelOnly` / `Converged` / `SentinelOrConverged` / `FixedTurns` — see the table above |
 | `MinConvergenceRounds` | `2` | Consecutive rounds with an unchanged offered-id-mention set required for `Converged`/`SentinelOrConverged` to fire |
-| `MaxTurnTokens` | `220` | Per-turn `MaxOutputTokens`, injected via `EditRoomSeatAgent` |
+| `MaxTurnTokens` | `220` | Per-turn `MaxOutputTokens`, injected via `RoomSeatAgent` |
 | `MaxHistoryChars` | `40000` | Soft cap on how much of the room transcript is rendered into the synthesis prompt (oldest turns dropped first beyond this) |
 | `Temperature` | `0.7` | Sampling temperature for every editor seat's turn |
 | `DirectorTemperature` | `0.3` | Sampling temperature for the director's ROOM-PARTICIPANT turns only — the standalone synthesis call uses `VideoEditDirectorAgent`'s own `AgentModelSettings` default (`0.3`/`"low"`) instead |
@@ -1872,6 +1878,127 @@ FK is satisfied by the same `AgentType.VideoTransform` deterministic placeholder
 `VideoCompile` steps already use — the room's real seats/director are resolved independently, from
 `EditRoomConfigJson`, never from the step's own `AgentDefinitionId`. Deserialization-tested the same
 way as the other video templates (`WorkflowTemplateCatalogConfigDeserializationTests.cs`).
+
+---
+
+## The shared room infrastructure
+
+The edit room's mechanics were extracted into a room-generic base the moment a second room (the
+graphics room, below) needed them — deliberately as ONE shared implementation, not per-room
+copies, since multi-agent deliberation is intended as a standing pattern in this codebase (a
+color-grading room is the next planned consumer). The seams:
+
+- **`RoomSeatAgent`** (`WorkflowEngine/Agents/Rooms/RoomSeatAgent.cs`, formerly
+  `EditRoomSeatAgent` — renamed unchanged, it was already fully room-agnostic) + its
+  `RoomTurnResult` record: the `DelegatingAIAgent` wrapper providing per-turn sampling-option
+  injection, the prefix-cache-preserving persona-last message ordering, seat display names, and
+  turn-failure containment. A new room reuses it as-is.
+- **`RoomGroupChatManager`** (`WorkflowEngine/Agents/Rooms/RoomGroupChatManager.cs`): the
+  deterministic scheduler/terminator base — round-robin over N rounds then the director, the
+  `ROOM_DECIDED` sentinel check, offered-id-mention convergence, the explicit ceiling check, and
+  turn observation. A concrete room contributes ONLY its offered-id vocabulary: a thin subclass
+  (`EditRoomGroupChatManager` binds `[sgt]\d+`, `GraphicsRoomGroupChatManager` binds `p\d+`)
+  passing its compiled regex to the base constructor, plus a static
+  `ExtractOfferedIdMentions` convenience bound to that regex.
+- **`IRoomStepConfig`** (`Shared/Workflows/RoomStepConfig.cs`): the config surface the shared
+  infrastructure reads (view ref, effective seats, rounds/turn ceiling, termination knobs,
+  temperatures, reasoning effort, timeout, transcript/stream flags, `FallbackToSolo`, synthesis
+  attempts). Each room's own JSON record (`EditRoomStepConfig`, `GraphicsRoomStepConfig`)
+  implements it on top of its unchanged JSON shape — `EditRoomSeat` and
+  `EditRoomTerminationMode` are the room-GENERIC seat record and termination enum despite their
+  names, kept under their original names so no persisted config or test broke when the base was
+  extracted.
+- **`RoomStepExecutorBase<TDecision>`**
+  (`WorkflowEngine/Execution/StepExecutors/RoomStepExecutorBase.cs`): the executor template —
+  never-throws/always-valid-JSON discipline, config/view resolution, the group-chat run (agent
+  construction, progress + `WorkflowStepChatTurn` events with cumulative token tallies, the
+  `TurnToken` kickoff, the room timeout), transcript persistence (both the MinIO artifact and the
+  DB-persisted `ChatTranscriptJson`), the retried standalone synthesis call, the solo-agent
+  fallback, offered-id filtering, and the additive `"room"` metadata block on `output_json`. A
+  concrete room supplies: its `StepType`/config column/config type, offered-id
+  extraction + mention regex, charter prompt + director turn directive, the seat/director/solo
+  `AgentType`s, decision normalize/reject/filter hooks (the edit room rejects an empty `Keep`
+  list; the graphics room accepts an empty plan), and optional overrides for progress-label
+  wording, room-turn tool scope (`GetRoomTurnTools`), view enrichment (`PrepareViewAsync`), and
+  the empty-view outcome (`BuildDecisionForEmptyView`).
+
+To build a new room (e.g. color grading): add a `StepType` + `{X}RoomConfigJson` jsonb column
+(mapped in BOTH DbContexts, migration on the WorkflowEngine context only — it owns
+`workflow_steps`), a config record implementing `IRoomStepConfig`, a `RoomGroupChatManager`
+subclass binding the room's id regex, a `RoomStepExecutorBase<TDecision>` subclass binding the
+hooks above, a dual-role director agent (+ seeded prompt with the verbatim-consistency test), and
+a template. The synthesis output schema should be an EXISTING single-agent schema whenever a solo
+equivalent exists, so downstream consumers need zero changes — that is the entire trick that let
+`VideoCompileStepExecutor` consume both rooms' outputs untouched.
+
+---
+
+## The graphics room
+
+`StepType.GraphicsRoom` replaces the single `AgentType.MotionGraphicsPlanner` planning step with a
+multi-agent deliberation over the SAME offered `view.placements` candidates (`p{n}` ids, Phase 3)
+a solo planner consumes: several motion-graphics-artist seats plus a lead-artist director
+(`AgentType.MotionGraphicsDirector`) converse in a live group chat, then the director synthesizes
+ONE schema-validated `MotionGraphicsPlanOutput` — the exact schema, and the exact extended rushcut
+invariant (never a timestamp OR a pixel coordinate, only offered placement ids, reflection-tested
+by `MotionGraphicsPlanOutputInvariantTests` unchanged), the solo planner already produces.
+**`VideoCompileStepExecutor` needs zero changes**: `GraphicsPlan` just points at the
+`GraphicsRoom` step's `StepOrder`, and its deserialization skips the additive `"room"` metadata
+key exactly as `Decision` resolution does for the edit room.
+
+Everything structural is [the shared room infrastructure](#the-shared-room-infrastructure); what
+is specific to this room:
+
+- **The seats** (`GraphicsRoomStepConfig.DefaultSeats`, three by default — `LayoutArtist`/
+  `TimingArtist`/`CopyArtist`) divide the actual overlay decision space: WHERE (regions, fit
+  scores, light/dark hints, clutter), WHEN (which candidate window lines up with what is said or
+  shown, `inEdit` survival, duration words), and WHAT/HOW (copy brevity, rendered-graphic vs
+  plain text, and whether the right number of overlays is zero). All three resolve to the same
+  built-in `AgentType.MotionGraphicsPlanner` agent — personas are injected per-turn, exactly the
+  edit room's one-agent-many-personas pattern.
+- **`AgentType.MotionGraphicsDirector`** is used TWICE, like `VideoEditDirector`: as the
+  room-participant moderator (prose, `ROOM_DECIDED`), and for the standalone
+  `MotionGraphicsPlanOutput` synthesis call. UNLIKE `VideoEditDirector`, its grant is the full
+  sandbox+Remotion+render set minus `WriteProjectFile` (identical to `MotionGraphicsPlanner`'s) —
+  capability parity, so a room-planned overlay can still be backed by a real rendered transparent
+  asset (`RenderedAssetStorageKey`) in the synthesis role. The prompt-injection tradeoff
+  documented for `MotionGraphicsPlanner` (media-derived view text reaching a code-executing
+  agent, bounded by the sandbox's containment) applies identically and is accepted for the same
+  reasons.
+- **Room turns are tool-restricted.** `GraphicsRoomStepExecutor.GetRoomTurnTools` filters every
+  in-room agent (seats AND the director's room instance) to the `ProjectRead` + `WorkflowControl`
+  subset of its grant (names taken from `ToolGroupCatalog`, so the subset cannot drift) — a
+  ~220-token prose turn must never reach the sandbox; only the standalone synthesis call can.
+- **The view is the analyze step's placements envelope, enriched with `inEdit`.** The template
+  points `View` explicitly at the analyze step (`Step 1` — `Previous` would resolve to the story
+  editor's decision), and `PrepareViewAsync` runs the same `IMotionGraphicsPlacementAnnotator`
+  a solo planner's prompt gets, read back through `StepExecutionContext.OutputForPrompt`. A
+  failed annotation degrades to the plain view, never fails the step.
+- **An empty plan is a VALID outcome, twice over.** A view offering zero placement ids completes
+  immediately with an empty plan (`room.terminationReason = "empty-view"`) instead of failing
+  VIEW_UNRESOLVED, and a synthesized/solo plan with zero overlays (or filtered to zero by the
+  offered-id check) completes normally — "prefer zero overlays over a cluttered edit" is the
+  planning contract, so zero must never be treated as failure. The edit room's opposite choice
+  (an empty `Keep` list degrades/fails) is the single biggest behavioral difference between the
+  two rooms' validation hooks.
+- **Failure codes**: `GRAPHICS_ROOM_CONFIG_INVALID` / `VIEW_UNRESOLVED` /
+  `GRAPHICS_ROOM_FAILED` / `UNEXPECTED_ERROR`, mirroring the edit room's. Solo fallback is one
+  ordinary `AgentType.MotionGraphicsPlanner` call (`FallbackToSoloPlanner`, default `true`).
+
+`GraphicsRoomStepConfig` (`graphics_room_config_json`, jsonb on BOTH DbContexts) carries the same
+knobs as `EditRoomStepConfig` (see [Config reference](#config-reference)) with
+`FallbackToSoloPlanner` in place of `FallbackToSoloEditor`.
+
+### The `video-derush-edit-graphics-room` template
+
+A seventh opt-in template (`AutoCreateOnProject: false`), replacing `video-derush-edit-graphics`'s
+`Agent(MotionGraphicsPlanner)` step with the room: `VideoAnalyze` (`Source: ProjectFile`,
+`emitOverlayPlacements: true`) → `Agent(VideoStoryEditor)` → `GraphicsRoom`
+(`View: Step 1`) → `VideoCompile` (`Decision: Step 2`, `AnalysisStepOrder: 1`,
+`enableGraphics: true`, `graphicsPlan: Step 3`) → `ReviewLoop(VideoReviewAgent)` looping back to
+step 2. The `GraphicsRoom` step's own `AgentDefinitionId` FK is satisfied by the same
+`AgentType.VideoTransform` placeholder the other deterministic-config step types use.
+Deserialization-tested in `WorkflowTemplateCatalogConfigDeserializationTests.cs`.
 
 ---
 

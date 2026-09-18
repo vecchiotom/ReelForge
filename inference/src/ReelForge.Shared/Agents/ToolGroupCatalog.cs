@@ -272,6 +272,35 @@ public static class ToolGroupCatalog
         ],
 
         // ──────────────────────────────────────────────────────────────────
+        // MotionGraphicsDirector: the StepType.GraphicsRoom moderator/synthesizer — granted the
+        // SAME full sandbox+Remotion+render set as MotionGraphicsPlanner directly above (minus
+        // ProjectWrite, for the same reason), NOT VideoEditDirector's minimal read-only scope.
+        // Deliberate, not a copy-paste of either neighbor: the graphics room's synthesis call is
+        // where the room's plan can optionally be backed by a real rendered transparent overlay
+        // asset (MotionGraphicsOverlay.RenderedAssetStorageKey) — capability parity with the solo
+        // planner it replaces, which would otherwise silently regress to plain-drawtext-only
+        // whenever a workflow swaps the solo step for the room. The room-PARTICIPANT turns (short
+        // free-form prose, ~220 tokens) never get this scope: GraphicsRoomStepExecutor restricts
+        // every in-room agent (seats AND the director's room instance) to the ProjectRead +
+        // WorkflowControl subset of its grant, so sandbox tools are reachable only from the one
+        // standalone structured synthesis call — the same place the solo planner uses them. The
+        // prompt-injection tradeoff documented on MotionGraphicsPlanner (media-derived view text
+        // reaching a code-executing agent, bounded by the sandbox's containment) applies here
+        // identically and is accepted for the same reasons.
+        // ──────────────────────────────────────────────────────────────────
+
+        AgentType.MotionGraphicsDirector =>
+        [
+            ToolGroup.ProjectRead,
+            ToolGroup.SandboxBrowse,
+            ToolGroup.SandboxMetadata,
+            ToolGroup.SandboxLint,
+            ToolGroup.SandboxAuthoring,
+            ToolGroup.SandboxRender,
+            ToolGroup.WorkflowControl
+        ],
+
+        // ──────────────────────────────────────────────────────────────────
         // Custom / unknown / FileSummarizerAgent (Inference-API-only — FileSummarizerAgent is
         // never actually routed through this resolver at runtime, but the switch's default arm
         // covers it defensively rather than throwing): minimal project read access only.
