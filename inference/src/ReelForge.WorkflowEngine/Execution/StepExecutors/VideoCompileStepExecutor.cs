@@ -110,6 +110,14 @@ public class VideoCompileStepExecutor : IStepExecutor
     /// <summary>Test-only hook, mirroring <see cref="ResetDrawtextAvailabilityCacheForTests"/>.</summary>
     internal static void ResetXfadeAvailabilityCacheForTests() => _xfadeAvailableCache = null;
 
+    /// <summary>Process-lifetime cache of whether the ffmpeg build on PATH exposes both the <c>perspective</c> and <c>alphamerge</c> filters (tracked screen inserts — see docs/video-editing.md "Tracked screen inserts (Phase 5)") — probed once, mirroring the drawtext/amix/xfade caches exactly. Only ever probed when <see cref="VideoCompileStepConfig.EnableInserts"/> is on.</summary>
+    private static bool? _perspectiveAvailableCache;
+
+    private static readonly SemaphoreSlim PerspectiveProbeLock = new(1, 1);
+
+    /// <summary>Test-only hook, mirroring <see cref="ResetDrawtextAvailabilityCacheForTests"/>.</summary>
+    internal static void ResetPerspectiveAvailabilityCacheForTests() => _perspectiveAvailableCache = null;
+
     /// <summary>
     /// Above this many segments, the select/aselect filtergraph is written to a scratch file and
     /// passed via <c>-filter_complex_script</c> instead of inline <c>-filter_complex</c>, to avoid
@@ -212,6 +220,18 @@ public class VideoCompileStepExecutor : IStepExecutor
                 return Failure(
                     context, sw, "CODEC_NOT_ALLOWED",
                     $"OverlayBoxColor '{config.OverlayBoxColor}' is not in the allowlist.");
+            }
+
+            // Tracked screen inserts (see docs/video-editing.md "Tracked screen inserts (Phase
+            // 5)"): the one HARD failure in the whole addition, a pure config error caught up
+            // front — everything else about inserts is soft-failure ("no insert applied", cut
+            // proceeds). Mirrors GRAPHICS_REQUIRE_REENCODE's reasoning exactly: the animated
+            // perspective/alphamerge/overlay filtergraph has no stream-copy equivalent.
+            if (config.EnableInserts && config.Mode == VideoCompileMode.StreamCopy)
+            {
+                return Failure(
+                    context, sw, "INSERTS_REQUIRE_REENCODE",
+                    "EnableInserts=true requires Mode=Reencode — the tracked-insert perspective/overlay filtergraph has no stream-copy equivalent.");
             }
 
             // Background music (see docs/video-editing.md "Background music"): the only two HARD
@@ -683,6 +703,29 @@ public class VideoCompileStepExecutor : IStepExecutor
                     context, config, artifact, resolvedSpans, timeline, scratch, hasDialogueAudioInOutput, context.CancellationToken);
             }
 
+            // ---- Tracked screen inserts (see docs/video-editing.md "Tracked screen inserts
+            // (Phase 5)"): purely soft-failure, exactly like graphics/music above — a missing/bad
+            // plan, an unoffered region id, low tracking confidence, or a cut-away region all
+            // degrade to "no insert applied", never to a failed compile. Only even attempted when
+            // EnableInserts=true — when false (the default), nothing below this point differs
+            // from the pre-inserts compile path at all. ----
+
+            List<ResolvedScreenInsert> resolvedInserts = [];
+            JsonObject? insertsNode = null;
+            if (config.EnableInserts)
+            {
+                await context.ReportProgressAsync("Resolving screen inserts");
+
+                // v1 limitation, stated plainly (docs/video-editing.md): the animated corner-pin
+                // keyframe math is only wired into the single-source select-path encode; a
+                // multi-source compile or one with overlapping seam transitions routes to the
+                // segmented concat encode, where inserts are skipped (soft, reported) rather than
+                // composited wrongly against a differently-assembled timeline.
+                bool segmentedEncode = isMultiSource || seamPlans.Any(s => s.OverlapSec > 0);
+                (resolvedInserts, insertsNode) = await ResolveInsertsAsync(
+                    context, config, artifact, timeline, scratch, canonicalMedia, segmentedEncode, context.CancellationToken);
+            }
+
             // ---- Audio degrade report (bug group C): every OTHER degrade path in this feature
             // (graphics.reason, music.dropped, meta.transcription.degraded) records itself in the
             // EDL/outputSummary — this one previously didn't, so a silent-video deliverable could
@@ -721,7 +764,8 @@ public class VideoCompileStepExecutor : IStepExecutor
             string edlLocalPath = scratch.GetPath("edl.json");
             JsonObject edl = BuildEdl(
                 config, analysisArtifactKey, resolvedSpans, retainedRatio, totalOutputSeconds, droppedOverCap, crf, graphicsNode, musicNode, audioNode,
-                transitions: transitionsNode, programFade: programFadeNode, transitionOverlapSec: transitionOverlapSec);
+                transitions: transitionsNode, programFade: programFadeNode, transitionOverlapSec: transitionOverlapSec,
+                inserts: insertsNode);
             await File.WriteAllTextAsync(edlLocalPath, edl.ToJsonString(EnvelopeJsonOptions), context.CancellationToken);
 
             string edlFileName = $"video-analysis/{context.Execution.Id:D}/step-{step.StepOrder}-edl.json";
@@ -767,7 +811,8 @@ public class VideoCompileStepExecutor : IStepExecutor
                         graphicsConfig: resolvedOverlays.Count > 0 ? config : null,
                         progressContext: context, totalOutputSeconds: timeline.TotalSec,
                         music: resolvedMusic, sourceHasAudio: sourceHasAudio,
-                        seamPlans: seamPlans, timeline: timeline, transitionConfig: config, programFade: programFade)
+                        seamPlans: seamPlans, timeline: timeline, transitionConfig: config, programFade: programFade,
+                        inserts: resolvedInserts)
                     : await EncodeStreamCopyAsync(scratch, localVideoPath, encodedLocalPath, resolvedSpans, timeout, context.CancellationToken);
             }
 
@@ -818,6 +863,9 @@ public class VideoCompileStepExecutor : IStepExecutor
 
             if (musicNode is not null)
                 outputSummary["music"] = JsonNode.Parse(musicNode.ToJsonString(EnvelopeJsonOptions));
+
+            if (insertsNode is not null)
+                outputSummary["inserts"] = JsonNode.Parse(insertsNode.ToJsonString(EnvelopeJsonOptions));
 
             outputSummary["audio"] = JsonNode.Parse(audioNode.ToJsonString(EnvelopeJsonOptions));
 
@@ -1709,6 +1757,323 @@ public class VideoCompileStepExecutor : IStepExecutor
     }
 
     // ---------------------------------------------------------------------
+    // Tracked screen inserts (see docs/video-editing.md "Tracked screen inserts (Phase 5)"):
+    // plan resolution — soft-failure only, exactly like graphics/music. The model contributed
+    // only an offered r{n} id and a render it performed itself; every number below (corner
+    // keyframes, output windows, frame indices) comes from the artifact's deterministic tracking
+    // data mapped through OutputTimeline — never from the model.
+    // ---------------------------------------------------------------------
+
+    private sealed record DroppedInsert(string RegionId, string Reason);
+
+    private async Task<(List<ResolvedScreenInsert> Inserts, JsonObject InsertsNode)> ResolveInsertsAsync(
+        StepExecutionContext context,
+        VideoCompileStepConfig config,
+        VideoAnalysisArtifact artifact,
+        OutputTimeline timeline,
+        VideoScratchSpace scratch,
+        VideoAnalysisMedia canonicalMedia,
+        bool segmentedEncode,
+        CancellationToken ct)
+    {
+        var node = new JsonObject { ["enabled"] = true, ["applied"] = false, ["appliedInsertCount"] = 0, ["unavailable"] = false };
+        List<DroppedInsert> dropped = new();
+
+        JsonObject Finish(List<ResolvedScreenInsert> resolved)
+        {
+            node["applied"] = resolved.Count > 0;
+            node["appliedInsertCount"] = resolved.Count;
+            node["droppedInserts"] = new JsonArray(dropped.Select(d => (JsonNode)new JsonObject
+            {
+                ["regionId"] = d.RegionId,
+                ["reason"] = d.Reason
+            }).ToArray());
+            return node;
+        }
+
+        if (segmentedEncode)
+        {
+            // v1 limitation (docs/video-editing.md "Tracked screen inserts (Phase 5)"): the
+            // animated corner-pin path is only wired into the single-source select-path encode.
+            node["reason"] = "Screen inserts are not applied on a multi-source compile or one with overlapping seam transitions in v1.";
+            return ([], Finish([]));
+        }
+
+        // Inserts ride the SAME plan reference as graphics — the planner emits overlays and
+        // inserts in one MotionGraphicsPlanOutput.
+        if (config.GraphicsPlan is null)
+        {
+            node["reason"] = "No GraphicsPlan configured (screen inserts are read from the same MotionGraphicsPlanOutput as overlays).";
+            return ([], Finish([]));
+        }
+
+        (string? planJson, string? planError) = ResolveDecisionJson(context, config.GraphicsPlan, "GraphicsPlan");
+        if (planJson is null)
+        {
+            node["reason"] = planError ?? "GraphicsPlan input could not be resolved.";
+            return ([], Finish([]));
+        }
+
+        MotionGraphicsPlanOutput? plan;
+        try
+        {
+            plan = JsonSerializer.Deserialize<MotionGraphicsPlanOutput>(planJson, DecisionJsonOptions);
+        }
+        catch (JsonException ex)
+        {
+            node["reason"] = $"GraphicsPlan content is not valid JSON: {ex.Message}";
+            return ([], Finish([]));
+        }
+
+        // Same explicit-JSON-null hardening as ResolveGraphicsAsync's plan.Overlays ??= [].
+        if (plan is not null)
+            plan.Inserts ??= [];
+
+        if (plan is null || plan.Inserts.Count == 0)
+            return ([], Finish([]));
+
+        if (!await IsPerspectiveAvailableAsync(ct))
+        {
+            _logger.LogWarning(
+                "VideoCompile step {StepOrder}: perspective/alphamerge filters unavailable in this ffmpeg build; skipping all screen inserts.",
+                context.Step.StepOrder);
+            node["unavailable"] = true;
+            node["reason"] = "The ffmpeg build in this container does not expose the perspective and alphamerge filters.";
+            return ([], Finish([]));
+        }
+
+        Dictionary<string, VideoInsertRegionTrack> trackById =
+            (artifact.InsertRegions ?? []).ToDictionary(r => r.Id, StringComparer.Ordinal);
+        HashSet<string> offeredInsertRegionIds = new(artifact.OfferedInsertRegionIds ?? [], StringComparer.Ordinal);
+
+        double minConfidence = Math.Clamp(config.MinInsertConfidence, 0, 1);
+        int maxInserts = Math.Max(0, config.MaxInserts);
+        int maxExprKeyframes = Math.Clamp(config.MaxInsertExprKeyframes, 2, 500);
+        double overscan = Math.Clamp(config.InsertOverscan, 0, 0.1);
+        string expectedAssetKeyPrefix = $"projects/{context.Execution.ProjectId}/outputFiles/{context.Execution.Id:D}/";
+
+        var seenRegionIds = new HashSet<string>(StringComparer.Ordinal);
+        List<ResolvedScreenInsert> resolved = new();
+        foreach (ScreenInsert insert in plan.Inserts)
+        {
+            // "Offered is a stricter check than exists" — same discipline as every other id family.
+            if (!offeredInsertRegionIds.Contains(insert.RegionId) ||
+                !trackById.TryGetValue(insert.RegionId, out VideoInsertRegionTrack? track))
+            {
+                dropped.Add(new DroppedInsert(insert.RegionId, "unknown_region_id"));
+                continue;
+            }
+
+            if (!seenRegionIds.Add(insert.RegionId))
+            {
+                dropped.Add(new DroppedInsert(insert.RegionId, "duplicate_region_id"));
+                continue;
+            }
+
+            if (resolved.Count >= maxInserts)
+            {
+                dropped.Add(new DroppedInsert(insert.RegionId, "max_inserts_exceeded"));
+                continue;
+            }
+
+            if (track.Confidence < minConfidence)
+            {
+                dropped.Add(new DroppedInsert(insert.RegionId, "confidence_below_threshold"));
+                continue;
+            }
+
+            if (track.Keyframes is not { Count: > 0 })
+            {
+                dropped.Add(new DroppedInsert(insert.RegionId, "no_tracking_keyframes"));
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(insert.RenderedAssetStorageKey) ||
+                !insert.RenderedAssetStorageKey.StartsWith(expectedAssetKeyPrefix, StringComparison.Ordinal))
+            {
+                dropped.Add(new DroppedInsert(insert.RegionId, "invalid_asset_storage_key"));
+                continue;
+            }
+
+            // Map the track's window through the cut to the output timeline. A window straddling a
+            // cut is clipped to its FIRST kept portion, exactly like an overlay (a single insert
+            // cannot span a gap in the output video).
+            (double Start, double End)? outputWindow = timeline.MapWindowToOutput(track.StartSec, track.EndSec, track.SourceIndex);
+            if (outputWindow is null)
+            {
+                dropped.Add(new DroppedInsert(insert.RegionId, "cut_away"));
+                continue;
+            }
+
+            IReadOnlyList<InsertQuadFrame> keyframes = BuildInsertKeyframes(
+                track, timeline, canonicalMedia, outputWindow.Value, maxExprKeyframes, overscan);
+            if (keyframes.Count == 0)
+            {
+                dropped.Add(new DroppedInsert(insert.RegionId, "no_keyframes_survive_cut"));
+                continue;
+            }
+
+            string rawExtension = Path.GetExtension(insert.RenderedAssetStorageKey);
+            string extension = AllowedRenderedAssetExtensions.Contains(rawExtension) ? rawExtension : ".mp4";
+            string localAssetPath = scratch.GetPath($"insert-asset-{Guid.NewGuid():N}{extension}");
+            try
+            {
+                await _workspace.DownloadStorageKeyToFileAsync(
+                    context.Execution.ProjectId, insert.RenderedAssetStorageKey, localAssetPath, ct);
+
+                // Same defensive probe as rendered-asset overlays: a corrupt asset must be caught
+                // and dropped HERE, one insert at a time, never handed to the encoder where it
+                // would fail the whole compile.
+                await _mediaProbe.ProbeAsync(localAssetPath, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "VideoCompile step {StepOrder}: rendered asset for insert region {RegionId} could not be downloaded/probed; dropping this insert.",
+                    context.Step.StepOrder, insert.RegionId);
+                dropped.Add(new DroppedInsert(insert.RegionId, "asset_download_or_probe_failed"));
+                continue;
+            }
+
+            resolved.Add(new ResolvedScreenInsert(
+                insert.RegionId, localAssetPath, outputWindow.Value.Start, outputWindow.Value.End,
+                keyframes, canonicalMedia.FpsNum > 0 ? canonicalMedia.FpsNum : 30, canonicalMedia.FpsDen > 0 ? canonicalMedia.FpsDen : 1));
+        }
+
+        return (resolved, Finish(resolved));
+    }
+
+    /// <summary>
+    /// Converts a track's normalized, source-timeline corner keyframes into pixel-space,
+    /// insert-branch-frame-indexed keyframes for <see cref="ScreenInsertFilterBuilder"/>: each
+    /// keyframe's source time is mapped through the cut (<see cref="OutputTimeline.MapToOutputSec"/>
+    /// — keyframes falling in a cut gap are skipped), re-based onto the insert branch's own clock
+    /// (frame 0 = the insert's on-screen start), uniformly downsampled to at most
+    /// <paramref name="maxKeyframes"/>, and expanded outward about the quad centroid by
+    /// <paramref name="overscan"/> so the plate's edge fringe hides under the inserted content.
+    /// Internal + pure so tests can drive it directly.
+    /// </summary>
+    internal static IReadOnlyList<InsertQuadFrame> BuildInsertKeyframes(
+        VideoInsertRegionTrack track,
+        OutputTimeline timeline,
+        VideoAnalysisMedia canonicalMedia,
+        (double Start, double End) outputWindow,
+        int maxKeyframes,
+        double overscan)
+    {
+        int fpsNum = canonicalMedia.FpsNum > 0 ? canonicalMedia.FpsNum : 30;
+        int fpsDen = canonicalMedia.FpsDen > 0 ? canonicalMedia.FpsDen : 1;
+        double fps = fpsNum / (double)fpsDen;
+        int width = Math.Max(2, canonicalMedia.Width);
+        int height = Math.Max(2, canonicalMedia.Height);
+        const double Epsilon = 1e-6;
+
+        var surviving = new List<(long Frame, VideoInsertQuadKeyframe K)>();
+        foreach (VideoInsertQuadKeyframe k in track.Keyframes)
+        {
+            double? outSec = timeline.MapToOutputSec(k.TimeSec, track.SourceIndex);
+            if (outSec is null || outSec.Value < outputWindow.Start - Epsilon || outSec.Value > outputWindow.End + Epsilon)
+                continue;
+
+            long frame = (long)Math.Round(Math.Max(0, outSec.Value - outputWindow.Start) * fps);
+            surviving.Add((frame, k));
+        }
+
+        // A mapped window with no surviving keyframes (very sparse tracking, all samples in a
+        // trimmed sliver) still gets ONE constant quad: the keyframe nearest the window's own
+        // source moment — a static composite beats a dropped one when the track itself was good.
+        if (surviving.Count == 0)
+        {
+            VideoInsertQuadKeyframe nearest = track.Keyframes
+                .OrderBy(k => Math.Abs(k.TimeSec - (track.StartSec + track.EndSec) / 2))
+                .First();
+            surviving.Add((0, nearest));
+        }
+
+        // Uniform downsample to the expression-size cap, always keeping first and last.
+        List<(long Frame, VideoInsertQuadKeyframe K)> sampled;
+        if (surviving.Count <= maxKeyframes)
+        {
+            sampled = surviving;
+        }
+        else
+        {
+            sampled = new List<(long, VideoInsertQuadKeyframe)>(maxKeyframes);
+            for (int i = 0; i < maxKeyframes; i++)
+            {
+                int idx = (int)Math.Round(i * (surviving.Count - 1) / (double)(maxKeyframes - 1));
+                sampled.Add(surviving[idx]);
+            }
+        }
+
+        var result = new List<InsertQuadFrame>(sampled.Count);
+        long lastFrame = -1;
+        foreach ((long frame, VideoInsertQuadKeyframe k) in sampled)
+        {
+            if (frame <= lastFrame && result.Count > 0)
+                continue;
+            lastFrame = frame;
+
+            double cx = (k.X0 + k.X1 + k.X2 + k.X3) / 4.0;
+            double cy = (k.Y0 + k.Y1 + k.Y2 + k.Y3) / 4.0;
+            double Ex(double x) => (cx + (x - cx) * (1 + overscan)) * width;
+            double Ey(double y) => (cy + (y - cy) * (1 + overscan)) * height;
+
+            result.Add(new InsertQuadFrame(
+                frame,
+                Ex(k.X0), Ey(k.Y0), Ex(k.X1), Ey(k.Y1), Ex(k.X2), Ey(k.Y2), Ex(k.X3), Ey(k.Y3)));
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Probes whether the ffmpeg build exposes both the <c>perspective</c> and <c>alphamerge</c>
+    /// filters (tracked screen inserts), caching for the process lifetime — mirrors
+    /// <see cref="IsDrawtextAvailableAsync"/> exactly, never throws.
+    /// </summary>
+    private async Task<bool> IsPerspectiveAvailableAsync(CancellationToken ct)
+    {
+        if (_perspectiveAvailableCache.HasValue)
+            return _perspectiveAvailableCache.Value;
+
+        await PerspectiveProbeLock.WaitAsync(ct);
+        try
+        {
+            if (_perspectiveAvailableCache.HasValue)
+                return _perspectiveAvailableCache.Value;
+
+            try
+            {
+                VideoToolResult result = await _videoToolRunner.RunFfmpegAsync(
+                    new[] { "-hide_banner", "-filters" }, TimeSpan.FromSeconds(15), ct);
+                _perspectiveAvailableCache = result.Succeeded &&
+                    result.StdOut.Contains("perspective", StringComparison.Ordinal) &&
+                    result.StdOut.Contains("alphamerge", StringComparison.Ordinal);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "VideoCompile: perspective/alphamerge availability probe failed; treating as unavailable.");
+                _perspectiveAvailableCache = false;
+            }
+
+            return _perspectiveAvailableCache.Value;
+        }
+        finally
+        {
+            PerspectiveProbeLock.Release();
+        }
+    }
+
+    // ---------------------------------------------------------------------
     // Background music (see docs/video-editing.md "Background music"): plan resolution — soft-
     // failure only, exactly like Phase 3's graphics resolution above. A missing/bad music plan, an
     // unoffered track id, a non-audio project file, a download/probe failure, or an unavailable
@@ -2205,7 +2570,10 @@ public class VideoCompileStepExecutor : IStepExecutor
         IReadOnlyList<SeamPlan>? seamPlans = null,
         OutputTimeline? timeline = null,
         VideoCompileStepConfig? transitionConfig = null,
-        ProgramFadeResolved? programFade = null)
+        ProgramFadeResolved? programFade = null,
+        // Tracked screen inserts (see docs/video-editing.md "Tracked screen inserts (Phase 5)"):
+        // null/empty on every pre-inserts call path — the label plumbing below is then untouched.
+        IReadOnlyList<ResolvedScreenInsert>? inserts = null)
     {
         // Half-open [SnappedStart, SnappedEnd) per span, matching ToStartFrame(floor)/ToEndFrame
         // (ceiling)'s own semantics (EndFrame is the first EXCLUDED frame — see MapSourceToOutputSec's
@@ -2230,11 +2598,19 @@ public class VideoCompileStepExecutor : IStepExecutor
         List<ResolvedOverlay> textOverlays = overlays?.Where(o => !o.IsAssetOverlay).ToList() ?? [];
         List<ResolvedOverlay> assetOverlays = overlays?.Where(o => o.IsAssetOverlay).ToList() ?? [];
 
+        // Tracked screen inserts: each insert's asset is its own extra ffmpeg input, added AFTER
+        // every asset-overlay input (so OverlayAssetFilterBuilder's `i => i + 1` mapping stays
+        // untouched) and BEFORE the music input (so music stays last).
+        List<ResolvedScreenInsert> screenInserts = inserts?.ToList() ?? [];
+        bool hasInserts = screenInserts.Count > 0;
+
         // Background music (see docs/video-editing.md "Background music"): the music input is
-        // deliberately the LAST ffmpeg input, after every asset-overlay input — this is what keeps
-        // OverlayAssetFilterBuilder's existing `inputIndexForIndex: i => i + 1` mapping (and every
-        // existing filter-string test asserting it) completely untouched by this addition.
-        int musicInputIndex = 1 + assetOverlays.Count;
+        // deliberately the LAST ffmpeg input, after every asset-overlay input (and now after
+        // every screen-insert input too — zero of those on any pre-inserts call path, keeping
+        // this expression byte-identical then) — this is what keeps OverlayAssetFilterBuilder's
+        // existing `inputIndexForIndex: i => i + 1` mapping (and every existing filter-string
+        // test asserting it) completely untouched by this addition.
+        int musicInputIndex = 1 + assetOverlays.Count + screenInserts.Count;
 
         // ---- Cut transitions (see docs/video-editing.md "Cut transitions"): this select-path
         // encoder only ever sees non-overlapping seam treatments (HardCut/AudioOnly/DipCut — any
@@ -2308,7 +2684,8 @@ public class VideoCompileStepExecutor : IStepExecutor
         string? audioTailStage = hasAudioTailStage ? $"[axfd]{string.Join(",", audioTailFilters)}[aout]" : null;
 
         string filterComplex;
-        if ((textOverlays.Count > 0 || assetOverlays.Count > 0) && graphicsConfig is not null)
+        bool hasAnyOverlay = textOverlays.Count > 0 || assetOverlays.Count > 0;
+        if ((hasAnyOverlay && graphicsConfig is not null) || hasInserts)
         {
             // Phase 3: the cut stage now outputs to an internal label ([vcut]) instead of
             // [vout] directly — the LAST overlay stage becomes the new [vout] that -map
@@ -2325,6 +2702,19 @@ public class VideoCompileStepExecutor : IStepExecutor
 
             List<string> chainParts = new();
             string currentLabel = "[vcut]";
+
+            // Tracked screen inserts render FIRST — an insert is scene content (inside a phone's
+            // screen), so lower-thirds/titles drawn by the overlay stages below must paint on top
+            // of it, not under it.
+            if (hasInserts)
+            {
+                string insertStageFinalLabel = hasAnyOverlay && graphicsConfig is not null ? "[vins]" : videoFinalLabel;
+                chainParts.Add(ScreenInsertFilterBuilder.BuildFilterChain(
+                    currentLabel, screenInserts, probedWidth, probedHeight,
+                    inputIndexForIndex: i => 1 + assetOverlays.Count + i,
+                    finalLabel: insertStageFinalLabel));
+                currentLabel = insertStageFinalLabel;
+            }
 
             if (textOverlays.Count > 0)
             {
@@ -2403,6 +2793,16 @@ public class VideoCompileStepExecutor : IStepExecutor
             args.Add(assetOverlay.RenderedAssetLocalPath!);
         }
 
+        // Tracked screen inserts: one extra -i per insert, in the same order the
+        // ScreenInsertFilterBuilder chain above assumed (input index 1 + assetOverlays.Count + i)
+        // — every one of these paths was downloaded to local scratch AND ffprobe-validated by
+        // ResolveInsertsAsync before this function ever saw it.
+        foreach (ResolvedScreenInsert screenInsert in screenInserts)
+        {
+            args.Add("-i");
+            args.Add(screenInsert.LocalAssetPath);
+        }
+
         // Background music: the LAST input, after every asset-overlay input (see musicInputIndex
         // above). -stream_loop -1 only when the track is shorter than the edit under LoopToFit —
         // the amix stage's duration=first pins the mixed output to the dialogue length regardless,
@@ -2432,7 +2832,7 @@ public class VideoCompileStepExecutor : IStepExecutor
         // safety net.
         bool hasOverlays = textOverlays.Count > 0 || assetOverlays.Count > 0;
         bool hasMusic = music is not null;
-        if (spans.Count > FilterComplexScriptThreshold || ((hasOverlays || hasMusic) && filterComplex.Length > 4000))
+        if (spans.Count > FilterComplexScriptThreshold || ((hasOverlays || hasMusic || hasInserts) && filterComplex.Length > 4000))
         {
             string scriptPath = scratch.GetPath("filter_complex.txt");
             await File.WriteAllTextAsync(scriptPath, filterComplex, ct);
@@ -3038,7 +3438,8 @@ public class VideoCompileStepExecutor : IStepExecutor
         JsonObject? audio = null,
         JsonObject? transitions = null,
         JsonObject? programFade = null,
-        double? transitionOverlapSec = null)
+        double? transitionOverlapSec = null,
+        JsonObject? inserts = null)
     {
         var segmentsArray = new JsonArray();
         for (int i = 0; i < spans.Count; i++)
@@ -3088,6 +3489,10 @@ public class VideoCompileStepExecutor : IStepExecutor
         // Background music: same discipline — only present when EnableMusic=true.
         if (music is not null)
             edl["music"] = music;
+
+        // Tracked screen inserts: same discipline — only present when EnableInserts=true.
+        if (inserts is not null)
+            edl["inserts"] = inserts;
 
         // Bug group C: unlike graphics/music, always present — audio isn't opt-in the way those
         // phases are, so a dropped audio stream is never silently unreported.

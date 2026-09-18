@@ -97,7 +97,69 @@ public sealed record VideoAnalysisArtifact(
     /// <c>VideoCompileStepExecutor.BuildIdTimeIndex</c> (see docs/video-editing.md "Semantic visual
     /// dimensions (Phase 4)").
     /// </summary>
-    IReadOnlyList<VideoAnalysisLookGroup>? LookGroups = null);
+    IReadOnlyList<VideoAnalysisLookGroup>? LookGroups = null,
+    /// <summary>
+    /// Tracked screen-insert addition (see docs/video-editing.md "Tracked screen inserts
+    /// (Phase 5)") — deterministic chroma-plate quad tracks computed by <c>ChromaQuadTracker</c>,
+    /// populated only when <c>VideoAnalyzeStepConfig.DetectInsertRegions</c> is set. A SEPARATE id
+    /// namespace (<c>r{n}</c>) from every other id family — deliberately NOT resolvable by
+    /// <c>VideoCompileStepExecutor.BuildIdTimeIndex</c>. The full per-frame numeric tracking data
+    /// (<see cref="VideoInsertRegionTrack.Keyframes"/>) lives ONLY here, never in the bounded
+    /// view — the agent sees an opaque id plus qualitative descriptors, and
+    /// <c>VideoCompileStepExecutor</c> alone resolves the id back to these numbers.
+    /// </summary>
+    IReadOnlyList<VideoInsertRegionTrack>? InsertRegions = null,
+    /// <summary>
+    /// Exactly which insert-region ids were actually included in the bounded view shown to the
+    /// motion-graphics agent — the screen-insert analogue of <see cref="OfferedIds"/>/
+    /// <see cref="OfferedPlacementIds"/>/<see cref="OfferedMusicIds"/>, but its OWN separate list:
+    /// an insert-region id must never be validated against any of those, and vice versa.
+    /// </summary>
+    IReadOnlyList<string>? OfferedInsertRegionIds = null);
+
+/// <summary>
+/// One tracked frame (or keyframe) of a chroma-plate insert region's deforming quadrilateral —
+/// four corners in NORMALIZED frame coordinates (0..1 of frame width/height, resolution-
+/// independent), in ffmpeg <c>perspective</c>-filter corner order: 0 = top-left, 1 = top-right,
+/// 2 = bottom-left, 3 = bottom-right. <see cref="TimeSec"/> is on the owning SOURCE clip's own
+/// timeline. Produced only by deterministic C# (<c>ChromaQuadTracker</c>) — no model ever
+/// authors, edits, or even sees one of these.
+/// </summary>
+public sealed record VideoInsertQuadKeyframe(
+    double TimeSec,
+    double X0, double Y0,
+    double X1, double Y1,
+    double X2, double Y2,
+    double X3, double Y3);
+
+/// <summary>
+/// One tracked chroma-plate insert region — a contiguous run of frames in which
+/// <c>ChromaQuadTracker</c> found a uniform-color quadrilateral plate (e.g. a green screen inside
+/// a phone held in frame) suitable for compositing a rendered scene into. Id: <c>r{n}</c> — a
+/// SEPARATE namespace from every cut-anchor/placement/music/look id, never resolvable by
+/// <c>VideoCompileStepExecutor.BuildIdTimeIndex</c>. The bounded view offers only the id plus
+/// qualitative descriptors (confidence/size/motion buckets); the per-frame numeric
+/// <see cref="Keyframes"/> are compile-time-only data.
+/// </summary>
+public sealed record VideoInsertRegionTrack(
+    string Id,
+    /// <summary>The shot the track's midpoint falls in — view legibility only, no execution meaning (mirrors <see cref="VideoAnalysisSilenceSpan.AfterShot"/>).</summary>
+    string? ShotId,
+    double StartSec,
+    double EndSec,
+    IReadOnlyList<VideoInsertQuadKeyframe> Keyframes,
+    /// <summary>0..1 — detection coverage x mean quad fill ratio; <c>VideoCompileStepConfig.MinInsertConfidence</c> gates on this.</summary>
+    double Confidence,
+    /// <summary>Mean fraction of the frame's area the tracked quad covers (0..1).</summary>
+    double MeanAreaRatio,
+    /// <summary>Mean width/height ratio of the tracked quad in pixel space — the aspect hint the agent uses to render suitably-shaped content.</summary>
+    double MeanAspectRatio,
+    /// <summary>"Static" / "Slow" / "Moving" — mean centroid displacement bucket.</summary>
+    string MotionClass,
+    /// <summary>The chroma plate color that matched ("green"/"blue"/"magenta") — C#-side matching only, never an ffmpeg value.</summary>
+    string ColorName,
+    /// <summary>Multi-source addition — see <see cref="VideoAnalysisShot.SourceIndex"/>.</summary>
+    int SourceIndex = 0);
 
 /// <summary>
 /// A group of shots that share a similar light/grade "look" (see <c>FrameGridAnalyzer.GroupLooks</c>),
@@ -263,7 +325,14 @@ public sealed record VideoAnalysisProvenance(
     /// <summary>D6 letterbox/pillarbox detection actually ran (<c>VideoAnalyzeStepConfig.DetectLetterbox</c> was on AND visual analysis applied).</summary>
     bool LetterboxDetectionApplied = false,
     /// <summary>Count of shots that received a real (non-null) <c>Sharpness</c> measurement this step.</summary>
-    int SharpnessShotCount = 0);
+    int SharpnessShotCount = 0,
+    // -- Tracked screen inserts (see docs/video-editing.md "Tracked screen inserts (Phase 5)") --
+    /// <summary>The chroma-plate insert-region tracking pass (<c>ChromaQuadTracker</c>) actually ran and produced data (possibly zero tracks).</summary>
+    bool InsertTrackingApplied = false,
+    /// <summary>Insert-region tracking was configured on but failed and degraded to "no tracks" rather than failing the step — same convention as <see cref="VisualAnalysisDegraded"/>.</summary>
+    bool InsertTrackingDegraded = false,
+    /// <summary>Count of <c>artifact.InsertRegions</c> tracks found across every source.</summary>
+    int InsertRegionCount = 0);
 
 // =============================================================================================
 // Phase 1: visual/audio scene descriptors (grid-sampling based, deterministic, no LLM call).

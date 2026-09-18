@@ -258,4 +258,38 @@ public sealed record VideoAnalyzeStepConfig(
     /// step-wide, not per source. Unlike D1-D4/D6 this costs one extra ffmpeg invocation per measured
     /// shot, which is why <see cref="DetectSharpness"/> stays off by default.
     /// </summary>
-    int MaxSharpnessShots = 24);
+    int MaxSharpnessShots = 24,
+    // -- Tracked screen inserts (see docs/video-editing.md "Tracked screen inserts (Phase 5)").
+    //    Off by default, purely additive: a false/default DetectInsertRegions produces a
+    //    byte-identical view/artifact to before this addition. --
+    /// <summary>
+    /// When <c>true</c>, runs one extra medium-resolution grid ffmpeg pass per source clip and
+    /// tracks a uniform-color chroma plate (e.g. a green screen inside a phone held in frame) as a
+    /// deforming quadrilateral across frames (<c>ChromaQuadTracker</c> — deterministic C#, no LLM,
+    /// no new dependency). Detected tracks are offered to the motion-graphics agent as opaque
+    /// <c>r{n}</c> ids (<c>view.insertRegions</c>); the full per-frame corner data stays
+    /// compile-time-only in the artifact.
+    /// </summary>
+    bool DetectInsertRegions = false,
+    /// <summary>
+    /// Which chroma plate color to track: "green" (default), "blue", or "magenta". Matched
+    /// entirely in C# channel-ratio space (<c>ChromaQuadTracker</c>) — this value NEVER reaches an
+    /// ffmpeg argv or filter string; an unrecognized value falls back to "green" with a warning.
+    /// </summary>
+    string InsertRegionColor = "green",
+    /// <summary>
+    /// Sample rate for the dedicated insert-tracking grid pass. Higher than Phase 1's default 2.0
+    /// because a moving plate needs temporally-dense corners; clamped downward by
+    /// <see cref="MaxInsertSampleFrames"/> for long videos exactly like the Phase 1 pass.
+    /// </summary>
+    double InsertSampleFps = 10.0,
+    /// <summary>Grid resolution of the insert-tracking pass. 320x180 gives roughly 0.3% corner precision — clamped 64..640 / 36..360 at execution time.</summary>
+    int InsertGridWidth = 320,
+    int InsertGridHeight = 180,
+    int MaxInsertSampleFrames = 3000,
+    /// <summary>Minimum fraction of the frame's area a chroma component must cover to count as a plate at all.</summary>
+    double MinInsertRegionAreaRatio = 0.004,
+    /// <summary>Tracks shorter than this are dropped — a sub-second plate is not a useful compositing target.</summary>
+    double MinInsertRegionSeconds = 1.0,
+    /// <summary>Cap on offered insert-region tracks across the whole artifact (longest kept).</summary>
+    int MaxInsertRegions = 8);

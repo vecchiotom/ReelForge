@@ -179,6 +179,8 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             }
             if (config.AnalyzeVisuals && config.DetectNearDuplicates)
                 enabledStages.Add(VideoAnalyzeProgressPlan.Stage.GroupDuplicates);
+            if (config.DetectInsertRegions)
+                enabledStages.Add(VideoAnalyzeProgressPlan.Stage.TrackInsertRegions);
             if (config.DetectSharpness)
                 enabledStages.Add(VideoAnalyzeProgressPlan.Stage.SampleSharpness);
             if (config.AnalyzeVisuals && config.AnalyzeColorGrading && config.DetectLookGroups)
@@ -240,9 +242,10 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             var words = new List<VideoAnalysisWord>();
             var placements = new List<VideoAnalysisPlacement>();
             var duplicateGroups = new List<VideoAnalysisDuplicateGroup>();
+            var insertRegionTracks = new List<VideoInsertRegionTrack>();
             var sourceInfos = new List<VideoAnalysisSourceInfo>();
 
-            int shotOffset = 0, silenceOffset = 0, segmentOffset = 0, wordOffset = 0, placementOffset = 0, duplicateGroupOffset = 0;
+            int shotOffset = 0, silenceOffset = 0, segmentOffset = 0, wordOffset = 0, placementOffset = 0, duplicateGroupOffset = 0, insertRegionOffset = 0;
 
             for (int sourceIndex = 0; sourceIndex < sourceResults.Count; sourceIndex++)
             {
@@ -303,12 +306,23 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                     });
                 }
 
+                foreach (VideoInsertRegionTrack t in r.InsertRegions)
+                {
+                    insertRegionTracks.Add(t with
+                    {
+                        Id = OffsetId(t.Id, insertRegionOffset),
+                        SourceIndex = sourceIndex,
+                        ShotId = MapLocalId(t.ShotId, shotIdMap)
+                    });
+                }
+
                 shotOffset += r.Shots.Count;
                 silenceOffset += r.Silences.Count;
                 segmentOffset += r.Segments.Count;
                 wordOffset += r.Words.Count;
                 placementOffset += r.Placements.Count;
                 duplicateGroupOffset += r.DuplicateGroups.Count;
+                insertRegionOffset += r.InsertRegions.Count;
             }
 
             // ---- Aggregate per-source provenance/counters into ONE artifact-level record and a
@@ -665,7 +679,9 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
                 Sources: sourceInfos,
                 MusicCandidates: musicCandidates.Count > 0 ? musicCandidates : null,
                 OfferedMusicIds: [],
-                LookGroups: lookGroups.Count > 0 ? lookGroups : null);
+                LookGroups: lookGroups.Count > 0 ? lookGroups : null,
+                InsertRegions: insertRegionTracks.Count > 0 ? insertRegionTracks : null,
+                OfferedInsertRegionIds: []);
 
             // ---- Build the bounded, id-anchored prompt view FIRST, so we know exactly which ids
             // were actually shown before persisting the artifact's OfferedIds. ----
@@ -683,7 +699,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
 
             // artifactStorageKey isn't known yet (the artifact hasn't been uploaded) — meta's
             // copy is patched in below once it is.
-            (JsonObject view, JsonObject meta, List<string> viewOfferedIds, List<string> viewOfferedPlacementIds, List<string> viewOfferedMusicIds) = BuildBoundedView(
+            (JsonObject view, JsonObject meta, List<string> viewOfferedIds, List<string> viewOfferedPlacementIds, List<string> viewOfferedMusicIds, List<string> viewOfferedInsertRegionIds) = BuildBoundedView(
                 draftArtifact, viewSegments, config, artifactStorageKey: string.Empty,
                 provenance.TranscriptionApplied, provenance.TranscriptionDegraded, provenance.TranscriptionProvider,
                 provenance.VisualAnalysisApplied, provenance.VisualAnalysisDegraded, gridWidth, gridHeight, provenance.AudioLevelsApplied,
@@ -701,7 +717,8 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             {
                 OfferedIds = viewOfferedIds,
                 OfferedPlacementIds = viewOfferedPlacementIds,
-                OfferedMusicIds = viewOfferedMusicIds
+                OfferedMusicIds = viewOfferedMusicIds,
+                OfferedInsertRegionIds = viewOfferedInsertRegionIds
             };
 
             string artifactLocalPath = scratch.GetPath("analysis.json");
@@ -808,7 +825,10 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             VisionDegraded: perSource.Any(p => p.VisionDegraded),
             VisionProvider: perSource.Select(p => p.VisionProvider).FirstOrDefault(p => p is not null),
             CaptionedShotCount: perSource.Sum(p => p.CaptionedShotCount),
-            VisionPartial: perSource.Any(p => p.VisionPartial));
+            VisionPartial: perSource.Any(p => p.VisionPartial),
+            InsertTrackingApplied: perSource.Any(p => p.InsertTrackingApplied),
+            InsertTrackingDegraded: perSource.Any(p => p.InsertTrackingDegraded),
+            InsertRegionCount: perSource.Sum(p => p.InsertRegionCount));
     }
 
     // ---------------------------------------------------------------------
@@ -850,6 +870,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         List<VideoAnalysisWord> Words,
         List<VideoAnalysisPlacement> Placements,
         List<VideoAnalysisDuplicateGroup> DuplicateGroups,
+        List<VideoInsertRegionTrack> InsertRegions,
         VideoAnalysisProvenance Provenance);
 
     private sealed record SourceAnalysisOutcome(SourceAnalysisResult? Result, string? ErrorCode, string? ErrorMessage)
@@ -1236,6 +1257,64 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         const string? visionProviderName = null;
         const int captionedShotCount = 0;
 
+        // ---- Tracked screen inserts (docs/video-editing.md "Tracked screen inserts (Phase 5)"):
+        // deterministic chroma-plate quad tracking over a dedicated, higher-resolution grid pass.
+        // The WHOLE block degrades on any exception exactly like the visual-analysis block above —
+        // insert tracking must never fail an otherwise-good analysis. Ids here are LOCAL
+        // ("r0"...) — remapped by ExecuteAsync's merge step. ----
+        List<VideoInsertRegionTrack> insertRegions = [];
+        bool insertTrackingApplied = false;
+        bool insertTrackingDegraded = false;
+
+        if (config.DetectInsertRegions)
+        {
+            try
+            {
+                await ReportAsync(context, progress, VideoAnalyzeProgressPlan.Stage.TrackInsertRegions, progressPrefix + "Tracking insert regions", sourceIndex);
+
+                // Clamped at the point config is consumed, same convention as the Phase 1 grid
+                // clamps in ExecuteAsync — an author-supplied 4096x4096 must not allocate a huge
+                // raw grid buffer.
+                int insertGridWidth = Math.Clamp(config.InsertGridWidth, 64, 640);
+                int insertGridHeight = Math.Clamp(config.InsertGridHeight, 36, 360);
+
+                FrameGridResult insertGrid = await _frameGridSampler.SampleAsync(
+                    localVideoPath, scratch, Math.Clamp(config.InsertSampleFps, 0.5, 30.0),
+                    insertGridWidth, insertGridHeight, probe.DurationSec,
+                    Math.Clamp(config.MaxInsertSampleFrames, 10, 20_000), ct);
+
+                if (insertGrid.FrameCount > 0)
+                {
+                    IReadOnlyList<VideoInsertRegionTrack> tracks = ChromaQuadTracker.Track(
+                        insertGrid.PixelData, insertGrid.FrameCount, insertGrid.GridWidth, insertGrid.GridHeight,
+                        insertGrid.EffectiveFps,
+                        new ChromaQuadTracker.Options(
+                            ColorName: config.InsertRegionColor,
+                            MinAreaRatio: Math.Clamp(config.MinInsertRegionAreaRatio, 0.0001, 0.9),
+                            MinTrackSeconds: Math.Max(0.1, config.MinInsertRegionSeconds),
+                            MaxRegions: Math.Clamp(config.MaxInsertRegions, 0, 32)));
+
+                    // ShotId is view-legibility only (mirrors SilenceSpan.AfterShot) — the track's
+                    // midpoint decides which shot "owns" it.
+                    insertRegions = tracks
+                        .Select(t => t with { ShotId = FindShotFor(shots, (t.StartSec + t.EndSec) / 2) })
+                        .ToList();
+                }
+
+                insertTrackingApplied = true;
+            }
+            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "VideoAnalyze step {StepOrder} source {SourceIndex}: insert-region tracking failed; degrading.", context.Step.StepOrder, sourceIndex);
+                insertRegions = [];
+                insertTrackingDegraded = true;
+            }
+        }
+
         // ---- Phase 3: deterministic overlay-placement candidates — derived entirely from Phase
         // 1's per-shot Visual/Regions data, so only computed when visual analysis actually
         // succeeded (never when it degraded/was off). Ids here are LOCAL ("p0"...) — remapped by
@@ -1274,10 +1353,13 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             VisionDegraded: visionDegraded,
             VisionProvider: visionProviderName,
             CaptionedShotCount: captionedShotCount,
-            VisionPartial: visionPartial);
+            VisionPartial: visionPartial,
+            InsertTrackingApplied: insertTrackingApplied,
+            InsertTrackingDegraded: insertTrackingDegraded,
+            InsertRegionCount: insertRegions.Count);
 
         return SourceAnalysisOutcome.Ok(new SourceAnalysisResult(
-            storageKey, localVideoPath, media, shots, silences, segments, words, placements, duplicateGroups, provenance));
+            storageKey, localVideoPath, media, shots, silences, segments, words, placements, duplicateGroups, insertRegions, provenance));
     }
 
     // ---------------------------------------------------------------------
@@ -1578,7 +1660,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         return list;
     }
 
-    private static (JsonObject View, JsonObject Meta, List<string> OfferedIds, List<string> OfferedPlacementIds, List<string> OfferedMusicIds) BuildBoundedView(
+    private static (JsonObject View, JsonObject Meta, List<string> OfferedIds, List<string> OfferedPlacementIds, List<string> OfferedMusicIds, List<string> OfferedInsertRegionIds) BuildBoundedView(
         VideoAnalysisArtifact artifact,
         List<VideoAnalysisSegment> viewSegments,
         VideoAnalyzeStepConfig config,
@@ -1670,6 +1752,24 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             }
         }
 
+        // Tracked screen inserts: same atomic-array budget discipline as musicTracks just above —
+        // suppressed as a whole only after detail has fully degraded and music was already
+        // suppressed, and always before any offered item is dropped.
+        bool insertRegionsSuppressed = false;
+        if (serialized.Length > maxOutputChars && artifact.InsertRegions is { Count: > 0 })
+        {
+            JsonObject suppressedView = BuildView(
+                artifact, offered, detailApplied, config, isMultiSource, lookUniform, endsSentenceIds,
+                suppressMusicTracks: musicTracksSuppressed, suppressInsertRegions: true);
+            string suppressedSerialized = suppressedView.ToJsonString(EnvelopeJsonOptions);
+            if (suppressedSerialized.Length < serialized.Length)
+            {
+                view = suppressedView;
+                serialized = suppressedSerialized;
+                insertRegionsSuppressed = true;
+            }
+        }
+
         // Never truncate mid-JSON: drop whole trailing items (from the end of the combined,
         // priority-ordered list) and re-serialize until the view fits the char budget. Only
         // reached once the lowest-tried detail level (and, if applicable, music-track suppression)
@@ -1677,7 +1777,7 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         while (serialized.Length > maxOutputChars && offered.Count > 0)
         {
             offered.RemoveAt(offered.Count - 1);
-            view = BuildView(artifact, offered, detailApplied, config, isMultiSource, lookUniform, endsSentenceIds, suppressMusicTracks: musicTracksSuppressed);
+            view = BuildView(artifact, offered, detailApplied, config, isMultiSource, lookUniform, endsSentenceIds, suppressMusicTracks: musicTracksSuppressed, suppressInsertRegions: insertRegionsSuppressed);
             serialized = view.ToJsonString(EnvelopeJsonOptions);
         }
 
@@ -1702,6 +1802,14 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         // final view" — empty whenever it was suppressed for budget, regardless of VisualDetail.
         List<string> offeredMusicIds = !musicTracksSuppressed
             ? (artifact.MusicCandidates?.Select(m => m.Id).ToList() ?? [])
+            : [];
+
+        // Tracked screen inserts: "offered" means exactly "the whole insertRegions array survived
+        // to the final view" — empty whenever it was suppressed for budget, regardless of
+        // VisualDetail (the musicTracks discipline, since insert regions come from their own grid
+        // pass and are independent of Phase 1 visual analysis).
+        List<string> offeredInsertRegionIds = !insertRegionsSuppressed
+            ? (artifact.InsertRegions?.Select(r => r.Id).ToList() ?? [])
             : [];
 
         var meta = new JsonObject
@@ -1760,17 +1868,31 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             ["offeredMusicTrackCount"] = offeredMusicIds.Count
         };
 
+        // Tracked screen inserts — only ever present when the step actually configured tracking,
+        // so a DetectInsertRegions=false run's meta shape is byte-identical to before this
+        // addition (the same gating discipline isMultiSource uses just below).
+        if (config.DetectInsertRegions)
+        {
+            meta["insertTracking"] = new JsonObject
+            {
+                ["applied"] = artifact.Provenance.InsertTrackingApplied,
+                ["degraded"] = artifact.Provenance.InsertTrackingDegraded,
+                ["regions"] = artifact.Provenance.InsertRegionCount
+            };
+            meta["offeredInsertRegionIdCount"] = offeredInsertRegionIds.Count;
+        }
+
         // Multi-source addition — only ever present when more than one source was analyzed, so a
         // single-source view's meta shape is byte-identical to before this addition.
         if (isMultiSource)
             meta["sourceCount"] = artifact.Sources?.Count ?? 1;
 
-        return (view, meta, offeredIds, offeredPlacementIds, offeredMusicIds);
+        return (view, meta, offeredIds, offeredPlacementIds, offeredMusicIds, offeredInsertRegionIds);
     }
 
     private static JsonObject BuildView(
         VideoAnalysisArtifact artifact, List<OfferedItem> items, VideoVisualDetail detail, VideoAnalyzeStepConfig config, bool isMultiSource,
-        bool lookUniform, IReadOnlySet<string> endsSentenceIds, bool suppressMusicTracks = false)
+        bool lookUniform, IReadOnlySet<string> endsSentenceIds, bool suppressMusicTracks = false, bool suppressInsertRegions = false)
     {
         var view = new JsonObject
         {
@@ -1821,6 +1943,14 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         // it for budget, via suppressMusicTracks.
         if (!suppressMusicTracks && artifact.MusicCandidates is { Count: > 0 })
             view["musicTracks"] = MusicTracksNode(artifact.MusicCandidates);
+
+        // Tracked screen inserts: same UNCONDITIONAL discipline as musicTracks (deliberately NOT
+        // the detail-gated placements one) — insert regions come from their own dedicated grid
+        // pass and exist regardless of whether Phase 1 visual analysis ran at all, so their
+        // presence must never depend on VisualDetail. Dropped as one atomic array when the caller
+        // determines it must suppress them for budget, via suppressInsertRegions.
+        if (!suppressInsertRegions && artifact.InsertRegions is { Count: > 0 })
+            view["insertRegions"] = InsertRegionsNode(artifact.InsertRegions, isMultiSource);
 
         return view;
     }
@@ -2162,6 +2292,34 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
             };
             if (isMultiSource)
                 node["src"] = p.SourceIndex;
+            return (JsonNode)node;
+        }).ToArray());
+
+    /// <summary>
+    /// Tracked screen inserts' <c>view.insertRegions</c> — deliberately QUALITATIVE: an opaque id,
+    /// the owning shot, the source-timeline window (input-only, same precedent/rounding as
+    /// <see cref="PlacementsNode"/>'s <c>startSec</c>/<c>endSec</c>), bucketed confidence/size/
+    /// motion words, and a rounded aspect hint for shaping the rendered content. The per-frame
+    /// corner tracking data — the actual numbers — is NEVER shown here: it lives only in the full
+    /// artifact, where <c>VideoCompileStepExecutor</c> alone resolves a chosen id back to it.
+    /// </summary>
+    private static JsonArray InsertRegionsNode(IReadOnlyList<VideoInsertRegionTrack> regions, bool isMultiSource) =>
+        new(regions.Select(r =>
+        {
+            var node = new JsonObject
+            {
+                ["id"] = r.Id,
+                ["shotId"] = r.ShotId,
+                ["startSec"] = Round2(r.StartSec),
+                ["endSec"] = Round2(r.EndSec),
+                ["conf"] = r.Confidence >= 0.75 ? "high" : r.Confidence >= 0.5 ? "medium" : "low",
+                ["size"] = r.MeanAreaRatio >= 0.15 ? "large" : r.MeanAreaRatio >= 0.04 ? "medium" : "small",
+                ["motion"] = r.MotionClass,
+                ["aspect"] = Round2(r.MeanAspectRatio),
+                ["color"] = r.ColorName
+            };
+            if (isMultiSource)
+                node["src"] = r.SourceIndex;
             return (JsonNode)node;
         }).ToArray());
 
