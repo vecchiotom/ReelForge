@@ -10,6 +10,7 @@ export type ExecutionStreamEventType =
   | 'step.progress'
   | 'step.tool-called'
   | 'step.reasoning'
+  | 'step.chat-turn'
   | 'execution.running'
   | 'execution.completed'
   | 'execution.failed';
@@ -35,6 +36,7 @@ const STREAM_EVENT_TYPES: ExecutionStreamEventType[] = [
   'step.progress',
   'step.tool-called',
   'step.reasoning',
+  'step.chat-turn',
   'execution.running',
   'execution.completed',
   'execution.failed',

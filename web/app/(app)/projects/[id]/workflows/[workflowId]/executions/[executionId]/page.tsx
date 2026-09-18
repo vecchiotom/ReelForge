@@ -206,6 +206,13 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
     }
   }, []);
 
+  const selectedStepType = useMemo(() => {
+    if (!workflow || !selectedStepResult) {
+      return undefined;
+    }
+    return workflow.steps.find((step) => step.id === selectedStepResult.workflowStepId)?.stepType;
+  }, [workflow, selectedStepResult]);
+
   const selectedStepEvents = useMemo(() => {
     if (!selectedStepResult) {
       return [];
@@ -543,6 +550,7 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
                   <StepResultPanel
                     projectId={projectId}
                     stepResult={selectedStepResult}
+                    stepType={selectedStepType}
                     stepEvents={selectedStepEvents}
                     liveTokenMetrics={selectedStepLiveTokenMetrics}
                     artifactJson={artifactJson}
@@ -567,6 +575,7 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
               <StepResultPanel
                 projectId={projectId}
                 stepResult={selectedStepResult}
+                stepType={selectedStepType}
                 stepEvents={selectedStepEvents}
                 liveTokenMetrics={selectedStepLiveTokenMetrics}
                 artifactJson={artifactJson}

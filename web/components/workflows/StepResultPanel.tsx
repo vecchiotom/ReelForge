@@ -2,11 +2,12 @@
 
 import { Alert, Badge, Card, Group, Paper, ScrollArea, Stack, Tabs, Text } from '@mantine/core';
 import { IconAlertCircle } from '@tabler/icons-react';
-import type { WorkflowStepResult } from '@/lib/types/workflow';
+import type { StepType, WorkflowStepResult } from '@/lib/types/workflow';
 import { formatDate } from '@/lib/utils/format';
 import { getOutputVideoUrl } from '@/lib/api/outputs';
 import { JsonViewer } from '@/components/workflows/JsonViewer';
 import { ExecutionEventCard } from '@/components/workflows/ExecutionEventCard';
+import { EditRoomTranscriptPanel } from '@/components/workflows/EditRoomTranscriptPanel';
 import type { ExecutionStreamEvent } from '@/lib/hooks/use-execution-stream';
 
 interface StepResultLiveTokenMetrics {
@@ -17,6 +18,8 @@ interface StepResultLiveTokenMetrics {
 export interface StepResultPanelProps {
   projectId: string;
   stepResult: WorkflowStepResult;
+  /** The owning workflow step's type — gates the EditRoom-only "Discussion" tab below. */
+  stepType?: StepType;
   stepEvents: ExecutionStreamEvent[];
   liveTokenMetrics: StepResultLiveTokenMetrics;
   artifactJson: string | null;
@@ -34,6 +37,7 @@ function statusColor(status: WorkflowStepResult['status']): string {
 export function StepResultPanel({
   projectId,
   stepResult,
+  stepType,
   stepEvents,
   liveTokenMetrics,
   artifactJson,
@@ -43,6 +47,7 @@ export function StepResultPanel({
   const hasError = !!stepResult.errorDetails;
   const hasIterationOrCompletion =
     (stepResult.iterationNumber !== null && stepResult.iterationNumber !== undefined) || !!stepResult.completedAt;
+  const isEditRoom = stepType === 'EditRoom';
 
   return (
     <Stack gap="md">
@@ -94,6 +99,7 @@ export function StepResultPanel({
             </Group>
           </Tabs.Tab>
           <Tabs.Tab value="data">Data</Tabs.Tab>
+          {isEditRoom && <Tabs.Tab value="discussion">Discussion</Tabs.Tab>}
           <Tabs.Tab value="events">Events</Tabs.Tab>
         </Tabs.List>
 
@@ -146,7 +152,9 @@ export function StepResultPanel({
             <Stack gap="md">
               {stepResult.artifactStorageKey && (
                 <Card withBorder padding="sm" radius="md">
-                  <Text size="sm" fw={600} mb="xs">Edit Decision Artifact</Text>
+                  <Text size="sm" fw={600} mb="xs">
+                    {isEditRoom ? 'Room Transcript Artifact' : 'Edit Decision Artifact'}
+                  </Text>
                   {artifactLoading && <Text size="sm" c="dimmed">Loading artifact...</Text>}
                   {artifactError && (
                     <Alert icon={<IconAlertCircle size={14} />} color="yellow" variant="light">
@@ -174,6 +182,18 @@ export function StepResultPanel({
               )}
             </Stack>
           </Tabs.Panel>
+
+          {isEditRoom && (
+            <Tabs.Panel value="discussion">
+              <EditRoomTranscriptPanel
+                stepResult={stepResult}
+                stepEvents={stepEvents}
+                artifactJson={artifactJson}
+                artifactError={artifactError}
+                artifactLoading={artifactLoading}
+              />
+            </Tabs.Panel>
+          )}
 
           <Tabs.Panel value="events">
             <Stack gap="xs">

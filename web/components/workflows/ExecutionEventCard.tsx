@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { Paper, Group, Text, Badge, Button } from '@mantine/core';
-import { IconPlayerPlay, IconCheck, IconX, IconClock, IconActivity, IconTool, IconBrain } from '@tabler/icons-react';
+import { IconPlayerPlay, IconCheck, IconX, IconClock, IconActivity, IconTool, IconBrain, IconMessage2 } from '@tabler/icons-react';
 import { JsonViewer } from '@/components/workflows/JsonViewer';
 import type { ExecutionStreamEvent } from '@/lib/hooks/use-execution-stream';
 
@@ -50,6 +50,9 @@ export function getEventBadgeColor(eventType: string): string {
   if (eventType === 'step.reasoning') {
     return 'grape';
   }
+  if (eventType === 'step.chat-turn') {
+    return 'teal';
+  }
 
   return 'violet';
 }
@@ -62,6 +65,10 @@ function getEventTitle(event: ExecutionStreamEvent): string {
   if (event.type === 'step.progress') return getPayloadString(event.payload, 'stage', 'Stage') || 'Step progress';
   if (event.type === 'step.tool-called') return 'Tool call';
   if (event.type === 'step.reasoning') return 'Model reasoning';
+  if (event.type === 'step.chat-turn') {
+    const speaker = getPayloadString(event.payload, 'speaker', 'Speaker');
+    return speaker ? `${speaker} spoke` : 'Room turn';
+  }
   return 'Step completed';
 }
 
@@ -73,6 +80,7 @@ export function getEventIcon(eventType: ExecutionStreamEvent['type']) {
   if (eventType === 'step.progress') return <IconActivity size={12} />;
   if (eventType === 'step.tool-called') return <IconTool size={12} />;
   if (eventType === 'step.reasoning') return <IconBrain size={12} />;
+  if (eventType === 'step.chat-turn') return <IconMessage2 size={12} />;
   return <IconPlayerPlay size={12} />;
 }
 
@@ -121,6 +129,14 @@ function getEventMetadata(event: ExecutionStreamEvent): string[] {
     if (percent > 0) metadata.push(`${Math.round(percent)}%`);
   }
 
+  if (event.type === 'step.chat-turn') {
+    const turnIndex = getPayloadNumber(event.payload, 'turnIndex', 'TurnIndex');
+    const totalTurns = getPayloadNumber(event.payload, 'totalTurns', 'TotalTurns');
+    metadata.push(totalTurns > 0 ? `Turn ${turnIndex + 1} of ${totalTurns}` : `Turn ${turnIndex + 1}`);
+    const speakerRole = getPayloadString(event.payload, 'speakerRole', 'SpeakerRole');
+    if (speakerRole) metadata.push(speakerRole);
+  }
+
   return metadata;
 }
 
@@ -141,6 +157,10 @@ function getEventBody(event: ExecutionStreamEvent): string | null {
 
   if (event.type === 'step.completed') {
     return getPayloadString(event.payload, 'errorDetails', 'ErrorDetails') || null;
+  }
+
+  if (event.type === 'step.chat-turn') {
+    return getPayloadString(event.payload, 'text', 'Text') || null;
   }
 
   return null;
