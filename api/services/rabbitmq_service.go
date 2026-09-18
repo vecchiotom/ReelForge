@@ -98,6 +98,10 @@ const (
 	// way as every other workflow event here; never persisted, so there is no corresponding DB
 	// model or migration on either side.
 	exchangeStepProgress = "ReelForge.Shared.IntegrationEvents:WorkflowStepProgress"
+	// Append-only, sequence-numbered chat turn published once per completed turn in a
+	// StepType.EditRoom group-chat run — see WorkflowStepChatTurn's doc comment in
+	// ReelForge.Shared.IntegrationEvents.
+	exchangeStepChatTurn = "ReelForge.Shared.IntegrationEvents:WorkflowStepChatTurn"
 
     queueName = "go-api-workflow-events"
 )
@@ -146,7 +150,7 @@ func runConsumer() error {
 	// Bind queue to each MassTransit fanout exchange. MassTransit creates these
 	// exchanges when the WorkflowEngine publishes the first event; declare them
 	// here as well so the binding is idempotent even if we start before the engine.
-	for _, exchange := range []string{exchangeExecutionRunning, exchangeCompleted, exchangeFailed, exchangeStepStarted, exchangeStepComplete, exchangeStepToolCalled, exchangeStepReasoning, exchangeStepProgress} {
+	for _, exchange := range []string{exchangeExecutionRunning, exchangeCompleted, exchangeFailed, exchangeStepStarted, exchangeStepComplete, exchangeStepToolCalled, exchangeStepReasoning, exchangeStepProgress, exchangeStepChatTurn} {
 		if err := ch.ExchangeDeclare(exchange, "fanout", true, false, false, false, nil); err != nil {
 			return fmt.Errorf("exchange declare %q: %w", exchange, err)
 		}
@@ -202,6 +206,8 @@ func dispatchMessage(msg amqp.Delivery) {
 		eventType = "step.reasoning"
 	case exchangeStepProgress:
 		eventType = "step.progress"
+	case exchangeStepChatTurn:
+		eventType = "step.chat-turn"
 	default:
 		return
 	}

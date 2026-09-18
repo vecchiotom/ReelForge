@@ -1,10 +1,18 @@
+using System.Linq;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 
 namespace ReelForge.WorkflowEngine.Agents.EditRoom;
 
-/// <summary>Reported to the turn-completed callback once a seat's (or the director's) turn finishes.</summary>
-public sealed record EditRoomTurnResult(string SeatName, string Text, bool IsError, TimeSpan Duration);
+/// <summary>
+/// Reported to the turn-completed callback once a seat's (or the director's) turn finishes.
+/// <paramref name="InputTokens"/>/<paramref name="OutputTokens"/> are null whenever the underlying
+/// chat client didn't report usage for that turn (a provider that omits it, or the fallback/error
+/// path) — never a guessed/estimated value.
+/// </summary>
+public sealed record EditRoomTurnResult(
+    string SeatName, string Text, bool IsError, TimeSpan Duration,
+    int? InputTokens = null, int? OutputTokens = null);
 
 /// <summary>
 /// Wraps one already-constructed inner <see cref="AIAgent"/> (a seat's or the room-participant
@@ -73,7 +81,8 @@ public sealed class EditRoomSeatAgent : DelegatingAIAgent
         {
             AgentResponse response = await InnerAgent.RunAsync(turnMessages, session, runOptions, cancellationToken);
             string text = response.Text ?? string.Empty;
-            await ReportAsync(new EditRoomTurnResult(_seatName, text, IsError: false, DateTime.UtcNow - startedAt));
+            (int? inputTokens, int? outputTokens) = ExtractUsage(response.Usage);
+            await ReportAsync(new EditRoomTurnResult(_seatName, text, IsError: false, DateTime.UtcNow - startedAt, inputTokens, outputTokens));
             return response;
         }
         catch (OperationCanceledException)
@@ -99,6 +108,7 @@ public sealed class EditRoomSeatAgent : DelegatingAIAgent
         IAsyncEnumerator<AgentResponseUpdate>? enumerator = null;
         var accumulated = new System.Text.StringBuilder();
         bool failed = false;
+        UsageDetails? usage = null;
 
         try
         {
@@ -144,6 +154,15 @@ public sealed class EditRoomSeatAgent : DelegatingAIAgent
                     if (!string.IsNullOrEmpty(update.Text))
                         accumulated.Append(update.Text);
 
+                    // A streaming provider surfaces usage as a UsageContent item, typically on the
+                    // final update — the exact convention Microsoft.Agents.AI's own
+                    // AgentResponse.ToAgentResponseUpdates() uses in reverse (usage -> a synthesized
+                    // UsageContent update). Keep the LAST one seen in case a provider emits more than
+                    // one running total across updates.
+                    UsageContent? usageContent = update.Contents?.OfType<UsageContent>().LastOrDefault();
+                    if (usageContent is not null)
+                        usage = usageContent.Details;
+
                     yield return update;
                 }
             }
@@ -161,8 +180,18 @@ public sealed class EditRoomSeatAgent : DelegatingAIAgent
             yield break;
         }
 
-        await ReportAsync(new EditRoomTurnResult(_seatName, accumulated.ToString(), IsError: false, DateTime.UtcNow - startedAt));
+        (int? inputTokens, int? outputTokens) = ExtractUsage(usage);
+        await ReportAsync(new EditRoomTurnResult(_seatName, accumulated.ToString(), IsError: false, DateTime.UtcNow - startedAt, inputTokens, outputTokens));
     }
+
+    /// <summary>
+    /// Same extraction pattern <c>ReelForgeAgentBase</c> already applies to a solo agent call's
+    /// <c>ChatResponse.Usage</c> — <c>null</c> propagates as "no usage reported", never coerced to 0.
+    /// </summary>
+    private static (int? InputTokens, int? OutputTokens) ExtractUsage(UsageDetails? usage) =>
+        usage is null
+            ? (null, null)
+            : ((int?)(usage.InputTokenCount ?? 0), (int?)(usage.OutputTokenCount ?? 0));
 
     /// <summary>
     /// Appends the seat's persona directive as the LAST message — after the shared room

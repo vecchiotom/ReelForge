@@ -290,6 +290,14 @@ public class EditRoomStepExecutor : IStepExecutor
         List<EditRoomSeat> seats = config.EffectiveSeats.ToList();
         int turnCounter = 0;
 
+        // Running cumulative token tally across every turn observed so far in this room — real
+        // mid-run visibility (see EditRoomSeatAgent.ExtractUsage), never estimated. Stays null
+        // (reported as such on WorkflowStepProgress) until at least one turn actually reports usage,
+        // since a provider that never reports usage must not be misrepresented as "0 tokens used".
+        int cumulativeInputTokens = 0;
+        int cumulativeOutputTokens = 0;
+        bool anyUsageObserved = false;
+
         async Task OnTurnCompleted(EditRoomTurnResult result)
         {
             int idx = turnCounter++;
@@ -300,7 +308,19 @@ public class EditRoomStepExecutor : IStepExecutor
                 : $"{result.SeatName} is proposing a cut (turn {idx + 1}/{config.ClampedMaxTurns})";
             int percent = (int)Math.Clamp(Math.Round(100.0 * (idx + 1) / Math.Max(1, config.ClampedMaxTurns)), 0, 100);
 
-            await context.ReportProgressAsync(label, percent);
+            if (result.InputTokens.HasValue || result.OutputTokens.HasValue)
+            {
+                anyUsageObserved = true;
+                cumulativeInputTokens += result.InputTokens ?? 0;
+                cumulativeOutputTokens += result.OutputTokens ?? 0;
+            }
+
+            await context.ReportProgressAsync(
+                label,
+                percent,
+                tokensUsedSoFar: anyUsageObserved ? cumulativeInputTokens + cumulativeOutputTokens : null,
+                inputTokensSoFar: anyUsageObserved ? cumulativeInputTokens : null,
+                outputTokensSoFar: anyUsageObserved ? cumulativeOutputTokens : null);
 
             if (config.StreamTurns)
             {

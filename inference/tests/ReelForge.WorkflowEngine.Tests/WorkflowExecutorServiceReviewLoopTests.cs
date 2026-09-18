@@ -45,7 +45,8 @@ public class WorkflowExecutorServiceReviewLoopTests
 
         public Task PublishStepProgressAsync(
             WorkflowExecution execution, WorkflowStep step, WorkflowStepResult stepResult,
-            string stage, int? percentComplete, CancellationToken ct) => Task.CompletedTask;
+            string stage, int? percentComplete, CancellationToken ct,
+            int? tokensUsedSoFar = null, int? inputTokensSoFar = null, int? outputTokensSoFar = null) => Task.CompletedTask;
 
         public Task PublishStepChatTurnAsync(
             WorkflowExecution execution, WorkflowStep step, WorkflowStepResult stepResult,

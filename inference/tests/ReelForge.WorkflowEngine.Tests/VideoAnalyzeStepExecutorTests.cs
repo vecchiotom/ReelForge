@@ -2295,7 +2295,7 @@ public class VideoAnalyzeStepExecutorTests
             audioExtractor: null, frameGridSampler: frameGridSampler, keyframeExtractor: null, shotCaptioner: shotCaptioner);
 
         var reported = new List<(string Stage, int? Percent)>();
-        context.ProgressReporter = (stage, percent, _) =>
+        context.ProgressReporter = (stage, percent, _, _, _, _) =>
         {
             reported.Add((stage, percent));
             return Task.CompletedTask;
@@ -2372,7 +2372,7 @@ public class VideoAnalyzeStepExecutorTests
             audioExtractor: null, frameGridSampler: frameGridSampler, keyframeExtractor: null, shotCaptioner: shotCaptioner);
 
         var reported = new List<string>();
-        context.ProgressReporter = (stage, _, _) =>
+        context.ProgressReporter = (stage, _, _, _, _, _) =>
         {
             reported.Add(stage);
             return Task.CompletedTask;

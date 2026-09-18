@@ -116,7 +116,10 @@ public class WorkflowEventPublisher : IWorkflowEventPublisher
         WorkflowStepResult stepResult,
         string stage,
         int? percentComplete,
-        CancellationToken ct)
+        CancellationToken ct,
+        int? tokensUsedSoFar = null,
+        int? inputTokensSoFar = null,
+        int? outputTokensSoFar = null)
     {
         _logger.LogDebug(
             "Publishing step progress event: ExecutionId={ExecutionId}, StepId={StepId}, Stage={Stage}, Percent={Percent}",
@@ -138,6 +141,9 @@ public class WorkflowEventPublisher : IWorkflowEventPublisher
             CorrelationId = execution.CorrelationId,
             Stage = stage,
             PercentComplete = percentComplete,
+            TokensUsedSoFar = tokensUsedSoFar,
+            InputTokensSoFar = inputTokensSoFar,
+            OutputTokensSoFar = outputTokensSoFar,
             OccurredAt = DateTime.UtcNow
         }, ct);
     }

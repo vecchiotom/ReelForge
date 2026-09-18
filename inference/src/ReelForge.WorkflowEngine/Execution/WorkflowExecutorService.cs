@@ -218,8 +218,10 @@ public class WorkflowExecutorService
                 // by reference here is safe even though its fields mutate below: WorkflowStepProgress
                 // only ever reads stepResult.Id, which is fixed at creation.
                 context.StepResultId = stepResult.Id;
-                context.ProgressReporter = (stage, percent, progressCt) =>
-                    _eventPublisher.PublishStepProgressAsync(execution, step, stepResult, stage, percent, progressCt);
+                context.ProgressReporter = (stage, percent, tokensUsedSoFar, inputTokensSoFar, outputTokensSoFar, progressCt) =>
+                    _eventPublisher.PublishStepProgressAsync(
+                        execution, step, stepResult, stage, percent, progressCt,
+                        tokensUsedSoFar, inputTokensSoFar, outputTokensSoFar);
                 context.ChatTurnReporter = (turnIndex, totalTurns, speaker, speakerRole, text, idsMentioned, chatCt) =>
                     _eventPublisher.PublishStepChatTurnAsync(
                         execution, step, stepResult, turnIndex, totalTurns, speaker, speakerRole, text, idsMentioned, chatCt);
