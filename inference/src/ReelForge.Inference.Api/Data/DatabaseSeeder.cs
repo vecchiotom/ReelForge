@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.EntityFrameworkCore;
+using ReelForge.Shared.Agents;
 using ReelForge.Shared.Data.Models;
 
 namespace ReelForge.Inference.Api.Data;
@@ -1203,68 +1204,19 @@ public static class DatabaseSeeder
                !prompt.Contains("exactly one rendered mp4 video asset", StringComparison.Ordinal);
     }
 
-    private static readonly string[] BaseTools =
-    [
-        "ListProjectFiles", "ReadProjectFile", "WriteProjectFile",
-        "EnsureSandbox", "GetSandbox", "ListSandboxFiles", "ReadSandboxFile",
-        "WriteSandboxFile", "DeleteSandboxPath", "RunSandboxNpmScript",
-        "RunSandboxRemotionCommand", "CompleteSandbox",
-        // Granted to every real LLM agent by AgentToolProvider.GetTools — was missing from this
-        // display metadata entirely (found by e2e QA).
-        "FailWorkflow"
-    ];
-
-    // Minimal, read-only project-context tools — no sandbox access, no WriteProjectFile, no
-    // render tool. Matches AgentToolProvider.GetTools' VideoStoryEditor case exactly: this agent
-    // only decides which offered ids to keep, it never produces or touches media.
-    private static readonly string[] ReadOnlyProjectContextTools =
-    [
-        "ListProjectFiles", "ReadProjectFile", "SearchProjectFiles", "GetDeterministicContextFiles",
-        "FailWorkflow"
-    ];
-
-    private static readonly string[] RemotionSkillsTools =
-    [
-        "SearchRemotionSkills", "ReadRemotionSkill", "ListAllRemotionSkills"
-    ];
-
+    /// <summary>
+    /// Built-in agents' "Available Tools" display metadata (the UI's "Available Tools" card on
+    /// an agent's detail page). Derived from <see cref="ToolGroupCatalog"/> — the single source
+    /// of truth also used by the WorkflowEngine's <c>AgentToolProvider.GetTools</c> to construct
+    /// the actual runnable tools an agent executes with. This used to be a separate hand-written
+    /// mapping here that drifted from the real scoping in <c>AgentToolProvider</c> more than
+    /// once (a missing <c>FailWorkflow</c> entry found by e2e QA; a widened
+    /// <c>MotionGraphicsPlanner</c> scope that wasn't mirrored here) — both call sites now read
+    /// the same catalog, so they cannot disagree again.
+    /// </summary>
     private static string GetAvailableToolsJson(AgentType agentType)
     {
-        // ExtractTransform/VideoTransform are deterministic, non-LLM placeholder agents — they
-        // are never registered as an IReelForgeAgent and never actually invoked with tools, so
-        // their display metadata should say so rather than falling through to BaseTools.
-        if (agentType is AgentType.ExtractTransform or AgentType.VideoTransform)
-            return JsonSerializer.Serialize(Array.Empty<string>());
-
-        // VideoStoryEditor's real runtime tool scope (AgentToolProvider.GetTools) is deliberately
-        // minimal and read-only; falling through to BaseTools here would misreport it as having
-        // WriteProjectFile/sandbox access it does not actually receive (found by e2e QA).
-        // MotionGraphicsPlanner used to share this minimal scope too, but was widened to the same
-        // full sandbox+render pipeline as AuthorAgent (see AgentToolProvider.GetTools and
-        // docs/video-editing.md "Motion graphics (Phase 3)") — it now falls through to the
-        // BaseTools+RemotionSkillsTools case below like AuthorAgent, not this one.
-        // VideoReviewAgent gets the identical minimal scope: its review evidence is already in
-        // the pipeline history it is given, so it never needs sandbox/Remotion-skill tools.
-        // MusicSupervisor gets the same minimal scope too: it only picks among offered "m{n}"
-        // track ids and enum-word settings, never produces or touches media itself.
-        if (agentType is AgentType.VideoStoryEditor or AgentType.VideoReviewAgent or AgentType.MusicSupervisor)
-            return JsonSerializer.Serialize(ReadOnlyProjectContextTools);
-
-        string[] extra = agentType switch
-        {
-            AgentType.CodeStructureAnalyzer => ["ReadFileTree", "ReadFileContent"],
-            AgentType.DependencyAnalyzer => ["ReadPackageManifest", "ReadFileContent"],
-            AgentType.ComponentInventoryAnalyzer => ["ReadFileContent", "ListFilesByExtension"],
-            AgentType.RouteAndApiAnalyzer => ["ReadFileContent", "SearchPatterns"],
-            AgentType.StyleAndThemeExtractor => ["ReadStyleConfig", "ReadFileContent"],
-            AgentType.RemotionComponentTranslator => [.. RemotionSkillsTools],
-            AgentType.AnimationStrategyAgent => [.. RemotionSkillsTools],
-            AgentType.AuthorAgent => [.. RemotionSkillsTools],
-            AgentType.ReviewAgent => [.. RemotionSkillsTools],
-            AgentType.MotionGraphicsPlanner => [.. RemotionSkillsTools],
-            _ => []
-        };
-        string[] all = [.. BaseTools, .. extra];
+        string[] all = [.. ToolGroupCatalog.GroupsFor(agentType).SelectMany(ToolGroupCatalog.FunctionNamesFor)];
         return JsonSerializer.Serialize(all);
     }
 
