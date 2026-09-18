@@ -4,12 +4,13 @@ import { Select } from '@mantine/core';
 import { STEP_TYPE_LABELS, STEP_TYPE_DESCRIPTIONS } from '@/lib/utils/constants';
 import type { StepType } from '@/lib/types/workflow';
 
-// EditRoom is display-only for now: the builder has no config editor for it (it's provisioned by
-// the video-derush-edit-room template), and an EditRoom step created here with no
-// editRoomConfigJson would hard-fail at execution — so it's excluded from the selectable options
-// while STEP_TYPE_LABELS/COLORS still know it for badges on existing steps.
+// EditRoom/GraphicsRoom are display-only for now: the builder has no config editor for them
+// (they're provisioned by the video-derush-edit-room / video-derush-edit-graphics-room
+// templates), and a room step created here with no editRoomConfigJson/graphicsRoomConfigJson
+// would hard-fail at execution — so they're excluded from the selectable options while
+// STEP_TYPE_LABELS/COLORS still know them for badges on existing steps.
 const stepTypeOptions = (Object.keys(STEP_TYPE_LABELS) as StepType[])
-  .filter((key) => key !== 'EditRoom')
+  .filter((key) => key !== 'EditRoom' && key !== 'GraphicsRoom')
   .map((key) => ({
     value: key,
     label: STEP_TYPE_LABELS[key],

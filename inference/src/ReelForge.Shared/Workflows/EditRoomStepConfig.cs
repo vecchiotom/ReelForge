@@ -80,8 +80,15 @@ public sealed record EditRoomStepConfig(
     /// <summary>Whether a failed/empty room decision falls back to one ordinary solo <c>AgentType.VideoStoryEditor</c> call — today's existing single-editor pipeline, unchanged.</summary>
     bool FallbackToSoloEditor = true,
     /// <summary>Retry attempts for the standalone structured-output synthesis call when the result is empty/unparseable/all-ids-dropped.</summary>
-    int MaxSynthesisAttempts = 2)
+    int MaxSynthesisAttempts = 2) : IRoomStepConfig
 {
+    /// <summary>
+    /// <see cref="IRoomStepConfig"/>'s room-generic name for <see cref="FallbackToSoloEditor"/> —
+    /// explicit so the JSON property name (<c>fallbackToSoloEditor</c>) stays exactly what it was
+    /// before the shared room infrastructure existed.
+    /// </summary>
+    bool IRoomStepConfig.FallbackToSolo => FallbackToSoloEditor;
+
     /// <summary>
     /// The three built-in seats used whenever <see cref="Seats"/> is null/empty — validated live to
     /// be the sweet spot (more seats didn't add value, fewer produced repetitive agreement). All

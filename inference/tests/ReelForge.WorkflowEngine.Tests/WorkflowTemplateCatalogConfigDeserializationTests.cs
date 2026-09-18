@@ -398,6 +398,89 @@ public class WorkflowTemplateCatalogConfigDeserializationTests
     }
 
     [Fact]
+    public void VideoAnalyze_graphics_room_step_literal_deserializes_against_the_real_config_type()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-graphics-room", 0);
+        step.StepType.Should().Be(StepType.VideoAnalyze);
+        step.VideoAnalyzeConfigJson.Should().NotBeNullOrWhiteSpace();
+
+        VideoAnalyzeStepConfig? config = JsonSerializer.Deserialize<VideoAnalyzeStepConfig>(
+            step.VideoAnalyzeConfigJson!, ConfigJsonOptions);
+
+        config.Should().NotBeNull();
+        config!.Version.Should().Be(1);
+        config.Source.Kind.Should().Be(VideoSourceKind.ProjectFile);
+        config.EmitOverlayPlacements.Should().BeTrue("the graphics room deliberates over view.placements, which only exist when the analyze step emits them");
+    }
+
+    [Fact]
+    public void The_third_video_derush_edit_graphics_room_step_is_a_GraphicsRoom_step_referencing_the_analyze_view()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-graphics-room", 2);
+        step.StepType.Should().Be(StepType.GraphicsRoom);
+        step.AgentType.Should().Be(AgentType.VideoTransform, "the step's own AgentDefinitionId FK is a placeholder — the room's real seats/director are resolved from GraphicsRoomConfigJson");
+        step.GraphicsRoomConfigJson.Should().NotBeNullOrWhiteSpace();
+
+        GraphicsRoomStepConfig? config = JsonSerializer.Deserialize<GraphicsRoomStepConfig>(
+            step.GraphicsRoomConfigJson!, ConfigJsonOptions);
+
+        config.Should().NotBeNull();
+        config!.Version.Should().Be(1);
+        config.View.Should().NotBeNull();
+        config.View!.From.Should().Be(ExtractInputSource.Step);
+        config.View.StepOrder.Should().Be(1,
+            "the view must reference the analyze step explicitly — Previous relative to the graphics-room step resolves to the story editor's decision, not the placements envelope");
+
+        // Defaults not set by the literal — confirm they fall back to the documented values
+        // rather than being silently nulled/zeroed by a future property-name mismatch.
+        config.EffectiveSeats.Should().HaveCount(3);
+        config.Rounds.Should().Be(2);
+        config.MaxTurns.Should().Be(8);
+        config.ClampedMaxTurns.Should().Be(8);
+        config.Termination.Should().Be(EditRoomTerminationMode.SentinelOrConverged);
+        config.Temperature.Should().Be(0.7f);
+        config.DirectorTemperature.Should().Be(0.3f);
+        config.ReasoningEffort.Should().Be("none");
+        config.RoomTimeoutSeconds.Should().Be(1200);
+        config.FallbackToSoloPlanner.Should().BeTrue();
+    }
+
+    [Fact]
+    public void VideoCompile_graphics_room_step_literal_deserializes_against_the_real_config_type()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-graphics-room", 3);
+        step.StepType.Should().Be(StepType.VideoCompile);
+        step.VideoCompileConfigJson.Should().NotBeNullOrWhiteSpace();
+
+        VideoCompileStepConfig? config = JsonSerializer.Deserialize<VideoCompileStepConfig>(
+            step.VideoCompileConfigJson!, ConfigJsonOptions);
+
+        config.Should().NotBeNull();
+        config!.Version.Should().Be(1);
+        config.Decision.From.Should().Be(ExtractInputSource.Step);
+        config.Decision.StepOrder.Should().Be(2, "must reference the story editor's decision, not the graphics room's plan");
+        config.AnalysisStepOrder.Should().Be(1);
+        config.EnableGraphics.Should().BeTrue();
+        config.GraphicsPlan.Should().NotBeNull();
+        config.GraphicsPlan!.From.Should().Be(ExtractInputSource.Step);
+        config.GraphicsPlan.StepOrder.Should().Be(3,
+            "must reference the GraphicsRoom step, which emits the same MotionGraphicsPlanOutput shape a solo MotionGraphicsPlanner step would");
+        config.MinSegmentMs.Should().Be(800);
+    }
+
+    [Fact]
+    public void The_fifth_video_derush_edit_graphics_room_step_is_a_ReviewLoop_looping_back_to_the_story_editor()
+    {
+        WorkflowTemplateStepDefinition step = GetStep("video-derush-edit-graphics-room", 4);
+        step.AgentType.Should().Be(AgentType.VideoReviewAgent);
+        step.StepType.Should().Be(StepType.ReviewLoop);
+        step.LoopTargetStepOrder.Should().Be(2, "must loop back to the story editor so the story editor, graphics room, and compile all re-run");
+        step.MaxIterations.Should().Be(3);
+        step.MinScore.Should().Be(8);
+        step.AgentInputContextMode.Should().Be(AgentInputContextMode.FullWorkflow);
+    }
+
+    [Fact]
     public void Lean_context_promo_Extract_step_literal_still_deserializes_against_the_real_config_type()
     {
         // Precedent check (R7): this template predates video editing but is the same

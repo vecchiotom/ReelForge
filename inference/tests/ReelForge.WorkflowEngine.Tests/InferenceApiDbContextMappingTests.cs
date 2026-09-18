@@ -50,6 +50,23 @@ public class InferenceApiDbContextMappingTests
     }
 
     [Theory]
+    [InlineData(nameof(WorkflowStep.EditRoomConfigJson))]
+    [InlineData(nameof(WorkflowStep.GraphicsRoomConfigJson))]
+    public void WorkflowStep_room_config_columns_are_mapped_as_jsonb(string propertyName)
+    {
+        // The exact mistake that broke a live deploy once: a new WorkflowStep config-json column
+        // mapped as jsonb on the engine's DbContext but forgotten on this one (or vice versa).
+        // This test and its WorkflowEngineDbContextMappingTests twin pin BOTH sides.
+        using InferenceApiDbContext db = CreateContext();
+
+        var entityType = db.Model.FindEntityType(typeof(WorkflowStep));
+        var property = entityType?.FindProperty(propertyName);
+
+        property.Should().NotBeNull();
+        property!.GetColumnType().Should().Be("jsonb");
+    }
+
+    [Theory]
     [InlineData(nameof(WorkflowStepResult.ToolCallsJson))]
     [InlineData(nameof(WorkflowStepResult.ReasoningJson))]
     [InlineData(nameof(WorkflowStepResult.ChatTranscriptJson))]

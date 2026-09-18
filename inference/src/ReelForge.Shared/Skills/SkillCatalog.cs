@@ -143,6 +143,11 @@ public static class SkillCatalog
         // no project scaffolding (the sandbox/project already exists), no captions/multimedia.
         AgentType.MotionGraphicsPlanner => MarkupAndRender,
 
+        // The graphics room's moderator/synthesizer: its standalone synthesis call can render the
+        // same small transparent overlay assets the solo planner can (see ToolGroupCatalog's
+        // MotionGraphicsDirector rationale), so it needs the identical skill set to do it right.
+        AgentType.MotionGraphicsDirector => MarkupAndRender,
+
         // Every other AgentType (analysis agents, Director/Scriptwriter, the video-editing
         // decision agents, ExtractTransform/VideoTransform placeholders, FileSummarizerAgent,
         // Custom) gets no skills by default.

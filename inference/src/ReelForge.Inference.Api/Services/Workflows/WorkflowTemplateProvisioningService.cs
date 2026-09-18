@@ -122,7 +122,8 @@ public sealed class WorkflowTemplateProvisioningService
                 ExtractConfigJson = stepDefinition.ExtractConfigJson,
                 VideoAnalyzeConfigJson = stepDefinition.VideoAnalyzeConfigJson,
                 VideoCompileConfigJson = stepDefinition.VideoCompileConfigJson,
-                EditRoomConfigJson = stepDefinition.EditRoomConfigJson
+                EditRoomConfigJson = stepDefinition.EditRoomConfigJson,
+                GraphicsRoomConfigJson = stepDefinition.GraphicsRoomConfigJson
             };
 
             workflow.Steps.Add(step);

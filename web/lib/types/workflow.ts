@@ -7,7 +7,7 @@ export interface WorkflowDefinition {
   requiresUserInput: boolean;
 }
 
-export type StepType = 'Agent' | 'Conditional' | 'ForEach' | 'ReviewLoop' | 'Parallel' | 'Extract' | 'VideoAnalyze' | 'VideoCompile' | 'EditRoom';
+export type StepType = 'Agent' | 'Conditional' | 'ForEach' | 'ReviewLoop' | 'Parallel' | 'Extract' | 'VideoAnalyze' | 'VideoCompile' | 'EditRoom' | 'GraphicsRoom';
 export type StepStatus = 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Skipped';
 export type AgentInputContextMode =
   | 'FullWorkflow'
@@ -42,6 +42,8 @@ export interface WorkflowStep {
   videoCompileConfigJson?: string | null;
   /** JSON-serialized EditRoomStepConfig (EditRoom step type only). The builder UI has no editor for it yet — treat as an opaque passthrough so saving a workflow never drops it. */
   editRoomConfigJson?: string | null;
+  /** JSON-serialized GraphicsRoomStepConfig (GraphicsRoom step type only). Opaque passthrough, same as editRoomConfigJson. */
+  graphicsRoomConfigJson?: string | null;
 }
 
 export interface CreateWorkflowRequest {
@@ -75,6 +77,8 @@ export interface CreateWorkflowStepRequest {
   videoCompileConfigJson?: string | null;
   /** JSON-serialized EditRoomStepConfig (EditRoom step type only). Opaque passthrough — see WorkflowStep.editRoomConfigJson. */
   editRoomConfigJson?: string | null;
+  /** JSON-serialized GraphicsRoomStepConfig (GraphicsRoom step type only). Opaque passthrough — see WorkflowStep.graphicsRoomConfigJson. */
+  graphicsRoomConfigJson?: string | null;
 }
 
 export interface UpdateWorkflowRequest {

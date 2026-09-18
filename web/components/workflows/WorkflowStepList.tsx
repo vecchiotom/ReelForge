@@ -41,6 +41,11 @@ export interface StepData {
    * StepData construction site keeps compiling unchanged.
    */
   editRoomConfigJson?: string | null;
+  /**
+   * Raw JSON-serialized GraphicsRoomStepConfig (GraphicsRoom step type only). Same opaque
+   * passthrough discipline as editRoomConfigJson above.
+   */
+  graphicsRoomConfigJson?: string | null;
 }
 
 interface WorkflowStepListProps {

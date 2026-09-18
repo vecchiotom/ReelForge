@@ -63,6 +63,27 @@ public class WorkflowEngineDbContextMappingTests
     }
 
     [Theory]
+    [InlineData(nameof(WorkflowStep.EditRoomConfigJson))]
+    [InlineData(nameof(WorkflowStep.GraphicsRoomConfigJson))]
+    public void WorkflowStep_room_config_columns_are_mapped_as_jsonb(string propertyName)
+    {
+        // The exact mistake that broke a live deploy once: a new WorkflowStep config-json column
+        // mapped as jsonb on one DbContext but not the other. This test and its
+        // InferenceApiDbContextMappingTests twin pin BOTH sides.
+        DbContextOptions<WorkflowEngineDbContext> options = new DbContextOptionsBuilder<WorkflowEngineDbContext>()
+            .UseSqlite("Data Source=:memory:")
+            .Options;
+
+        using var db = new WorkflowEngineDbContext(options);
+
+        var entityType = db.Model.FindEntityType(typeof(WorkflowStep));
+        var property = entityType?.FindProperty(propertyName);
+
+        property.Should().NotBeNull();
+        property!.GetColumnType().Should().Be("jsonb");
+    }
+
+    [Theory]
     [InlineData(nameof(WorkflowStepResult.ToolCallsJson))]
     [InlineData(nameof(WorkflowStepResult.ReasoningJson))]
     [InlineData(nameof(WorkflowStepResult.ChatTranscriptJson))]

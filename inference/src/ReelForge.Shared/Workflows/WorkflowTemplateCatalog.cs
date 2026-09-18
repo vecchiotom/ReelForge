@@ -20,7 +20,8 @@ public sealed record WorkflowTemplateStepDefinition(
     string? ExtractConfigJson = null,
     string? VideoAnalyzeConfigJson = null,
     string? VideoCompileConfigJson = null,
-    string? EditRoomConfigJson = null);
+    string? EditRoomConfigJson = null,
+    string? GraphicsRoomConfigJson = null);
 
 public sealed record WorkflowTemplateDefinition(
     string Key,
@@ -335,6 +336,73 @@ public static class WorkflowTemplateCatalog
                     // and produces the same bounded view every time, so there is nothing for a
                     // retry to gain from re-running it. Same MinScore/MaxIterations/FullWorkflow
                     // pattern as video-derush-edit above.
+                    LoopTargetStepOrder: 2,
+                    MaxIterations: 3,
+                    MinScore: 8,
+                    AgentInputContextMode: AgentInputContextMode.FullWorkflow)
+            ]),
+        new(
+            Key: "video-derush-edit-graphics-room",
+            Name: "Video Derush, Edit & Graphics Room",
+            Description: "Opt-in template that replaces Video Derush, Edit & Graphics' single MotionGraphicsPlanner step with a multi-agent 'graphics room': several motion-graphics-artist seats plus a lead director converse in a live group chat over the analyzed video's offered overlay-placement candidates, then the director synthesizes ONE motion-graphics plan the compile step consumes exactly like a solo planner's. Demonstrates the GraphicsRoom step type end to end.",
+            Version: 1,
+            AutoCreateOnProject: false,
+            RequiresUserInput: false,
+            Steps:
+            [
+                new(
+                    AgentType.VideoTransform,
+                    "Analyze source video",
+                    StepType.VideoAnalyze,
+                    // Same ProjectFile-source rationale as video-derush-edit's first step above
+                    // (this is the first step, so PreviousStepOutput would fail SOURCE_UNRESOLVED
+                    // on every run) — plus emitOverlayPlacements:true to derive the view.placements
+                    // candidates the graphics room deliberates over.
+                    VideoAnalyzeConfigJson: """
+                        {"version":1,"source":{"kind":"ProjectFile"},"emitOverlayPlacements":true}
+                        """),
+                new(
+                    AgentType.VideoStoryEditor,
+                    "Decide which spans to keep",
+                    AgentInputContextMode: AgentInputContextMode.PreviousStepOnly),
+                new(
+                    // The step's own AgentDefinitionId FK is satisfied by the same deterministic
+                    // VideoTransform placeholder VideoAnalyze/VideoCompile/EditRoom steps use — the
+                    // room's actual LLM seats/director are resolved independently by
+                    // GraphicsRoomStepExecutor from GraphicsRoomConfigJson, never from this step's
+                    // own AgentDefinitionId.
+                    AgentType.VideoTransform,
+                    "Graphics room deliberation",
+                    StepType.GraphicsRoom,
+                    // View references the analyze step explicitly by StepOrder — "Previous"
+                    // relative to THIS step would resolve to the story editor's decision (step 2),
+                    // not the analyze envelope carrying view.placements (step 1). The story
+                    // editor's decision still reaches the room: the executor annotates each
+                    // placement with the same inEdit survival flag a solo planner's prompt gets.
+                    GraphicsRoomConfigJson: """
+                        {"version":1,"view":{"from":"Step","stepOrder":1}}
+                        """),
+                new(
+                    AgentType.VideoTransform,
+                    "Compile edited video with graphics",
+                    StepType.VideoCompile,
+                    // Decision/GraphicsPlan reference their source steps explicitly by StepOrder —
+                    // "Previous" relative to THIS step would resolve to the graphics room's plan
+                    // (step 3), not the story editor's decision (step 2). GraphicsPlan pointing at
+                    // the GraphicsRoom step works UNCHANGED because that step emits the exact same
+                    // MotionGraphicsPlanOutput shape a solo MotionGraphicsPlanner step would (the
+                    // additive "room" metadata key is skipped by deserialization).
+                    VideoCompileConfigJson: """
+                        {"version":1,"decision":{"from":"Step","stepOrder":2},"analysisStepOrder":1,"enableGraphics":true,"graphicsPlan":{"from":"Step","stepOrder":3},"transitionPolicy":"Auto","programFadeInMs":500,"programFadeOutMs":800,"programAudioFadeInMs":300,"programAudioFadeOutMs":900,"minSegmentMs":800}
+                        """),
+                new(
+                    AgentType.VideoReviewAgent,
+                    "Review edit quality",
+                    StepType.ReviewLoop,
+                    // Loop back to step 2 (the story editor) so a low score re-runs the story
+                    // editor, the graphics room, and the compile step in sequence — step 1
+                    // (VideoAnalyze) is deterministic and need not rerun. Same
+                    // MinScore/MaxIterations/FullWorkflow pattern as the other video templates.
                     LoopTargetStepOrder: 2,
                     MaxIterations: 3,
                     MinScore: 8,
