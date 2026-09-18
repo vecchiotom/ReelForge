@@ -80,6 +80,12 @@ public class VideoCompileStepExecutor : IStepExecutor
     private static readonly HashSet<string> AllowedRenderedAssetExtensions =
         new(StringComparer.OrdinalIgnoreCase) { ".webm", ".mp4", ".mov" };
 
+    // Cut transitions (see docs/video-editing.md "Cut transitions"): same allowlist discipline as
+    // OverlayBoxColor/OverlayFontColor above — ProgramFadeColor is workflow-author config that
+    // still reaches ffmpeg's fade= filter string.
+    private static readonly HashSet<string> AllowedProgramFadeColors =
+        new(StringComparer.OrdinalIgnoreCase) { "black", "white" };
+
     /// <summary>Process-lifetime cache of whether the ffmpeg build on PATH has the drawtext filter (needs libfreetype) — probed once, never per-step.</summary>
     private static bool? _drawtextAvailableCache;
 
@@ -95,6 +101,14 @@ public class VideoCompileStepExecutor : IStepExecutor
 
     /// <summary>Test-only hook, mirroring <see cref="ResetDrawtextAvailabilityCacheForTests"/>.</summary>
     internal static void ResetAmixNormalizeCacheForTests() => _amixNormalizeAvailableCache = null;
+
+    /// <summary>Process-lifetime cache of whether the ffmpeg build on PATH exposes both the <c>xfade</c> and <c>acrossfade</c> filters — probed once, mirroring <see cref="_drawtextAvailableCache"/>/<see cref="_amixNormalizeAvailableCache"/> exactly. Only ever probed when <see cref="VideoCompileStepConfig.TransitionPolicy"/> is not <see cref="VideoTransitionPolicy.Off"/> — the default (transitions-off) path pays no probe overhead at all.</summary>
+    private static bool? _xfadeAvailableCache;
+
+    private static readonly SemaphoreSlim XfadeProbeLock = new(1, 1);
+
+    /// <summary>Test-only hook, mirroring <see cref="ResetDrawtextAvailabilityCacheForTests"/>.</summary>
+    internal static void ResetXfadeAvailabilityCacheForTests() => _xfadeAvailableCache = null;
 
     /// <summary>
     /// Above this many segments, the select/aselect filtergraph is written to a scratch file and
@@ -216,6 +230,37 @@ public class VideoCompileStepExecutor : IStepExecutor
                 return Failure(
                     context, sw, "MUSIC_REQUIRES_AUDIO_REENCODE",
                     "EnableMusic=true is incompatible with AudioCodec=copy — the mixed audio must be encoded.");
+            }
+
+            // Cut transitions (see docs/video-editing.md "Cut transitions"): the same
+            // Reencode-only discipline as GRAPHICS_REQUIRE_REENCODE/MUSIC_REQUIRES_REENCODE above —
+            // fade/xfade/acrossfade filters have no stream-copy equivalent. Any transition policy
+            // beyond Off, or any program fade duration, trips this.
+            bool wantsTransitions =
+                config.TransitionPolicy != VideoTransitionPolicy.Off ||
+                config.ProgramFadeInMs > 0 || config.ProgramFadeOutMs > 0 ||
+                config.ProgramAudioFadeInMs > 0 || config.ProgramAudioFadeOutMs > 0;
+            if (wantsTransitions && config.Mode == VideoCompileMode.StreamCopy)
+            {
+                return Failure(
+                    context, sw, "TRANSITIONS_REQUIRE_REENCODE",
+                    "TransitionPolicy != Off (or a ProgramFade*Ms > 0) requires Mode=Reencode — fade/xfade/acrossfade " +
+                    "filters have no stream-copy equivalent.");
+            }
+
+            if ((config.ProgramAudioFadeInMs > 0 || config.ProgramAudioFadeOutMs > 0) &&
+                string.Equals(config.AudioCodec, "copy", StringComparison.OrdinalIgnoreCase))
+            {
+                return Failure(
+                    context, sw, "PROGRAM_AUDIO_FADE_REQUIRES_AUDIO_REENCODE",
+                    "ProgramAudioFadeInMs/ProgramAudioFadeOutMs > 0 is incompatible with AudioCodec=copy — the faded audio must be encoded.");
+            }
+
+            if (wantsTransitions && !AllowedProgramFadeColors.Contains(config.ProgramFadeColor))
+            {
+                return Failure(
+                    context, sw, "CODEC_NOT_ALLOWED",
+                    $"ProgramFadeColor '{config.ProgramFadeColor}' is not in the allowlist (black/white).");
             }
 
             // ---- Resolve the analyze step's FULL artifact (never the bounded view) ----
@@ -559,6 +604,56 @@ public class VideoCompileStepExecutor : IStepExecutor
                     .ToList()
                 : [];
 
+            // ---- Cut transitions (see docs/video-editing.md "Cut transitions"): deterministic,
+            // zero-LLM per-seam treatment planning + the resulting output timeline. Computed here —
+            // BEFORE graphics/music resolution — because both of those need the REAL output
+            // timeline (accounting for crossfade overlap), not the raw resolvedSpans concatenation.
+            // Wrapped in its own try/catch: any unexpected exception here must never fail the whole
+            // compile (per the executor's own "never throws" guarantee) — it degrades to
+            // TransitionPolicy=Off behavior for this run instead (empty seamPlans, an all-hard-cut
+            // timeline that is byte-identical to the pre-transitions compile path). ----
+
+            IReadOnlyList<SeamPlan> seamPlans;
+            OutputTimeline timeline;
+            bool xfadeAvailable = false;
+            bool transitionSegmentCountOverCap = false;
+            try
+            {
+                if (config.TransitionPolicy != VideoTransitionPolicy.Off)
+                    xfadeAvailable = await IsXfadeAvailableAsync(context.CancellationToken);
+
+                IReadOnlyList<SeamFacts> seamFacts = SeamFactsBuilder.Build(artifact, resolvedSpans);
+                seamPlans = SeamTransitionPlanner.Plan(
+                    seamFacts, resolvedSpans, config, xfadeAvailable, out transitionSegmentCountOverCap);
+                timeline = OutputTimeline.Build(resolvedSpans, seamPlans);
+            }
+            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "VideoCompile step {StepOrder}: transition planning failed unexpectedly; falling back to no transitions.",
+                    step.StepOrder);
+                seamPlans = [];
+                xfadeAvailable = false;
+                transitionSegmentCountOverCap = false;
+                timeline = OutputTimeline.Build(resolvedSpans, BuildHardCutSeamsForFallback(resolvedSpans.Count));
+            }
+
+            JsonObject? transitionsNode = null;
+            if (config.TransitionPolicy != VideoTransitionPolicy.Off)
+            {
+                transitionsNode = BuildTransitionsNode(
+                    config, seamPlans, xfadeAvailable, transitionSegmentCountOverCap);
+            }
+
+            ProgramFadeResolved? programFade = ProgramEnvelopeFilterBuilder.IsEnabled(config)
+                ? ProgramEnvelopeFilterBuilder.Resolve(config, timeline.TotalSec)
+                : null;
+            JsonObject? programFadeNode = programFade is null ? null : BuildProgramFadeNode(programFade);
+
             // ---- Phase 3 (motion graphics): resolve & validate the plan, purely soft-failure.
             // Only even attempted when EnableGraphics=true — when false (the default), nothing
             // below this point differs from the pre-Phase-3 compile path at all, which is the
@@ -570,7 +665,7 @@ public class VideoCompileStepExecutor : IStepExecutor
             {
                 await context.ReportProgressAsync("Resolving motion graphics plan");
                 (resolvedOverlays, graphicsNode) = await ResolveGraphicsAsync(
-                    context, config, artifact, resolvedSpans, scratch, canonicalMedia, context.CancellationToken);
+                    context, config, artifact, resolvedSpans, timeline, scratch, canonicalMedia, context.CancellationToken);
             }
 
             // ---- Background music (see docs/video-editing.md "Background music"): purely
@@ -585,7 +680,7 @@ public class VideoCompileStepExecutor : IStepExecutor
             {
                 await context.ReportProgressAsync("Resolving background music");
                 (resolvedMusic, musicNode) = await ResolveMusicAsync(
-                    context, config, artifact, resolvedSpans, scratch, hasDialogueAudioInOutput, context.CancellationToken);
+                    context, config, artifact, resolvedSpans, timeline, scratch, hasDialogueAudioInOutput, context.CancellationToken);
             }
 
             // ---- Audio degrade report (bug group C): every OTHER degrade path in this feature
@@ -615,10 +710,18 @@ public class VideoCompileStepExecutor : IStepExecutor
 
             // ---- Write the EDL audit artifact ----
 
+            // Cut transitions: how much total output-timeline time the planned crossfade overlaps
+            // removed, purely for audit visibility (edl.transitionOverlapSec) — never fed back into
+            // retainedRatio/Expect, which still read the pre-quantization totalOutputSeconds
+            // computed far above, untouched by this addition.
+            double frameQuantizedSumSec = resolvedSpans.Sum(s => s.SnappedEnd - s.SnappedStart);
+            double transitionOverlapSec = Math.Max(0, frameQuantizedSumSec - timeline.TotalSec);
+
             await context.ReportProgressAsync("Writing edit decision list");
             string edlLocalPath = scratch.GetPath("edl.json");
             JsonObject edl = BuildEdl(
-                config, analysisArtifactKey, resolvedSpans, retainedRatio, totalOutputSeconds, droppedOverCap, crf, graphicsNode, musicNode, audioNode);
+                config, analysisArtifactKey, resolvedSpans, retainedRatio, totalOutputSeconds, droppedOverCap, crf, graphicsNode, musicNode, audioNode,
+                transitions: transitionsNode, programFade: programFadeNode, transitionOverlapSec: transitionOverlapSec);
             await File.WriteAllTextAsync(edlLocalPath, edl.ToJsonString(EnvelopeJsonOptions), context.CancellationToken);
 
             string edlFileName = $"video-analysis/{context.Execution.Id:D}/step-{step.StepOrder}-edl.json";
@@ -628,24 +731,33 @@ public class VideoCompileStepExecutor : IStepExecutor
             string encodedLocalPath = scratch.GetPath(outputFileName);
             TimeSpan timeout = TimeSpan.FromSeconds(_options.CompileTimeoutSeconds);
 
+            // Cut transitions: any seam whose planned treatment actually overlaps (SoftCut/
+            // Dissolve/DipToBlack/WhipBlur) forces the segmented (concat+xfade) graph even for a
+            // single source, since the select/aselect filter used by the original single-source
+            // path cannot express a crossfade at all.
+            bool needsSegmentedForTransitions = seamPlans.Any(s => s.OverlapSec > 0);
+
             await context.ReportProgressAsync("Encoding", 0);
             VideoToolResult encodeResult;
-            if (isMultiSource)
+            if (isMultiSource || needsSegmentedForTransitions)
             {
-                // Guaranteed Mode=Reencode by the MULTI_SOURCE_REQUIRES_REENCODE check above.
-                encodeResult = await EncodeReencodeMultiSourceAsync(
+                // Guaranteed Mode=Reencode by the MULTI_SOURCE_REQUIRES_REENCODE/
+                // TRANSITIONS_REQUIRE_REENCODE checks above.
+                encodeResult = await EncodeReencodeSegmentedAsync(
                     scratch, localPathBySource, encodedLocalPath, resolvedSpans, config.VideoCodec, config.AudioCodec, config.Preset, crf,
                     canonicalMedia, timeout, context.CancellationToken,
                     overlays: resolvedOverlays, graphicsConfig: resolvedOverlays.Count > 0 ? config : null,
-                    progressContext: context, totalOutputSeconds: totalOutputSeconds,
-                    music: resolvedMusic, sourceHasAudioByIndex: sourceHasAudioByIndex);
+                    progressContext: context, totalOutputSeconds: timeline.TotalSec,
+                    music: resolvedMusic, sourceHasAudioByIndex: sourceHasAudioByIndex,
+                    seamPlans: seamPlans, timeline: timeline, transitionConfig: config, programFade: programFade);
             }
             else
             {
-                // Exactly one distinct source referenced — the ORIGINAL single-input code path,
-                // completely unchanged when the source has audio, so a single-source (or
-                // single-clip-in-practice) compile's ffmpeg argv/behavior stays byte-identical to
-                // before this addition.
+                // Exactly one distinct source referenced and every seam is non-overlapping — the
+                // ORIGINAL single-input select/aselect code path, completely unchanged when the
+                // source has audio AND no transitions are configured, so a single-source
+                // (or single-clip-in-practice) compile with TransitionPolicy=Off stays byte-identical
+                // to before this addition.
                 string localVideoPath = localPathBySource[usedSourceIndices[0]];
                 encodeResult = config.Mode == VideoCompileMode.Reencode
                     ? await EncodeReencodeAsync(
@@ -653,8 +765,9 @@ public class VideoCompileStepExecutor : IStepExecutor
                         timeout, context.CancellationToken,
                         overlays: resolvedOverlays, probedWidth: canonicalMedia.Width, probedHeight: canonicalMedia.Height,
                         graphicsConfig: resolvedOverlays.Count > 0 ? config : null,
-                        progressContext: context, totalOutputSeconds: totalOutputSeconds,
-                        music: resolvedMusic, sourceHasAudio: sourceHasAudio)
+                        progressContext: context, totalOutputSeconds: timeline.TotalSec,
+                        music: resolvedMusic, sourceHasAudio: sourceHasAudio,
+                        seamPlans: seamPlans, timeline: timeline, transitionConfig: config, programFade: programFade)
                     : await EncodeStreamCopyAsync(scratch, localVideoPath, encodedLocalPath, resolvedSpans, timeout, context.CancellationToken);
             }
 
@@ -691,7 +804,10 @@ public class VideoCompileStepExecutor : IStepExecutor
                 ["outputStorageKey"] = outputStorageKey,
                 ["artifactStorageKey"] = edlStorageKey,
                 ["segments"] = resolvedSpans.Count,
-                ["outputDurationSec"] = totalOutputSeconds,
+                // Cut transitions: the REAL output-timeline length, accounting for crossfade
+                // overlap — timeline.TotalSec is byte-identical to the pre-transitions
+                // totalOutputSeconds when every seam has zero overlap (TransitionPolicy=Off).
+                ["outputDurationSec"] = timeline.TotalSec,
                 ["retainedRatio"] = retainedRatio,
                 ["droppedSegmentsOverCap"] = droppedOverCap,
                 ["sentenceCheck"] = BuildSentenceCheck(artifact, decision)
@@ -704,6 +820,12 @@ public class VideoCompileStepExecutor : IStepExecutor
                 outputSummary["music"] = JsonNode.Parse(musicNode.ToJsonString(EnvelopeJsonOptions));
 
             outputSummary["audio"] = JsonNode.Parse(audioNode.ToJsonString(EnvelopeJsonOptions));
+
+            if (transitionsNode is not null)
+                outputSummary["transitions"] = JsonNode.Parse(transitionsNode.ToJsonString(EnvelopeJsonOptions));
+
+            if (programFadeNode is not null)
+                outputSummary["programFade"] = JsonNode.Parse(programFadeNode.ToJsonString(EnvelopeJsonOptions));
 
             return new StepExecutionResult
             {
@@ -1277,28 +1399,8 @@ public class VideoCompileStepExecutor : IStepExecutor
     /// ever checked against <paramref name="sourceSec"/> — a span from a DIFFERENT source can never
     /// spuriously "contain" a time value that is only meaningful on this source's own clock.
     /// </param>
-    internal static double? MapSourceToOutputSec(IReadOnlyList<ResolvedSpan> spans, double sourceSec, int sourceIndex = 0)
-    {
-        double accumulated = 0;
-        foreach (ResolvedSpan span in spans)
-        {
-            if (span.SourceIndex != sourceIndex)
-            {
-                accumulated += span.SnappedEnd - span.SnappedStart;
-                continue;
-            }
-
-            if (sourceSec < span.SnappedStart)
-                return null; // Falls in this source's own cut gap before this span (or before its first span).
-
-            if (sourceSec < span.SnappedEnd)
-                return accumulated + (sourceSec - span.SnappedStart);
-
-            accumulated += span.SnappedEnd - span.SnappedStart;
-        }
-
-        return null; // Past the end of this source's last kept span (or this source is never kept at all).
-    }
+    internal static double? MapSourceToOutputSec(IReadOnlyList<ResolvedSpan> spans, double sourceSec, int sourceIndex = 0) =>
+        OutputTimeline.Build(spans, BuildHardCutSeamsForFallback(spans.Count)).MapToOutputSec(sourceSec, sourceIndex);
 
     /// <summary>
     /// Intersects a source-timeline <c>[startSec, endSec)</c> window (a placement's window,
@@ -1310,34 +1412,25 @@ public class VideoCompileStepExecutor : IStepExecutor
     /// </summary>
     /// <param name="sourceIndex">Multi-source addition — see <see cref="MapSourceToOutputSec"/>'s doc comment; defaults to 0.</param>
     internal static (double Start, double End)? MapSourceWindowToOutput(
-        IReadOnlyList<ResolvedSpan> spans, double startSec, double endSec, int sourceIndex = 0)
+        IReadOnlyList<ResolvedSpan> spans, double startSec, double endSec, int sourceIndex = 0) =>
+        OutputTimeline.Build(spans, BuildHardCutSeamsForFallback(spans.Count)).MapWindowToOutput(startSec, endSec, sourceIndex);
+
+    /// <summary>
+    /// An all-<see cref="SeamTreatment.HardCut"/>, zero-overlap seam list for <paramref name="spanCount"/>
+    /// spans — what <see cref="OutputTimeline.Build"/> needs when there is no real
+    /// <see cref="SeamPlan"/> list to hand it (the pre-Cut-transitions
+    /// <see cref="MapSourceToOutputSec"/>/<see cref="MapSourceWindowToOutput"/> static entry points,
+    /// and the "transition planning failed unexpectedly" fallback in <see cref="ExecuteAsync"/>).
+    /// Produces byte-identical output-timeline math to the pre-Cut-transitions implementation these
+    /// two methods used to have inline — see <see cref="OutputTimeline.Build"/>'s own doc comment.
+    /// </summary>
+    internal static IReadOnlyList<SeamPlan> BuildHardCutSeamsForFallback(int spanCount)
     {
-        if (endSec <= startSec)
-            return null;
-
-        double accumulated = 0;
-        foreach (ResolvedSpan span in spans)
-        {
-            if (span.SourceIndex != sourceIndex)
-            {
-                accumulated += span.SnappedEnd - span.SnappedStart;
-                continue;
-            }
-
-            double overlapStart = Math.Max(startSec, span.SnappedStart);
-            double overlapEnd = Math.Min(endSec, span.SnappedEnd);
-
-            if (overlapEnd > overlapStart)
-            {
-                double outStart = accumulated + (overlapStart - span.SnappedStart);
-                double outEnd = accumulated + (overlapEnd - span.SnappedStart);
-                return (outStart, outEnd);
-            }
-
-            accumulated += span.SnappedEnd - span.SnappedStart;
-        }
-
-        return null; // The window never overlapped any kept span of this source — entirely cut away.
+        int seamCount = Math.Max(0, spanCount - 1);
+        var seams = new List<SeamPlan>(seamCount);
+        for (int i = 0; i < seamCount; i++)
+            seams.Add(new SeamPlan(i, SeamTreatment.HardCut, 0, 0, "", 0, "fallback:hardCut"));
+        return seams;
     }
 
     // ---------------------------------------------------------------------
@@ -1354,6 +1447,7 @@ public class VideoCompileStepExecutor : IStepExecutor
         VideoCompileStepConfig config,
         VideoAnalysisArtifact artifact,
         IReadOnlyList<ResolvedSpan> resolvedSpans,
+        OutputTimeline timeline,
         VideoScratchSpace scratch,
         VideoAnalysisMedia canonicalMedia,
         CancellationToken ct)
@@ -1516,7 +1610,7 @@ public class VideoCompileStepExecutor : IStepExecutor
             // id-space when placements were built — never trusted from the model). Passing it
             // through here is what stops a placement from one clip spuriously mapping against a
             // DIFFERENT clip's kept spans that merely happen to share overlapping numeric ranges.
-            (double Start, double End)? keptWindow = MapSourceWindowToOutput(resolvedSpans, sourceStart, sourceEnd, placement.SourceIndex);
+            (double Start, double End)? keptWindow = timeline.MapWindowToOutput(sourceStart, sourceEnd, placement.SourceIndex);
             if (keptWindow is null)
             {
                 dropped.Add(new DroppedOverlay(overlay.PlacementId, "cut_away"));
@@ -1636,6 +1730,7 @@ public class VideoCompileStepExecutor : IStepExecutor
         VideoCompileStepConfig config,
         VideoAnalysisArtifact artifact,
         IReadOnlyList<ResolvedSpan> resolvedSpans,
+        OutputTimeline timeline,
         VideoScratchSpace scratch,
         bool hasDialogueAudio,
         CancellationToken ct)
@@ -1643,10 +1738,13 @@ public class VideoCompileStepExecutor : IStepExecutor
         var music = new JsonObject { ["enabled"] = true, ["applied"] = false, ["unavailable"] = false };
         List<JsonObject> dropped = new();
 
-        // The frame-quantized edit length — deliberately NOT totalOutputSeconds (the
-        // pre-frame-quantization sum, off by up to a frame per span), since a fade-out placed
-        // against it could land a frame after the file actually ends.
-        double outputTimelineSeconds = resolvedSpans.Sum(s => s.SnappedEnd - s.SnappedStart);
+        // The compiled OUTPUT timeline's own total length — Cut-transitions addition: this used to
+        // be the frame-quantized sum of span durations directly (resolvedSpans.Sum(...)), which is
+        // still exactly what OutputTimeline.TotalSec computes when every seam is a HardCut (0
+        // overlap) — see OutputTimeline.Build. With real crossfade overlaps this is now shorter
+        // than that raw sum by the total overlap, which is exactly what a fade-out/duck window
+        // placed against "the edit's own length" must use, or it would land inside the crossfade.
+        double outputTimelineSeconds = timeline.TotalSec;
 
         JsonObject Finish()
         {
@@ -1812,7 +1910,7 @@ public class VideoCompileStepExecutor : IStepExecutor
             ? new MusicLiftPlan([], "none", 0, 0)
             : MusicMixPlanner.PlanLiftWindows(
                 artifact.SilenceSpans, artifact.Segments,
-                (start, end, sourceIndex) => MapSourceWindowToOutput(resolvedSpans, start, end, sourceIndex),
+                (start, end, sourceIndex) => timeline.MapWindowToOutput(start, end, sourceIndex),
                 outputTimelineSeconds,
                 rampSec: Math.Max(0, config.MusicDuckRampMs) / 1000.0,
                 minWindowSec: Math.Max(0, config.MinMusicLiftWindowMs) / 1000.0,
@@ -1986,6 +2084,53 @@ public class VideoCompileStepExecutor : IStepExecutor
     }
 
     /// <summary>
+    /// Probes whether the ffmpeg build on <see cref="VideoEditingOptions.FfmpegPath"/> exposes
+    /// BOTH the <c>xfade</c> and <c>acrossfade</c> filters — every overlapping seam treatment
+    /// (<see cref="SeamTreatment.SoftCut"/>/<see cref="SeamTreatment.Dissolve"/>/
+    /// <see cref="SeamTreatment.DipToBlack"/>/<see cref="SeamTreatment.WhipBlur"/>) needs both.
+    /// Caches the result for the process lifetime, mirrors <see cref="IsDrawtextAvailableAsync"/>
+    /// exactly. Never throws — any failure to probe is treated as "unavailable", which
+    /// <see cref="SeamTransitionPlanner.Plan"/> handles by demoting every such seam to
+    /// <see cref="SeamTreatment.DipCut"/> instead.
+    /// </summary>
+    private async Task<bool> IsXfadeAvailableAsync(CancellationToken ct)
+    {
+        if (_xfadeAvailableCache.HasValue)
+            return _xfadeAvailableCache.Value;
+
+        await XfadeProbeLock.WaitAsync(ct);
+        try
+        {
+            if (_xfadeAvailableCache.HasValue)
+                return _xfadeAvailableCache.Value;
+
+            try
+            {
+                VideoToolResult result = await _videoToolRunner.RunFfmpegAsync(
+                    new[] { "-hide_banner", "-filters" }, TimeSpan.FromSeconds(15), ct);
+                _xfadeAvailableCache = result.Succeeded &&
+                    result.StdOut.Contains("xfade", StringComparison.Ordinal) &&
+                    result.StdOut.Contains("acrossfade", StringComparison.Ordinal);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "VideoCompile: xfade/acrossfade availability probe failed; treating as unavailable.");
+                _xfadeAvailableCache = false;
+            }
+
+            return _xfadeAvailableCache.Value;
+        }
+        finally
+        {
+            XfadeProbeLock.Release();
+        }
+    }
+
+    /// <summary>
     /// Probes whether the ffmpeg build on <see cref="VideoEditingOptions.FfmpegPath"/> exposes the
     /// drawtext filter (needs libfreetype/a font package — see the WorkflowEngine Dockerfile),
     /// caching the result for the process lifetime so this never runs more than once. Never throws
@@ -2050,7 +2195,17 @@ public class VideoCompileStepExecutor : IStepExecutor
         StepExecutionContext? progressContext = null,
         double totalOutputSeconds = 0,
         ResolvedMusic? music = null,
-        bool sourceHasAudio = true)
+        bool sourceHasAudio = true,
+        // Cut transitions (see docs/video-editing.md "Cut transitions"): this path only ever
+        // carries NON-overlapping seam treatments (HardCut/AudioOnly/DipCut) — the executor routes
+        // any seam with OverlapSec > 0 to EncodeReencodeSegmentedAsync instead, since select/
+        // aselect cannot express a crossfade. seamPlans/timeline are null/empty on the byte-
+        // identical pre-transitions call path (TransitionPolicy=Off), in which case none of the
+        // tail stages below are added at all.
+        IReadOnlyList<SeamPlan>? seamPlans = null,
+        OutputTimeline? timeline = null,
+        VideoCompileStepConfig? transitionConfig = null,
+        ProgramFadeResolved? programFade = null)
     {
         // Half-open [SnappedStart, SnappedEnd) per span, matching ToStartFrame(floor)/ToEndFrame
         // (ceiling)'s own semantics (EndFrame is the first EXCLUDED frame — see MapSourceToOutputSec's
@@ -2081,8 +2236,39 @@ public class VideoCompileStepExecutor : IStepExecutor
         // existing filter-string test asserting it) completely untouched by this addition.
         int musicInputIndex = 1 + assetOverlays.Count;
 
-        // The audio cut stage's own output label flips from [aout] straight to [adial] only when
-        // music is present, mirroring the [vcut]/[vtxt]/[vout] video-label-chaining convention
+        // ---- Cut transitions (see docs/video-editing.md "Cut transitions"): this select-path
+        // encoder only ever sees non-overlapping seam treatments (HardCut/AudioOnly/DipCut — any
+        // overlapping seam routes the whole compile to EncodeReencodeSegmentedAsync instead), so
+        // only two stages can ever apply here: a DipCut video fade-pair / a global AudioOnly ramp,
+        // and the whole-piece program fade — both LAST, after overlays/the music mix (see the
+        // stage-ordering rule in docs/video-editing.md). When seamPlans/timeline/programFade are
+        // all null/empty (TransitionPolicy=Off and no program fade configured — the default), every
+        // computed suffix below is null/empty and the filtergraph is byte-identical to before this
+        // addition. ----
+        string? dipCutVideoSuffix = seamPlans is not null && timeline is not null
+            ? TransitionFilterBuilder.BuildDipCutVideoFilterSuffix(seamPlans, timeline)
+            : null;
+        string? audioRampExpr = seamPlans is not null && timeline is not null && transitionConfig is not null
+            ? TransitionFilterBuilder.BuildAudioSeamRampExpression(
+                seamPlans, timeline, Math.Max(0, transitionConfig.AudioSeamRampMs) / 1000.0)
+            : null;
+        double programFadeTotalSec = timeline?.TotalSec ?? totalOutputSeconds;
+        string videoProgramSuffix = programFade is not null
+            ? ProgramEnvelopeFilterBuilder.BuildVideoFadeSuffix(programFade, programFadeTotalSec)
+            : "";
+        string audioProgramSuffix = programFade is not null
+            ? ProgramEnvelopeFilterBuilder.BuildAudioFadeSuffix(programFade, programFadeTotalSec)
+            : "";
+
+        bool hasVideoTailStage = dipCutVideoSuffix is not null || videoProgramSuffix.Length > 0;
+        bool audioOutputPossible = sourceHasAudio || music is not null;
+        bool hasAudioTailStage = audioOutputPossible && (audioRampExpr is not null || audioProgramSuffix.Length > 0);
+
+        string videoFinalLabel = hasVideoTailStage ? "[vxfd]" : "[vout]";
+        string audioFinalLabelInner = hasAudioTailStage ? "[axfd]" : "[aout]";
+
+        // The audio cut stage's own output label flips from [aout]/[axfd] straight to [adial] only
+        // when music is present, mirroring the [vcut]/[vtxt]/[vout] video-label-chaining convention
         // Phase 3 already established. When music is null this whole audio branch is
         // byte-identical to the pre-music compile path.
         //
@@ -2091,20 +2277,35 @@ public class VideoCompileStepExecutor : IStepExecutor
         // ffmpeg outright ("Stream specifier ':a' ... matches no streams"), so that whole branch
         // is skipped. With no music either, audioPart is null and the output has no audio track
         // at all (map/-c:a below become conditional on this). With music, there is nothing to
-        // duck against, so the music branch's own output becomes [aout] directly — it is the
-        // entire output audio, not mixed with anything.
-        string audioCutLabel = music is not null ? "[adial]" : "[aout]";
+        // duck against, so the music branch's own output becomes the audio final label directly —
+        // it is the entire output audio, not mixed with anything.
+        string audioCutLabel = music is not null ? "[adial]" : audioFinalLabelInner;
         string musicAwareAudioFilter = music is not null
             ? $"{audioFilter},aformat=sample_rates=48000:channel_layouts=stereo"
             : audioFilter;
         string? audioPart = !sourceHasAudio
-            ? (music is null ? null : MusicMixFilterBuilder.BuildMusicBranch(musicInputIndex, music, outLabel: "[aout]"))
+            ? (music is null ? null : MusicMixFilterBuilder.BuildMusicBranch(musicInputIndex, music, outLabel: audioFinalLabelInner))
             : (music is null
-                ? $"[0:a]{audioFilter}[aout]"
+                ? $"[0:a]{audioFilter}{audioFinalLabelInner}"
                 : $"[0:a]{musicAwareAudioFilter}{audioCutLabel};" +
                   MusicMixFilterBuilder.BuildMusicBranch(musicInputIndex, music) + ";" +
-                  MusicMixFilterBuilder.BuildMixStage(audioCutLabel));
+                  MusicMixFilterBuilder.BuildMixStage(audioCutLabel, finalLabel: audioFinalLabelInner));
         bool hasAudioOutput = audioPart is not null;
+
+        // Tail stage(s) — appended after the existing cut/overlay/music filterComplex below.
+        List<string> videoTailFilters = new();
+        if (dipCutVideoSuffix is not null)
+            videoTailFilters.Add(dipCutVideoSuffix);
+        if (videoProgramSuffix.Length > 0)
+            videoTailFilters.Add(videoProgramSuffix.TrimStart(','));
+        string? videoTailStage = hasVideoTailStage ? $"[vxfd]{string.Join(",", videoTailFilters)}[vout]" : null;
+
+        List<string> audioTailFilters = new();
+        if (audioRampExpr is not null)
+            audioTailFilters.Add($"volume=eval=frame:volume='{audioRampExpr}'");
+        if (audioProgramSuffix.Length > 0)
+            audioTailFilters.Add(audioProgramSuffix.TrimStart(','));
+        string? audioTailStage = hasAudioTailStage ? $"[axfd]{string.Join(",", audioTailFilters)}[aout]" : null;
 
         string filterComplex;
         if ((textOverlays.Count > 0 || assetOverlays.Count > 0) && graphicsConfig is not null)
@@ -2128,9 +2329,9 @@ public class VideoCompileStepExecutor : IStepExecutor
             if (textOverlays.Count > 0)
             {
                 // When asset overlays also follow, this stage ends at an internal [vtxt] label
-                // instead of [vout] directly, so the asset stage below can chain after it and
-                // become the actual [vout] itself.
-                string textStageFinalLabel = assetOverlays.Count > 0 ? "[vtxt]" : "[vout]";
+                // instead of the video final label directly, so the asset stage below can chain
+                // after it and become that final label itself.
+                string textStageFinalLabel = assetOverlays.Count > 0 ? "[vtxt]" : videoFinalLabel;
                 chainParts.Add(DrawtextFilterBuilder.BuildFilterChain(
                     currentLabel, textOverlays, probedWidth, probedHeight,
                     graphicsConfig.OverlayFontSizePct, graphicsConfig.OverlayFadeMs,
@@ -2150,7 +2351,7 @@ public class VideoCompileStepExecutor : IStepExecutor
                 chainParts.Add(OverlayAssetFilterBuilder.BuildFilterChain(
                     currentLabel, assetOverlays, probedWidth, probedHeight,
                     inputIndexForIndex: i => i + 1,
-                    finalLabel: "[vout]",
+                    finalLabel: videoFinalLabel,
                     boxHeightPct: graphicsConfig.OverlayBoxHeightPct,
                     boxWidthPct: graphicsConfig.OverlayBoxWidthPct));
             }
@@ -2162,9 +2363,16 @@ public class VideoCompileStepExecutor : IStepExecutor
         else
         {
             filterComplex = audioPart is not null
-                ? $"[0:v]{videoFilter}[vout];{audioPart}"
-                : $"[0:v]{videoFilter}[vout]";
+                ? $"[0:v]{videoFilter}{videoFinalLabel};{audioPart}"
+                : $"[0:v]{videoFilter}{videoFinalLabel}";
         }
+
+        // Cut transitions: append the tail stage(s) — computed above — after the existing
+        // cut/overlay/music filtergraph. Both are null on the byte-identical pre-transitions path.
+        if (videoTailStage is not null)
+            filterComplex += ";" + videoTailStage;
+        if (audioTailStage is not null)
+            filterComplex += ";" + audioTailStage;
 
         // Real encode progress (best-effort — see BuildFfmpegProgressLineHandler): ffmpeg's
         // "-progress pipe:1" emits periodic out_time_us/out_time_ms key=value lines to stdout,
@@ -2272,7 +2480,17 @@ public class VideoCompileStepExecutor : IStepExecutor
     /// (<c>anullsrc</c>) instead of dropping audio for the whole output — see
     /// <paramref name="sourceHasAudioByIndex"/>.
     /// </summary>
-    private async Task<VideoToolResult> EncodeReencodeMultiSourceAsync(
+    /// <summary>
+    /// Multi-source addition, extended for Cut transitions (see docs/video-editing.md "Cut
+    /// transitions"): renamed from <c>EncodeReencodeMultiSourceAsync</c> — this is now also the
+    /// encode path for a SINGLE source with a real overlapping transition (a crossfade cannot be
+    /// expressed by the select-path's own <c>select</c>/<c>aselect</c> filters), not only for
+    /// multiple distinct source clips. <paramref name="seamPlans"/>/<paramref name="timeline"/>
+    /// are null on any call site that predates this addition; every seam-aware stage below
+    /// (per-span DipCut/AudioOnly local fades, block/xfade grouping) degrades to plain,
+    /// all-hard-cut concatenation in that case — byte-identical to the pre-transitions behavior.
+    /// </summary>
+    private async Task<VideoToolResult> EncodeReencodeSegmentedAsync(
         VideoScratchSpace scratch,
         IReadOnlyDictionary<int, string> localPathBySource,
         string outputPath,
@@ -2289,7 +2507,11 @@ public class VideoCompileStepExecutor : IStepExecutor
         StepExecutionContext? progressContext = null,
         double totalOutputSeconds = 0,
         ResolvedMusic? music = null,
-        IReadOnlyDictionary<int, bool>? sourceHasAudioByIndex = null)
+        IReadOnlyDictionary<int, bool>? sourceHasAudioByIndex = null,
+        IReadOnlyList<SeamPlan>? seamPlans = null,
+        OutputTimeline? timeline = null,
+        VideoCompileStepConfig? transitionConfig = null,
+        ProgramFadeResolved? programFade = null)
     {
         // Deterministic ffmpeg -i order: sorted distinct source indices actually referenced. Input
         // 0 is not necessarily "the" primary source here (that's canonicalMedia's own index,
@@ -2312,6 +2534,25 @@ public class VideoCompileStepExecutor : IStepExecutor
         // real dialogue intact.
         bool anySourceHasAudio = orderedSourceIndices.Any(SourceHasAudio);
 
+        // Cut transitions: the program fade (see docs/video-editing.md "Cut transitions") is
+        // always the LAST stage — after overlays, after the music mix — so both suffixes are
+        // computed once up front and applied as a final filter-chain entry below. Per-seam DipCut/
+        // AudioOnly treatments are handled differently on THIS path — folded directly into each
+        // span's own trim/atrim branch (see the loop below) rather than as a separate tail stage,
+        // since there is no single global timeline filter that can apply to per-span-independent
+        // decoded clips the way the select-path's global volume-envelope trick can.
+        double programFadeTotalSec = timeline?.TotalSec ?? totalOutputSeconds;
+        string videoProgramSuffix = programFade is not null
+            ? ProgramEnvelopeFilterBuilder.BuildVideoFadeSuffix(programFade, programFadeTotalSec)
+            : "";
+        string audioProgramSuffix = programFade is not null
+            ? ProgramEnvelopeFilterBuilder.BuildAudioFadeSuffix(programFade, programFadeTotalSec)
+            : "";
+        bool hasVideoProgramFade = videoProgramSuffix.Length > 0;
+        bool hasAudioProgramFade = audioProgramSuffix.Length > 0 && (anySourceHasAudio || music is not null);
+        string videoFinalLabel = hasVideoProgramFade ? "[vpre]" : "[vout]";
+        string audioFinalLabelInner = hasAudioProgramFade ? "[apre]" : "[aout]";
+
         // libx264/libx265 require even dimensions; clamp the canonical target defensively even
         // though a real ffprobe'd width/height is virtually always already even.
         int cw = canonicalMedia.Width > 0 ? canonicalMedia.Width : 1920;
@@ -2322,13 +2563,32 @@ public class VideoCompileStepExecutor : IStepExecutor
         int cfpsDen = canonicalMedia.FpsDen > 0 ? canonicalMedia.FpsDen : 1;
 
         var filterParts = new List<string>();
-        var concatInputLabels = new StringBuilder();
         for (int i = 0; i < spans.Count; i++)
         {
             ResolvedSpan span = spans[i];
             int ffInputIdx = ffmpegInputIndexBySource[span.SourceIndex];
             string ss = FfmpegArgvFormat.Number(span.SnappedStart);
             string ee = FfmpegArgvFormat.Number(span.SnappedEnd);
+            double spanDurationSec = Math.Max(0.0, span.SnappedEnd - span.SnappedStart);
+
+            // Cut transitions: DipCut/AudioOnly are non-overlapping treatments applied per-span,
+            // inside this span's own trim/atrim branch — see docs/video-editing.md "Cut
+            // transitions". seamPlans is null on any pre-transitions call site, in which case both
+            // suffixes are always "".
+            SeamPlan? seamBefore = seamPlans is not null && i > 0 ? seamPlans[i - 1] : null;
+            SeamPlan? seamAfter = seamPlans is not null && i < spans.Count - 1 ? seamPlans[i] : null;
+            string videoFadeSuffix = TransitionFilterBuilder.BuildSpanVideoFadeSuffix(spanDurationSec, seamBefore, seamAfter);
+            string audioFadeSuffix = TransitionFilterBuilder.BuildSpanAudioFadeSuffix(spanDurationSec, seamBefore, seamAfter);
+
+            // Cut transitions: the scale/pad/setsar/fps normalization below exists only to make
+            // DIFFERENT source clips concat-compatible — a provable no-op when every span already
+            // shares the one and only source clip's own dimensions/rate (a single-source compile
+            // that landed on this segmented path purely because of a real crossfade, not because
+            // of multiple physical source clips). Skipping it there keeps that case's encode
+            // simpler/cheaper without changing the output at all.
+            string normalizeSuffix = orderedSourceIndices.Count == 1
+                ? ""
+                : $",scale={cw}:{ch}:force_original_aspect_ratio=decrease,pad={cw}:{ch}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps={cfpsNum}/{cfpsDen}";
 
             // Time-based (not frame-based) trim, deliberately mirroring the single-source path's
             // own time-based `gte(t,...)*lt(t,...)` select terms exactly — SnappedStart/SnappedEnd
@@ -2336,9 +2596,8 @@ public class VideoCompileStepExecutor : IStepExecutor
             // boundary without depending on StartFrame/EndFrame staying meaningful when a source's
             // fps could not be determined (ResolvedSpan reports 0/0 for both in that case).
             filterParts.Add(
-                $"[{ffInputIdx}:v]trim=start={ss}:end={ee},setpts=PTS-STARTPTS," +
-                $"scale={cw}:{ch}:force_original_aspect_ratio=decrease,pad={cw}:{ch}:(ow-iw)/2:(oh-ih)/2:color=black," +
-                $"setsar=1,fps={cfpsNum}/{cfpsDen}[v{i}]");
+                $"[{ffInputIdx}:v]trim=start={ss}:end={ee},setpts=PTS-STARTPTS" +
+                $"{normalizeSuffix}{videoFadeSuffix}[v{i}]");
 
             // concat's own "a=" stream count must be uniform across every concatenated segment, so
             // an audio-less span (real B-roll routinely ships video-only, which would otherwise
@@ -2360,19 +2619,12 @@ public class VideoCompileStepExecutor : IStepExecutor
                     filterParts.Add(
                         $"[{ffInputIdx}:a]atrim=start={ss}:end={ee},asetpts=PTS-STARTPTS," +
                         "aformat=sample_rates=48000:channel_layouts=stereo" +
-                        $"[a{i}]");
+                        $"{audioFadeSuffix}[a{i}]");
                 }
                 else
                 {
-                    double spanDurationSec = Math.Max(0.0, span.SnappedEnd - span.SnappedStart);
                     filterParts.Add($"anullsrc=r=48000:cl=stereo:d={FfmpegArgvFormat.Number(spanDurationSec)}[a{i}]");
                 }
-
-                concatInputLabels.Append($"[v{i}][a{i}]");
-            }
-            else
-            {
-                concatInputLabels.Append($"[v{i}]");
             }
         }
 
@@ -2380,20 +2632,31 @@ public class VideoCompileStepExecutor : IStepExecutor
         List<ResolvedOverlay> assetOverlays = overlays?.Where(o => o.IsAssetOverlay).ToList() ?? [];
         bool hasOverlays = textOverlays.Count > 0 || assetOverlays.Count > 0;
 
-        // Same [vcut]-vs-[vout] labeling convention EncodeReencodeAsync uses: the concat stage
-        // outputs straight to [vout] when there is nothing further to draw, or to an internal
-        // [vcat] label that the overlay chain below continues from when there is.
-        string videoConcatLabel = hasOverlays ? "[vcat]" : "[vout]";
+        // Same [vcut]-vs-[vout] labeling convention EncodeReencodeAsync uses: the concat/transition
+        // stage outputs straight to the video final label when there is nothing further to draw,
+        // or to an internal [vcat] label that the overlay chain below continues from when there is.
+        string videoConcatLabel = hasOverlays ? "[vcat]" : videoFinalLabel;
 
         // Background music (see docs/video-editing.md "Background music"): mirrors
         // EncodeReencodeAsync's own [aout]-vs-[adial] flip. No extra aformat is needed here on the
         // dialogue side — every per-span atrim branch above already ends in
         // aformat=sample_rates=48000:channel_layouts=stereo, so the concat output already matches
         // the music branch's own format by construction.
-        string? audioConcatLabel = anySourceHasAudio ? (music is not null ? "[adial]" : "[aout]") : null;
-        filterParts.Add(anySourceHasAudio
-            ? $"{concatInputLabels}concat=n={spans.Count}:v=1:a=1{videoConcatLabel}{audioConcatLabel}"
-            : $"{concatInputLabels}concat=n={spans.Count}:v=1:a=0{videoConcatLabel}");
+        string? audioConcatLabel = anySourceHasAudio ? (music is not null ? "[adial]" : audioFinalLabelInner) : null;
+
+        // Cut transitions: groups spans into maximal non-overlapping "blocks" (each one plain
+        // concat), chained pairwise via xfade/acrossfade at every seam with OverlapSec > 0 — see
+        // TransitionFilterBuilder.BuildSegmentedTransitions. When seamPlans/timeline are null (any
+        // pre-transitions call site), an all-hard-cut fallback plan collapses this to exactly one
+        // block and one plain concat covering every span, byte-identical to the single
+        // `concat=n=...` line this replaces.
+        IReadOnlyList<SeamPlan> effectiveSeamPlans = seamPlans ?? BuildHardCutSeamsForFallback(spans.Count);
+        OutputTimeline effectiveTimeline = timeline ?? OutputTimeline.Build(spans, effectiveSeamPlans);
+        TransitionFilterBuilder.SegmentedTransitionResult segmented = TransitionFilterBuilder.BuildSegmentedTransitions(
+            effectiveSeamPlans, effectiveTimeline, spans.Count, anySourceHasAudio,
+            i => $"[v{i}]", i => $"[a{i}]",
+            videoFinalLabel: videoConcatLabel, audioFinalLabel: audioConcatLabel ?? "[aout]");
+        filterParts.AddRange(segmented.FilterParts);
 
         if (hasOverlays && graphicsConfig is not null)
         {
@@ -2413,7 +2676,7 @@ public class VideoCompileStepExecutor : IStepExecutor
             string currentLabel = videoConcatLabel;
             if (textOverlays.Count > 0)
             {
-                string textStageFinalLabel = assetOverlays.Count > 0 ? "[vtxt]" : "[vout]";
+                string textStageFinalLabel = assetOverlays.Count > 0 ? "[vtxt]" : videoFinalLabel;
                 filterParts.Add(DrawtextFilterBuilder.BuildFilterChain(
                     currentLabel, textOverlays, cw, ch,
                     graphicsConfig.OverlayFontSizePct, graphicsConfig.OverlayFadeMs,
@@ -2434,7 +2697,7 @@ public class VideoCompileStepExecutor : IStepExecutor
                 filterParts.Add(OverlayAssetFilterBuilder.BuildFilterChain(
                     currentLabel, assetOverlays, cw, ch,
                     inputIndexForIndex: i => assetInputBase + i,
-                    finalLabel: "[vout]",
+                    finalLabel: videoFinalLabel,
                     boxHeightPct: graphicsConfig.OverlayBoxHeightPct,
                     boxWidthPct: graphicsConfig.OverlayBoxWidthPct));
             }
@@ -2450,17 +2713,26 @@ public class VideoCompileStepExecutor : IStepExecutor
             if (anySourceHasAudio)
             {
                 filterParts.Add(MusicMixFilterBuilder.BuildMusicBranch(musicInputIndex, music));
-                filterParts.Add(MusicMixFilterBuilder.BuildMixStage(audioConcatLabel!));
+                filterParts.Add(MusicMixFilterBuilder.BuildMixStage(audioConcatLabel!, finalLabel: audioFinalLabelInner));
             }
             else
             {
                 // No dialogue anywhere in this compile to duck against — the music branch's own
-                // output becomes [aout] directly, exactly as the single-source path does.
-                filterParts.Add(MusicMixFilterBuilder.BuildMusicBranch(musicInputIndex, music, outLabel: "[aout]"));
+                // output becomes the audio final label directly, exactly as the single-source path does.
+                filterParts.Add(MusicMixFilterBuilder.BuildMusicBranch(musicInputIndex, music, outLabel: audioFinalLabelInner));
             }
         }
 
         bool hasAudioOutput = anySourceHasAudio || music is not null;
+
+        // Cut transitions: the whole-piece program fade — always the LAST stage, after
+        // overlays/the music mix. Both are no-ops (empty strings) on the byte-identical
+        // pre-transitions path (programFade == null).
+        if (hasVideoProgramFade)
+            filterParts.Add($"[vpre]{videoProgramSuffix.TrimStart(',')}[vout]");
+        if (hasAudioProgramFade)
+            filterParts.Add($"[apre]{audioProgramSuffix.TrimStart(',')}[aout]");
+
         string filterComplex = string.Join(";", filterParts);
 
         Action<string>? progressLineHandler = progressContext is not null && totalOutputSeconds > 0
@@ -2701,6 +2973,58 @@ public class VideoCompileStepExecutor : IStepExecutor
 
     private static string Truncate(string value, int max = 2000) => value.Length <= max ? value : value[^max..];
 
+    /// <summary>
+    /// Builds the <c>transitions</c> output node (see docs/video-editing.md "Cut transitions").
+    /// Only ever called when <see cref="VideoCompileStepConfig.TransitionPolicy"/> is not
+    /// <see cref="VideoTransitionPolicy.Off"/>. <c>downgradedCount</c> is a heuristic over
+    /// <see cref="SeamPlan.Rule"/>: a seam that ENDED UP <see cref="SeamTreatment.AudioOnly"/> but
+    /// whose matched rule was NOT one that naturally produces <see cref="SeamTreatment.AudioOnly"/>
+    /// on its own (R1/R7, or the whole-plan policy/cap forcing) must have gotten there via the
+    /// planner's own neighbour-sum/density-cap downgrade path.
+    /// </summary>
+    private static JsonObject BuildTransitionsNode(
+        VideoCompileStepConfig config, IReadOnlyList<SeamPlan> seamPlans, bool xfadeAvailable, bool segmentCountOverCap)
+    {
+        var treatments = new JsonObject();
+        foreach (SeamTreatment t in Enum.GetValues<SeamTreatment>())
+            treatments[t.ToString()] = seamPlans.Count(p => p.Treatment == t);
+
+        int appliedCount = seamPlans.Count(p => p.OverlapSec > 0);
+        double overlapSec = Math.Round(seamPlans.Sum(p => p.OverlapSec), 3);
+        int downgradedCount = seamPlans.Count(p =>
+            p.Treatment == SeamTreatment.AudioOnly &&
+            !p.Rule.StartsWith("R1", StringComparison.Ordinal) &&
+            !p.Rule.StartsWith("R7", StringComparison.Ordinal) &&
+            !p.Rule.StartsWith("policy:", StringComparison.Ordinal) &&
+            !p.Rule.StartsWith("capped:", StringComparison.Ordinal) &&
+            !p.Rule.StartsWith("off:", StringComparison.Ordinal));
+
+        int audioOnlyCount = seamPlans.Count(p => p.Treatment == SeamTreatment.AudioOnly);
+        bool audioRampSkipped = audioOnlyCount > TransitionFilterBuilder.MaxAudioRampTerms;
+
+        return new JsonObject
+        {
+            ["policy"] = config.TransitionPolicy.ToString(),
+            ["xfadeAvailable"] = xfadeAvailable,
+            ["appliedCount"] = appliedCount,
+            ["overlapSec"] = overlapSec,
+            ["downgradedCount"] = downgradedCount,
+            ["audioRampSkipped"] = audioRampSkipped,
+            ["treatments"] = treatments,
+            ["reason"] = segmentCountOverCap ? "segment_count_over_cap" : null
+        };
+    }
+
+    /// <summary>Builds the <c>programFade</c> output node. Only ever called when <see cref="ProgramEnvelopeFilterBuilder.IsEnabled"/> is true.</summary>
+    private static JsonObject BuildProgramFadeNode(ProgramFadeResolved fade) => new()
+    {
+        ["videoInSec"] = Math.Round(fade.VideoInSec, 3),
+        ["videoOutSec"] = Math.Round(fade.VideoOutSec, 3),
+        ["audioInSec"] = Math.Round(fade.AudioInSec, 3),
+        ["audioOutSec"] = Math.Round(fade.AudioOutSec, 3),
+        ["color"] = fade.Color
+    };
+
     private static JsonObject BuildEdl(
         VideoCompileStepConfig config,
         string analysisArtifactKey,
@@ -2711,7 +3035,10 @@ public class VideoCompileStepExecutor : IStepExecutor
         int crf,
         JsonObject? graphics = null,
         JsonObject? music = null,
-        JsonObject? audio = null)
+        JsonObject? audio = null,
+        JsonObject? transitions = null,
+        JsonObject? programFade = null,
+        double? transitionOverlapSec = null)
     {
         var segmentsArray = new JsonArray();
         for (int i = 0; i < spans.Count; i++)
@@ -2766,6 +3093,17 @@ public class VideoCompileStepExecutor : IStepExecutor
         // phases are, so a dropped audio stream is never silently unreported.
         if (audio is not null)
             edl["audio"] = audio;
+
+        // Cut transitions: same discipline as graphics/music — only present when TransitionPolicy
+        // != Off / a program fade is actually configured.
+        if (transitions is not null)
+            edl["transitions"] = transitions;
+
+        if (programFade is not null)
+            edl["programFade"] = programFade;
+
+        if (transitionOverlapSec.HasValue)
+            edl["transitionOverlapSec"] = Math.Round(transitionOverlapSec.Value, 3);
 
         return edl;
     }
