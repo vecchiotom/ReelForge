@@ -1,8 +1,9 @@
 'use client';
 
 import { use, useEffect, useState, useCallback, useMemo } from 'react';
-import { Stack, Card, Group, Text, Badge, Loader, Center, Progress, Timeline, Paper, Alert, Modal, Divider, ScrollArea, Button, SimpleGrid } from '@mantine/core';
-import { IconPlayerPlay, IconCheck, IconX, IconClock, IconAlertCircle, IconPlayerStop, IconBolt, IconActivity, IconTool, IconBrain } from '@tabler/icons-react';
+import { Stack, Card, Group, Text, Badge, Loader, Center, Progress, Timeline, Paper, Alert, Drawer, Button, SimpleGrid, Tooltip } from '@mantine/core';
+import { useMediaQuery } from '@mantine/hooks';
+import { IconPlayerPlay, IconCheck, IconX, IconClock, IconAlertCircle, IconPlayerStop, IconBolt, IconActivity } from '@tabler/icons-react';
 import { motion } from 'framer-motion';
 import {
   ReactFlow,
@@ -20,193 +21,22 @@ import {
 import '@xyflow/react/dist/style.css';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { apiFetch } from '@/lib/api/client';
-import { getOutputVideoUrl } from '@/lib/api/outputs';
 import { getStepResultArtifact } from '@/lib/api/step-result-artifacts';
 import { getExecution, stopExecution } from '@/lib/api/executions';
 import type { WorkflowExecution, WorkflowDefinition, WorkflowStepResult } from '@/lib/types/workflow';
 import { formatDate, formatDurationLong } from '@/lib/utils/format';
-import { JsonViewer } from '@/components/workflows/JsonViewer';
-import { useExecutionStream, type ExecutionStreamEvent } from '@/lib/hooks/use-execution-stream';
+import { StepResultPanel } from '@/components/workflows/StepResultPanel';
+import {
+  ExecutionEventCard,
+  getEventBadgeColor,
+  getEventIcon,
+  getPayloadNumber,
+  getPayloadString,
+} from '@/components/workflows/ExecutionEventCard';
+import { useExecutionStream } from '@/lib/hooks/use-execution-stream';
 
 function isTerminalExecutionStatus(status: WorkflowExecution['status'] | undefined): boolean {
   return status === 'Passed' || status === 'Failed' || status === 'Cancelled';
-}
-
-function getPayloadString(payload: Record<string, unknown>, ...keys: string[]): string {
-  for (const key of keys) {
-    const value = payload[key];
-    if (typeof value === 'string' && value.length > 0) {
-      return value;
-    }
-  }
-
-  return '';
-}
-
-function getPayloadNumber(payload: Record<string, unknown>, ...keys: string[]): number {
-  for (const key of keys) {
-    const value = payload[key];
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      return value;
-    }
-  }
-
-  return 0;
-}
-
-function getEventBadgeColor(eventType: string): string {
-  if (eventType === 'execution.completed') {
-    return 'green';
-  }
-  if (eventType === 'execution.failed') {
-    return 'red';
-  }
-  if (eventType === 'execution.running') {
-    return 'blue';
-  }
-  if (eventType === 'step.started') {
-    return 'cyan';
-  }
-  if (eventType === 'step.progress') {
-    return 'blue';
-  }
-  if (eventType === 'step.tool-called') {
-    return 'indigo';
-  }
-  if (eventType === 'step.reasoning') {
-    return 'grape';
-  }
-
-  return 'violet';
-}
-
-function getEventTitle(event: ExecutionStreamEvent): string {
-  if (event.type === 'execution.running') return 'Workflow started';
-  if (event.type === 'execution.completed') return 'Workflow completed';
-  if (event.type === 'execution.failed') return 'Workflow failed';
-  if (event.type === 'step.started') return 'Step started';
-  if (event.type === 'step.progress') return getPayloadString(event.payload, 'stage', 'Stage') || 'Step progress';
-  if (event.type === 'step.tool-called') return 'Tool call';
-  if (event.type === 'step.reasoning') return 'Model reasoning';
-  return 'Step completed';
-}
-
-function getEventIcon(eventType: ExecutionStreamEvent['type']) {
-  if (eventType === 'execution.completed') return <IconCheck size={12} />;
-  if (eventType === 'execution.failed') return <IconX size={12} />;
-  if (eventType === 'execution.running') return <IconActivity size={12} />;
-  if (eventType === 'step.started') return <IconClock size={12} />;
-  if (eventType === 'step.progress') return <IconActivity size={12} />;
-  if (eventType === 'step.tool-called') return <IconTool size={12} />;
-  if (eventType === 'step.reasoning') return <IconBrain size={12} />;
-  return <IconPlayerPlay size={12} />;
-}
-
-function getEventMetadata(event: ExecutionStreamEvent): string[] {
-  const metadata: string[] = [];
-
-  const stepOrder = getPayloadNumber(event.payload, 'stepOrder', 'StepOrder');
-  if (stepOrder > 0) {
-    metadata.push(`Step #${stepOrder}`);
-  }
-
-  const stepLabel = getPayloadString(event.payload, 'stepLabel', 'StepLabel');
-  if (stepLabel) {
-    metadata.push(stepLabel);
-  }
-
-  const agentName = getPayloadString(event.payload, 'agentName', 'AgentName');
-  if (agentName) {
-    metadata.push(agentName);
-  }
-
-  if (event.type === 'step.completed') {
-    const status = getPayloadString(event.payload, 'stepStatus', 'StepStatus');
-    const durationMs = getPayloadNumber(event.payload, 'durationMs', 'DurationMs');
-    const tokens = getPayloadNumber(event.payload, 'tokensUsed', 'TokensUsed');
-
-    if (status) metadata.push(`Status: ${status}`);
-    if (durationMs > 0) metadata.push(`${Math.round(durationMs)}ms`);
-    if (tokens > 0) metadata.push(`${tokens.toLocaleString()} tokens`);
-  }
-
-  if (event.type === 'step.tool-called') {
-    const toolName = getPayloadString(event.payload, 'toolName', 'ToolName');
-    const sequence = getPayloadNumber(event.payload, 'sequence', 'Sequence');
-    if (toolName) metadata.push(`Tool: ${toolName}`);
-    if (sequence > 0) metadata.push(`Call #${sequence}`);
-  }
-
-  if (event.type === 'step.reasoning') {
-    const sequence = getPayloadNumber(event.payload, 'sequence', 'Sequence');
-    if (sequence > 0) metadata.push(`Reasoning #${sequence}`);
-  }
-
-  if (event.type === 'step.progress') {
-    const percent = getPayloadNumber(event.payload, 'percentComplete', 'PercentComplete');
-    if (percent > 0) metadata.push(`${Math.round(percent)}%`);
-  }
-
-  return metadata;
-}
-
-function getEventBody(event: ExecutionStreamEvent): string | null {
-  if (event.type === 'execution.failed') {
-    return getPayloadString(event.payload, 'errorMessage', 'ErrorMessage') || null;
-  }
-
-  if (event.type === 'step.tool-called') {
-    return getPayloadString(event.payload, 'argumentsPreview', 'ArgumentsPreview')
-      || getPayloadString(event.payload, 'resultPreview', 'ResultPreview')
-      || null;
-  }
-
-  if (event.type === 'step.reasoning') {
-    return getPayloadString(event.payload, 'content', 'Content') || null;
-  }
-
-  if (event.type === 'step.completed') {
-    return getPayloadString(event.payload, 'errorDetails', 'ErrorDetails') || null;
-  }
-
-  return null;
-}
-
-function ExecutionEventCard({ event }: { event: ExecutionStreamEvent }) {
-  const [showRaw, setShowRaw] = useState(false);
-  const metadata = getEventMetadata(event);
-  const body = getEventBody(event);
-
-  return (
-    <Paper withBorder p="sm" radius="md">
-      <Group justify="space-between" align="flex-start" mb={6}>
-        <Group gap="xs" wrap="wrap">
-          <Badge size="xs" color={getEventBadgeColor(event.type)}>{event.type}</Badge>
-          <Text size="sm" fw={600}>{getEventTitle(event)}</Text>
-        </Group>
-        <Text size="xs" c="dimmed">{new Date(event.timestamp).toLocaleTimeString()}</Text>
-      </Group>
-
-      {metadata.length > 0 && (
-        <Group gap={6} wrap="wrap" mb={body ? 6 : 0}>
-          {metadata.map((item) => (
-            <Badge key={item} size="xs" variant="light" color="gray">{item}</Badge>
-          ))}
-        </Group>
-      )}
-
-      {body && (
-        <Text size="xs" c="dimmed" style={{ whiteSpace: 'pre-wrap' }} mb={8}>
-          {body}
-        </Text>
-      )}
-
-      <Button variant="subtle" size="compact-xs" onClick={() => setShowRaw((current) => !current)}>
-        {showRaw ? 'Hide raw payload' : 'Show raw payload'}
-      </Button>
-      {showRaw && <JsonViewer label="Event payload" value={JSON.stringify(event.payload)} />}
-    </Paper>
-  );
 }
 
 interface StepProgressInfo {
@@ -223,10 +53,12 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [selectedStepResult, setSelectedStepResult] = useState<WorkflowStepResult | null>(null);
-  const [modalOpened, setModalOpened] = useState(false);
   const [artifactJson, setArtifactJson] = useState<string | null>(null);
   const [artifactError, setArtifactError] = useState<string | null>(null);
   const [artifactLoading, setArtifactLoading] = useState(false);
+  // Below `sm` (768px) the flow canvas and step panel stack, so a selected step's detail would
+  // scroll off-screen; render it as a bottom Drawer there instead of a grid cell.
+  const isDesktop = useMediaQuery('(min-width: 48em)');
 
   const streamEnabled = !!execution && !!workflow && !isTerminalExecutionStatus(execution.status);
   const {
@@ -286,7 +118,7 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
         position: { x: 250, y: index * 150 + 50 },
         data: {
           label: (
-            <div style={{ padding: 10, minWidth: 260, cursor: 'pointer' }}>
+            <div style={{ padding: 10, width: '100%', cursor: 'pointer' }}>
               <Group gap="xs" mb={6} justify="space-between">
                 <Badge size="xs" variant="filled" style={{ background: color }}>
                   {status}
@@ -295,18 +127,20 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
                   #{step.stepOrder} {step.stepType ?? 'Agent'}
                 </Badge>
               </Group>
-              <Text size="xs" fw={700} mb={6} lineClamp={2}>{stepName}</Text>
+              <Tooltip label={stepName} multiline maw={260} openDelay={300}>
+                <Text size="xs" fw={700} mb={6} lineClamp={2}>{stepName}</Text>
+              </Tooltip>
               {liveProgress && (
                 <Group gap={4} mb={6} wrap="nowrap">
                   <Loader size={10} />
-                  <Text size="xs" c="blue.4" lineClamp={1}>
+                  <Text size="xs" c="blue.4" lineClamp={1} style={{ wordBreak: 'break-word' }}>
                     {liveProgress.stage}
                     {liveProgress.percent != null ? ` (${Math.round(liveProgress.percent)}%)` : ''}
                   </Text>
                 </Group>
               )}
               {stepResult && (
-                <Group gap="xs" wrap="nowrap">
+                <Group gap={4} wrap="wrap">
                   <Badge size="xs" variant="dot" color="indigo">
                     {Math.round(stepResult.durationMs)}ms
                   </Badge>
@@ -323,6 +157,7 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
           stepResult, // Store the step result in node data
         },
         style: {
+          width: 280,
           border: `2px solid ${color}`,
           borderRadius: 14,
           background:
@@ -331,9 +166,11 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
               : 'linear-gradient(135deg, var(--mantine-color-dark-8), var(--mantine-color-dark-7))',
           color: 'var(--mantine-color-gray-0)',
           boxShadow:
-            status === 'Running'
-              ? `0 0 0 1px ${color}, 0 0 28px ${color}`
-              : `0 0 0 1px ${color}33`,
+            stepResult && stepResult.id === selectedStepResult?.id
+              ? `0 0 0 3px ${color}, 0 0 24px ${color}`
+              : status === 'Running'
+                ? `0 0 0 1px ${color}, 0 0 28px ${color}`
+                : `0 0 0 1px ${color}33`,
           animation: status === 'Running' ? 'pulse 2s infinite' : 'none',
         },
       });
@@ -359,14 +196,13 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
 
     setNodes(newNodes);
     setEdges(newEdges);
-  }, [setNodes, setEdges]);
+  }, [setNodes, setEdges, selectedStepResult]);
 
   // Handle node click
   const onNodeClick: NodeMouseHandler = useCallback((_event, node) => {
     const stepResult = node.data.stepResult as WorkflowStepResult | undefined;
     if (stepResult) {
       setSelectedStepResult(stepResult);
-      setModalOpened(true);
     }
   }, []);
 
@@ -694,83 +530,52 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
               </div>
             </Card>
 
-            <Card withBorder shadow="sm" radius="lg" padding="lg">
-              <Text fw={600} mb="md">Step Bubble Insight</Text>
-              {!selectedStepResult ? (
-                <Alert icon={<IconPlayerPlay size={14} />} color="blue" variant="light">
-                  Select any step bubble to inspect live details.
-                </Alert>
-              ) : (
-                <Stack gap="md">
-                  <Group justify="space-between">
-                    <Badge
-                      size="lg"
-                      variant="light"
-                      color={
-                        selectedStepResult.status === 'Completed'
-                          ? 'green'
-                          : selectedStepResult.status === 'Running'
-                            ? 'blue'
-                            : selectedStepResult.status === 'Failed'
-                              ? 'red'
-                              : 'gray'
-                      }
-                    >
-                      {selectedStepResult.status ?? 'Pending'}
-                    </Badge>
-                    <Text size="sm" c="dimmed">{formatDate(selectedStepResult.executedAt)}</Text>
-                  </Group>
-                  <Group grow>
-                    <Paper withBorder p="sm" radius="md">
-                      <Text size="xs" c="dimmed">Duration</Text>
-                      <Text fw={700}>{Math.round(selectedStepResult.durationMs)}ms</Text>
-                    </Paper>
-                    <Paper withBorder p="sm" radius="md">
-                        <Text size="xs" c="dimmed">Tokens (In / Out / Total)</Text>
-                      <Text fw={700}>{selectedStepResult.tokensUsed.toLocaleString()}</Text>
-                    </Paper>
-                  </Group>
-                    <Group grow>
-                      <Paper withBorder p="sm" radius="md">
-                        <Text size="xs" c="dimmed">Input Tokens</Text>
-                        <Text fw={700}>{selectedStepLiveTokenMetrics.inputTokens.toLocaleString()}</Text>
-                      </Paper>
-                      <Paper withBorder p="sm" radius="md">
-                        <Text size="xs" c="dimmed">Output Tokens</Text>
-                        <Text fw={700}>{selectedStepLiveTokenMetrics.outputTokens.toLocaleString()}</Text>
-                      </Paper>
-                    </Group>
-                    <Card withBorder padding="sm" radius="md">
-                      <Text size="xs" fw={600} mb="xs">Live Step Updates</Text>
-                      <ScrollArea.Autosize mah={180}>
-                        <Stack gap="xs">
-                          {selectedStepEvents.length === 0 ? (
-                            <Text size="xs" c="dimmed">Waiting for step events...</Text>
-                          ) : (
-                            selectedStepEvents.map((event, index) => (
-                              <ExecutionEventCard key={`${event.id}-${index}`} event={event} />
-                            ))
-                          )}
-                        </Stack>
-                      </ScrollArea.Autosize>
-                    </Card>
-                  {selectedStepResult.outputStorageKey && (
-                    <video
-                      controls
-                      style={{ width: '100%', borderRadius: 8 }}
-                      src={getOutputVideoUrl(projectId, selectedStepResult.id)}
-                    />
-                  )}
-                  <ScrollArea.Autosize mah={220}>
-                    <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
-                      {selectedStepResult.output || 'No output available'}
-                    </Text>
-                  </ScrollArea.Autosize>
-                </Stack>
-              )}
-            </Card>
+            {/* Below `sm` this panel renders as a bottom Drawer instead (see below), so a
+                selected step's detail doesn't scroll off-screen once the grid stacks. */}
+            {isDesktop && (
+              <Card withBorder shadow="sm" radius="lg" padding="lg">
+                <Text fw={600} mb="md">Step Bubble Insight</Text>
+                {!selectedStepResult ? (
+                  <Alert icon={<IconPlayerPlay size={14} />} color="blue" variant="light">
+                    Select any step bubble to inspect live details.
+                  </Alert>
+                ) : (
+                  <StepResultPanel
+                    projectId={projectId}
+                    stepResult={selectedStepResult}
+                    stepEvents={selectedStepEvents}
+                    liveTokenMetrics={selectedStepLiveTokenMetrics}
+                    artifactJson={artifactJson}
+                    artifactError={artifactError}
+                    artifactLoading={artifactLoading}
+                  />
+                )}
+              </Card>
+            )}
           </SimpleGrid>
         </motion.div>
+
+        {!isDesktop && (
+          <Drawer
+            opened={selectedStepResult !== null}
+            onClose={() => setSelectedStepResult(null)}
+            position="bottom"
+            size="85%"
+            title={<Text fw={700} size="lg">Step Bubble Insight</Text>}
+          >
+            {selectedStepResult && (
+              <StepResultPanel
+                projectId={projectId}
+                stepResult={selectedStepResult}
+                stepEvents={selectedStepEvents}
+                liveTokenMetrics={selectedStepLiveTokenMetrics}
+                artifactJson={artifactJson}
+                artifactError={artifactError}
+                artifactLoading={artifactLoading}
+              />
+            )}
+          </Drawer>
+        )}
 
         {/* Event Timeline */}
         <motion.div
@@ -825,149 +630,6 @@ function ExecutionDetailPageInner({ params }: { params: Promise<{ id: string; wo
           </Card>
         </motion.div>
       </Stack>
-
-      {/* Step Detail Modal */}
-      <Modal
-        opened={modalOpened}
-        onClose={() => setModalOpened(false)}
-        title={<Text fw={700} size="lg">Step Result Details</Text>}
-        size="xl"
-        scrollAreaComponent={ScrollArea.Autosize}
-      >
-        {selectedStepResult && (
-          <Stack gap="md">
-            {/* Status and Metadata */}
-            <Card withBorder padding="md" radius="md">
-              <Stack gap="sm">
-                <Group justify="space-between">
-                  <Text size="sm" fw={600}>Status</Text>
-                  <Badge
-                    size="lg"
-                    variant="filled"
-                    color={
-                      selectedStepResult.status === 'Completed' ? 'green'
-                        : selectedStepResult.status === 'Running' ? 'blue'
-                          : selectedStepResult.status === 'Failed' ? 'red'
-                            : 'gray'
-                    }
-                  >
-                    {selectedStepResult.status || 'Unknown'}
-                  </Badge>
-                </Group>
-                <Divider />
-                <Group justify="space-between">
-                  <Text size="sm" c="dimmed">Duration</Text>
-                  <Text size="sm" fw={500}>{Math.round(selectedStepResult.durationMs)}ms</Text>
-                </Group>
-                <Group justify="space-between">
-                  <Text size="sm" c="dimmed">Tokens Used</Text>
-                  <Text size="sm" fw={500}>{selectedStepResult.tokensUsed.toLocaleString()}</Text>
-                </Group>
-                <Group justify="space-between">
-                  <Text size="sm" c="dimmed">Input Tokens (live)</Text>
-                  <Text size="sm" fw={500}>{selectedStepLiveTokenMetrics.inputTokens.toLocaleString()}</Text>
-                </Group>
-                <Group justify="space-between">
-                  <Text size="sm" c="dimmed">Output Tokens (live)</Text>
-                  <Text size="sm" fw={500}>{selectedStepLiveTokenMetrics.outputTokens.toLocaleString()}</Text>
-                </Group>
-                {selectedStepResult.iterationNumber !== null && selectedStepResult.iterationNumber !== undefined && (
-                  <Group justify="space-between">
-                    <Text size="sm" c="dimmed">Iteration</Text>
-                    <Text size="sm" fw={500}>#{selectedStepResult.iterationNumber}</Text>
-                  </Group>
-                )}
-                <Group justify="space-between">
-                  <Text size="sm" c="dimmed">Executed At</Text>
-                  <Text size="sm" fw={500}>{formatDate(selectedStepResult.executedAt)}</Text>
-                </Group>
-                {selectedStepResult.completedAt && (
-                  <Group justify="space-between">
-                    <Text size="sm" c="dimmed">Completed At</Text>
-                    <Text size="sm" fw={500}>{formatDate(selectedStepResult.completedAt)}</Text>
-                  </Group>
-                )}
-              </Stack>
-            </Card>
-
-            {/* Error Details (if any) */}
-            {selectedStepResult.errorDetails && (
-              <Alert icon={<IconAlertCircle size={16} />} title="Error Details" color="red" variant="light">
-                <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{selectedStepResult.errorDetails}</Text>
-              </Alert>
-            )}
-
-            {/* Output Video */}
-            {selectedStepResult.outputStorageKey && (
-              <Card withBorder padding="md" radius="md">
-                <Text size="sm" fw={600} mb="xs">Output Video</Text>
-                <Divider mb="sm" />
-                <video
-                  controls
-                  style={{ width: '100%', borderRadius: 8 }}
-                  src={getOutputVideoUrl(projectId, selectedStepResult.id)}
-                />
-              </Card>
-            )}
-
-            {/* Edit decision / artifact panel — VideoAnalyze's full analysis JSON or VideoCompile's EDL */}
-            {selectedStepResult.artifactStorageKey && (
-              <Card withBorder padding="md" radius="md">
-                <Text size="sm" fw={600} mb="xs">Edit Decision Artifact</Text>
-                <Divider mb="sm" />
-                {artifactLoading && <Text size="sm" c="dimmed">Loading artifact...</Text>}
-                {artifactError && (
-                  <Alert icon={<IconAlertCircle size={14} />} color="yellow" variant="light">
-                    Could not load artifact: {artifactError}
-                  </Alert>
-                )}
-                {artifactJson && <JsonViewer label="Artifact JSON" value={artifactJson} />}
-              </Card>
-            )}
-
-            {/* Output */}
-            <Card withBorder padding="md" radius="md">
-              <Text size="sm" fw={600} mb="xs">Output</Text>
-              <Divider mb="sm" />
-              <ScrollArea.Autosize mah={300}>
-                <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
-                  {selectedStepResult.output || 'No output available'}
-                </Text>
-              </ScrollArea.Autosize>
-            </Card>
-
-            <Card withBorder padding="md" radius="md">
-              <Text size="sm" fw={600} mb="xs">Live Event Updates</Text>
-              <Divider mb="sm" />
-              <ScrollArea.Autosize mah={260}>
-                <Stack gap="xs">
-                  {selectedStepEvents.length === 0 ? (
-                    <Text size="sm" c="dimmed">No live updates yet for this step.</Text>
-                  ) : (
-                    selectedStepEvents.map((event, index) => (
-                      <ExecutionEventCard key={`${event.id}-modal-${index}`} event={event} />
-                    ))
-                  )}
-                </Stack>
-              </ScrollArea.Autosize>
-            </Card>
-
-            {/* Input JSON */}
-            {selectedStepResult.inputJson && (
-              <Card withBorder padding="md" radius="md">
-                <JsonViewer label="Input JSON" value={selectedStepResult.inputJson} />
-              </Card>
-            )}
-
-            {/* Output JSON */}
-            {selectedStepResult.outputJson && (
-              <Card withBorder padding="md" radius="md">
-                <JsonViewer label="Output JSON" value={selectedStepResult.outputJson} />
-              </Card>
-            )}
-          </Stack>
-        )}
-      </Modal>
 
       <style jsx global>{`
         @keyframes pulse {
