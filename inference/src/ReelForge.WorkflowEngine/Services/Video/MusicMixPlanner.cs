@@ -110,7 +110,13 @@ public static class MusicMixPlanner
         List<MusicLiftWindow> merged = MergeAndClamp(mapped, mergeSec, d);
 
         double minKeep = Math.Max(minWindowSec, 2 * rampSec + 0.2);
-        List<MusicLiftWindow> aboveMin = merged.Where(w => w.EndSec - w.StartSec >= minKeep).ToList();
+        // Epsilon-tolerant: a window whose duration is meant to land EXACTLY on minKeep (e.g. a
+        // silence gap of [2, 2.4] against a minKeep computed as 2*0.1+0.2) can differ from minKeep
+        // by ~1e-16 purely from IEEE-754 subtraction/addition order, which would otherwise reject a
+        // window that should survive. Wall-clock second thresholds tolerate this; frame-count math
+        // elsewhere in this feature (R9) does not and must never gain a similar epsilon.
+        const double DurationEpsilon = 1e-9;
+        List<MusicLiftWindow> aboveMin = merged.Where(w => w.EndSec - w.StartSec >= minKeep - DurationEpsilon).ToList();
 
         List<MusicLiftWindow> capped = aboveMin.Count > maxWindows
             ? aboveMin

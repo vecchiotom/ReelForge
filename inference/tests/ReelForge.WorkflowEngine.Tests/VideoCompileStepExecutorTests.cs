@@ -1103,7 +1103,11 @@ public class VideoCompileStepExecutorTests
         toolRunner
             .Setup(t => t.RunFfmpegAsync(
                 It.Is<IReadOnlyList<string>>(a => a.Contains("filter=amix")), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new VideoToolResult(0, amixNormalizeAvailable ? "... normalize ..." : "... (no normalize) ...", string.Empty, false));
+            // The "unavailable" fake stdout must NEVER contain the literal substring "normalize" —
+            // IsAmixNormalizeAvailableAsync does a plain Contains("normalize") check, so a string
+            // like "(no normalize)" would still (wrongly) report available, since "normalize" is
+            // itself a substring of "no normalize".
+            .ReturnsAsync(new VideoToolResult(0, amixNormalizeAvailable ? "... normalize ..." : "... (basic amix, no options listed) ...", string.Empty, false));
 
         var mediaProbe = new Mock<IMediaProbe>();
         mediaProbe
@@ -2435,7 +2439,17 @@ public class VideoCompileStepExecutorTests
 
         StepExecutionContext context = CreateMusicContext(
             artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace,
-            configOverride: cfg => cfg with { MusicPlan = new ExtractInputRef(ExtractInputSource.Step, StepOrder: 3) },
+            // Decision must be pointed explicitly at StepOrder 2 (the story editor) here — this
+            // test is the only CreateMusicContext caller that appends a 4th history entry
+            // (MusicSupervisor, StepOrder 3), so the default Decision: Previous would otherwise
+            // resolve to THAT entry instead, exactly the "Previous relative to the compile step
+            // would resolve to the MusicSupervisor step's own output, not the story editor's
+            // decision" trap CLAUDE.md documents for this feature.
+            configOverride: cfg => cfg with
+            {
+                Decision = new ExtractInputRef(ExtractInputSource.Step, StepOrder: 2),
+                MusicPlan = new ExtractInputRef(ExtractInputSource.Step, StepOrder: 3)
+            },
             musicPlanJson: musicPlanJson);
 
         JsonElement edl = default;

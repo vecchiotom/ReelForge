@@ -842,8 +842,20 @@ public class VideoMultiSourceTests
         string decisionJson = BuildDecisionJson(("s0", "s0", "from clip A"), ("s1", "s1", "from clip B"));
 
         List<string>? capturedArgs = null;
+        string? capturedFilterComplex = null;
         StepExecutionContext context = CreateCompileContext(artifact, decisionJson, keyA, keyB, out Mock<IProjectFileWorkspace> workspace);
-        VideoCompileStepExecutor executor = CreateCompileExecutor(workspace, args => capturedArgs = args.ToList());
+        VideoCompileStepExecutor executor = CreateCompileExecutor(
+            workspace,
+            args =>
+            {
+                // Read the scripted filter_complex file INSIDE the callback, while the ffmpeg mock
+                // is invoked — not after ExecuteAsync returns, at which point the executor's own
+                // `finally { scratch?.Dispose(); }` has already recursively deleted the whole
+                // scratch directory (by design, for a real run) and the file would be gone.
+                capturedArgs = args.ToList();
+                int idx = capturedArgs.IndexOf("-filter_complex_script");
+                if (idx >= 0) capturedFilterComplex = File.ReadAllText(capturedArgs[idx + 1]);
+            });
 
         StepExecutionResult result = await executor.ExecuteAsync(context);
 
@@ -864,10 +876,8 @@ public class VideoMultiSourceTests
         capturedArgs.Should().Contain("-filter_complex_script");
         capturedArgs.Should().NotContain("-filter_complex");
 
-        int scriptArgIndex = capturedArgs.IndexOf("-filter_complex_script") + 1;
-        string scriptPath = capturedArgs[scriptArgIndex];
-        File.Exists(scriptPath).Should().BeTrue();
-        string filterComplex = File.ReadAllText(scriptPath);
+        capturedFilterComplex.Should().NotBeNull();
+        string filterComplex = capturedFilterComplex!;
 
         // Each span trims from ITS OWN input index: span 0 (source 0, ffmpeg input 0) must trim
         // "[0:v]"/"[0:a]"; span 1 (source 1, ffmpeg input 1) must trim "[1:v]"/"[1:a]".
@@ -896,6 +906,7 @@ public class VideoMultiSourceTests
         Guid musicProjectFileId = Guid.NewGuid();
 
         List<string>? capturedArgs = null;
+        string? capturedFilterComplex = null;
         StepExecutionContext context = CreateCompileContext(
             artifact, decisionJson, keyA, keyB, out Mock<IProjectFileWorkspace> workspace,
             cfg => cfg with { EnableMusic = true, MusicTrackProjectFileId = musicProjectFileId });
@@ -910,7 +921,18 @@ public class VideoMultiSourceTests
                 new(musicProjectFileId, ProjectId, "bed.mp3", null, "userFiles", musicKey, "audio/mpeg", 4096, DateTime.UtcNow, null)
             });
 
-        VideoCompileStepExecutor executor = CreateCompileExecutor(workspace, args => capturedArgs = args.ToList());
+        VideoCompileStepExecutor executor = CreateCompileExecutor(
+            workspace,
+            args =>
+            {
+                // Read the scripted filter_complex file INSIDE the callback, while the ffmpeg mock
+                // is invoked — not after ExecuteAsync returns, at which point the executor's own
+                // `finally { scratch?.Dispose(); }` has already recursively deleted the whole
+                // scratch directory (by design, for a real run) and the file would be gone.
+                capturedArgs = args.ToList();
+                int idx = capturedArgs.IndexOf("-filter_complex_script");
+                if (idx >= 0) capturedFilterComplex = File.ReadAllText(capturedArgs[idx + 1]);
+            });
 
         StepExecutionResult result = await executor.ExecuteAsync(context);
 
@@ -928,8 +950,8 @@ public class VideoMultiSourceTests
         capturedArgs[inputPositions[1]].Should().Contain("source-1");
         capturedArgs[inputPositions[^1]].Should().Contain("music", "the music track must be the LAST ffmpeg input, after both source clips");
 
-        int scriptArgIndex = capturedArgs.IndexOf("-filter_complex_script") + 1;
-        string filterComplex = File.ReadAllText(capturedArgs[scriptArgIndex]);
+        capturedFilterComplex.Should().NotBeNull();
+        string filterComplex = capturedFilterComplex!;
 
         filterComplex.Should().Contain("concat=n=2:v=1:a=1[vout][adial]", "the concat stage's audio output must flip to [adial] when music is enabled");
         filterComplex.Should().Contain("[2:a]atrim=end=", "music is ffmpeg input index 2 here (2 source clips + 0 asset overlays)");
