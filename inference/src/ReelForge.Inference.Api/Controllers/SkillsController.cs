@@ -59,7 +59,7 @@ public class SkillsController : ControllerBase
         return Ok(result);
     }
 
-    [HttpGet("{name:regex(^[a-z0-9-]+$)}")]
+    [HttpGet("{name:regex(^[[a-z0-9-]]+$)}")]
     public async Task<ActionResult<SkillDetailResponse>> Get(string name, CancellationToken ct)
     {
         SkillDescriptor? descriptor = SkillCatalog.Find(name);
