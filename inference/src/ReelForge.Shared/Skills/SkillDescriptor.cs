@@ -24,10 +24,25 @@ namespace ReelForge.Shared.Skills;
 /// need not match its slug.
 /// </param>
 /// <param name="Version">Optional version string, parsed from the skill's own SKILL.md frontmatter when present.</param>
+/// <param name="SourceUrl">
+/// Provenance link for a vendored skill: a URL that resolves to the exact vendored directory at
+/// the exact pinned commit (e.g. <c>https://github.com/remotion-dev/skills/tree/{commit}/skills/{RelativePath}</c>),
+/// never just the bare repository root, so following it shows precisely what was copied into
+/// <c>inference/skills/</c> — see <c>inference/skills/UPSTREAM.md</c>. Null for a skill with no
+/// upstream source (e.g. a future <see cref="SkillCategory.ReelForge"/>-category skill authored
+/// directly in this repo).
+/// </param>
+/// <param name="SourceCommit">
+/// The pinned upstream commit SHA this skill's content was vendored from, full-length (see
+/// <c>inference/skills/UPSTREAM.md</c>). Null alongside <see cref="SourceUrl"/> for a skill with
+/// no upstream source.
+/// </param>
 public sealed record SkillDescriptor(
     string Name,
     string DisplayName,
     string Description,
     SkillCategory Category,
     string RelativePath,
-    string? Version = null);
+    string? Version = null,
+    string? SourceUrl = null,
+    string? SourceCommit = null);

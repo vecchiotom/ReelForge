@@ -13,6 +13,25 @@ namespace ReelForge.Shared.Skills;
 public static class SkillCatalog
 {
     /// <summary>
+    /// Upstream repository for every vendored Remotion skill below — kept alongside
+    /// <see cref="UpstreamCommit"/> as the single source of truth for provenance, mirroring
+    /// <c>inference/skills/UPSTREAM.md</c>. A future commit-pin refresh only needs to update these
+    /// two constants, not each <see cref="SkillDescriptor"/> entry individually.
+    /// </summary>
+    private const string UpstreamRepoUrl = "https://github.com/remotion-dev/skills";
+
+    /// <summary>Pinned commit SHA — see <c>inference/skills/UPSTREAM.md</c> "Pinned commit SHA".</summary>
+    private const string UpstreamCommit = "bbb139d5ba3709b1ffeb27184e9579c681230a08";
+
+    /// <summary>
+    /// Builds a provenance link that resolves to the exact vendored directory at
+    /// <see cref="UpstreamCommit"/> — never just the repository root — for a given skill's
+    /// <see cref="SkillDescriptor.RelativePath"/>.
+    /// </summary>
+    private static string UpstreamSourceUrl(string relativePath) =>
+        $"{UpstreamRepoUrl}/tree/{UpstreamCommit}/skills/{relativePath}";
+
+    /// <summary>
     /// Exactly five curated skills — deliberately narrow. The upstream remotion-dev/skills
     /// repository's full catalog includes SaaS-platform building, interactive Studio UI,
     /// version-upgrade guides, and general docs indexing, none of which applies to agents doing
@@ -26,35 +45,45 @@ public static class SkillCatalog
             DisplayName: "Remotion Create",
             Description: "Project and composition scaffolding, Tailwind setup, video layout basics for a new Remotion component.",
             Category: SkillCategory.Remotion,
-            RelativePath: "remotion-create"),
+            RelativePath: "remotion-create",
+            SourceUrl: UpstreamSourceUrl("remotion-create"),
+            SourceCommit: UpstreamCommit),
 
         new SkillDescriptor(
             Name: "remotion-markup",
             DisplayName: "Remotion Markup",
             Description: "Core Remotion React markup patterns: timing, sequencing, transitions, audio, 3D, text, animation effects.",
             Category: SkillCategory.Remotion,
-            RelativePath: "remotion-markup"),
+            RelativePath: "remotion-markup",
+            SourceUrl: UpstreamSourceUrl("remotion-markup"),
+            SourceCommit: UpstreamCommit),
 
         new SkillDescriptor(
             Name: "remotion-render",
             DisplayName: "Remotion Render",
             Description: "Render configuration and output, including transparent/alpha-channel video output.",
             Category: SkillCategory.Remotion,
-            RelativePath: "remotion-render"),
+            RelativePath: "remotion-render",
+            SourceUrl: UpstreamSourceUrl("remotion-render"),
+            SourceCommit: UpstreamCommit),
 
         new SkillDescriptor(
             Name: "remotion-captions",
             DisplayName: "Remotion Captions",
             Description: "Rendering captions and subtitles in a Remotion composition.",
             Category: SkillCategory.Remotion,
-            RelativePath: "remotion-captions"),
+            RelativePath: "remotion-captions",
+            SourceUrl: UpstreamSourceUrl("remotion-captions"),
+            SourceCommit: UpstreamCommit),
 
         new SkillDescriptor(
             Name: "remotion-multimedia",
             DisplayName: "Remotion Multimedia",
             Description: "Probing and working with media duration/dimensions/metadata in a Remotion composition.",
             Category: SkillCategory.Remotion,
-            RelativePath: "remotion-multimedia"),
+            RelativePath: "remotion-multimedia",
+            SourceUrl: UpstreamSourceUrl("remotion-multimedia"),
+            SourceCommit: UpstreamCommit),
     ];
 
     private static readonly IReadOnlyDictionary<string, SkillDescriptor> ByName =

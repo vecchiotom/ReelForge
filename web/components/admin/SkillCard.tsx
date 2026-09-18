@@ -1,7 +1,7 @@
 'use client';
 
 import { Card, Text, Group, Stack, Badge, ActionIcon, Tooltip } from '@mantine/core';
-import { IconBook, IconExternalLink } from '@tabler/icons-react';
+import { IconBook, IconExternalLink, IconBrandGithub } from '@tabler/icons-react';
 import { useRouter } from 'next/navigation';
 import type { Skill } from '@/lib/types/skill';
 
@@ -50,6 +50,23 @@ export function SkillCard({ skill }: { skill: Skill }) {
             <Badge color="gray" variant="outline" size="sm">
               v{skill.version}
             </Badge>
+          )}
+          {skill.sourceUrl && (
+            <Tooltip label="Vendored from GitHub — view source">
+              <ActionIcon
+                component="a"
+                href={skill.sourceUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                variant="subtle"
+                color="gray"
+                size="sm"
+                onClick={(e) => e.stopPropagation()}
+                aria-label="View skill source on GitHub"
+              >
+                <IconBrandGithub size={14} />
+              </ActionIcon>
+            </Tooltip>
           )}
         </Group>
 
