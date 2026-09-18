@@ -1062,6 +1062,39 @@ public class VideoMultiSourceTests
         capturedArgs.Should().Contain("-filter_complex");
     }
 
+    [Fact]
+    public async Task EditRoom_shaped_decision_with_a_room_metadata_block_compiles_identically_to_a_solo_decision()
+    {
+        // A StepType.EditRoom step emits the exact VideoEditDecisionOutput shape a solo
+        // VideoStoryEditor step does, plus an ADDITIVE sibling "room" object. Compile's Decision
+        // resolution must consume it identically regardless of which step type produced it — the
+        // extra key is ignored by deserialization (no UnmappedMemberHandling.Disallow), and a
+        // multi-source cross-clip decision from a room must build the same two-input concat encode.
+        VideoAnalysisArtifact artifact = BuildTwoSourceArtifact(out string keyA, out string keyB);
+
+        using JsonDocument soloDoc = JsonDocument.Parse(
+            BuildDecisionJson(("s0", "s0", "from clip A"), ("s1", "s1", "from clip B")));
+        var roomShaped = JsonSerializer.SerializeToNode(soloDoc.RootElement)!.AsObject();
+        roomShaped["room"] = new System.Text.Json.Nodes.JsonObject
+        {
+            ["seats"] = new System.Text.Json.Nodes.JsonArray("PacingEditor", "StoryEditor", "CraftEditor"),
+            ["turnCount"] = 5,
+            ["terminationReason"] = "sentinel",
+            ["degraded"] = false
+        };
+        string decisionJson = roomShaped.ToJsonString();
+
+        List<string>? capturedArgs = null;
+        StepExecutionContext context = CreateCompileContext(artifact, decisionJson, keyA, keyB, out Mock<IProjectFileWorkspace> workspace);
+        VideoCompileStepExecutor executor = CreateCompileExecutor(workspace, args => capturedArgs = args.ToList());
+
+        StepExecutionResult result = await executor.ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        capturedArgs.Should().NotBeNull();
+        capturedArgs!.Count(a => a == "-i").Should().Be(2, "both clips' spans survived, so both must be inputs");
+    }
+
     // ---------------------------------------------------------------------
     // Shared multi-source compile fixtures
     // ---------------------------------------------------------------------

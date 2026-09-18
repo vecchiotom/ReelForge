@@ -1787,9 +1787,18 @@ Same never-throws, always-valid-JSON discipline as `VideoAnalyzeStepExecutor`/
    outside the group chat) with the view + rendered transcript, retried up to
    `MaxSynthesisAttempts` on an empty/unparseable result.
 5. **Validates deterministically, never trusting the model**: any `Keep` span whose `FromId`/`ToId`
-   isn't in the offered-id set is dropped (recorded in the output's `room.droppedSpanCount`) — the
-   identical discipline `VideoCompileStepExecutor` already applies when resolving a solo editor's
-   decision.
+   isn't in the offered-id set is dropped, and — when the view spans more than one source clip (see
+   [Multiple source clips](#multiple-source-clips)) — so is any span whose `FromId`/`ToId` carry two
+   different `"src"` indices, the exact shape `VideoCompileStepExecutor` rejects hard as
+   `MIXED_SOURCE_SPAN` (dropping it here instead keeps the step's degrade-not-fail discipline, and
+   the remaining single-clip spans still compile). Both are recorded in the output's
+   `room.droppedSpanCount`; the mixed-source subset also in `room.droppedMixedSourceSpanCount`. A
+   synthesized decision containing a mixed-source span first gets a retry with precise feedback
+   (within `MaxSynthesisAttempts`) before the drop is accepted. The room charter prompt every seat
+   (and the director's room-participant turns) runs under states the same one-hard-rule the solo
+   `VideoStoryEditor` prompt's "Multiple source clips" section does — a single kept run's first and
+   last id must come from the SAME clip — guarded by
+   `Room_charter_prompt_carries_the_multi_source_single_clip_span_rule`.
 6. If the room failed outright, produced zero usable turns, the synthesis call never produced a
    usable decision, or every Keep span got dropped as unoffered — and `FallbackToSoloEditor`
    (default `true`) — falls back to ONE ordinary solo `AgentType.VideoStoryEditor` call: today's

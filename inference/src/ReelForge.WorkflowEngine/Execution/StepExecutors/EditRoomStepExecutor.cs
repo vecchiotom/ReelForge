@@ -58,7 +58,7 @@ public class EditRoomStepExecutor : IStepExecutor
     // history). Deliberately does NOT carry a "your output must be valid JSON" contract — unlike
     // ReelForgeAgentBase's auto-appended one for AgentType.VideoStoryEditor/VideoEditDirector's
     // OWN structured-output calls, room turns are always free-form prose.
-    private const string RoomCharterPrompt =
+    internal const string RoomCharterPrompt =
         """
         You are participating in a live "edit room" discussion between several video editors and a
         director, deciding which spans of a source video to KEEP. The bounded view of the video's
@@ -73,6 +73,15 @@ public class EditRoomStepExecutor : IStepExecutor
         - NEVER mention, estimate, or output a timestamp, duration, frame number, or any other
           numeric time value, in this discussion. A separate deterministic step resolves chosen ids
           to exact times — your job here is only discussing which ids to keep, qualitatively.
+        - Some views span MORE THAN ONE source clip — e.g. several takes or camera angles of the
+          same scene. When this is the case, every id in the view also carries a "src" index (e.g.
+          "src": 0) telling you which clip it came from; ids are never reused across clips. You may
+          pick whichever clip has the best material for each moment and freely alternate between
+          clips across successive kept runs — that is the whole point of offering more than one
+          clip. The one hard rule: a single kept run's first and last id must both come from the
+          SAME clip (same "src"), since a run is contiguous within one physical file — never bridge
+          two different clips inside one run. Propose cross-clip edits as a SEQUENCE of single-clip
+          runs instead.
         - You cannot create, request, or describe a transition, fade, dissolve, or effect of any
           kind — a separate deterministic step decides those from measurements of the footage.
         - Keep every turn SHORT — a few sentences of prose, not an essay. This is a live discussion,
@@ -159,7 +168,8 @@ public class EditRoomStepExecutor : IStepExecutor
                 return Failure(context, sw, "VIEW_UNRESOLVED", $"View input is not valid JSON: {ex.Message}");
             }
 
-            HashSet<string> offeredIds = ExtractOfferedIds(viewRoot);
+            Dictionary<string, int> offeredIdSources = ExtractOfferedIdSources(viewRoot);
+            HashSet<string> offeredIds = new(offeredIdSources.Keys, StringComparer.Ordinal);
             if (offeredIds.Count == 0)
                 return Failure(context, sw, "VIEW_UNRESOLVED", "The resolved view offers no shot/silence/segment ids to decide over.");
 
@@ -174,6 +184,7 @@ public class EditRoomStepExecutor : IStepExecutor
             VideoEditDecisionOutput? decision = null;
             int synthesisAttempts = 0;
             int droppedSpanCount = 0;
+            int droppedMixedSourceSpanCount = 0;
             int observedTurnCount = 0;
             string terminationReason = "room-not-run";
             string? transcriptArtifactStorageKey = null;
@@ -206,7 +217,7 @@ public class EditRoomStepExecutor : IStepExecutor
                 else
                 {
                     (decision, synthesisAttempts, string? synthesisError) =
-                        await SynthesizeDecisionAsync(context, config, viewJson, roomResult.Transcript);
+                        await SynthesizeDecisionAsync(context, config, viewJson, roomResult.Transcript, offeredIdSources);
 
                     if (decision is null)
                     {
@@ -214,9 +225,11 @@ public class EditRoomStepExecutor : IStepExecutor
                     }
                     else
                     {
-                        droppedSpanCount = FilterToOfferedIds(decision, offeredIds);
+                        (int droppedUnoffered, int droppedMixed) = FilterSpans(decision, offeredIdSources);
+                        droppedSpanCount = droppedUnoffered + droppedMixed;
+                        droppedMixedSourceSpanCount = droppedMixed;
                         if (decision.Keep.Count == 0)
-                            degradeReason = "The synthesized decision had no Keep spans referencing offered ids.";
+                            degradeReason = "The synthesized decision had no valid Keep spans (every span referenced an unoffered id or bridged two source clips).";
                     }
                 }
             }
@@ -237,11 +250,13 @@ public class EditRoomStepExecutor : IStepExecutor
                 if (!config.FallbackToSoloEditor)
                     return Failure(context, sw, "EDIT_ROOM_FAILED", degradeReason!, transcriptArtifactStorageKey, chatTranscriptJson);
 
-                (decision, int soloDropped, string? soloError) = await RunSoloFallbackAsync(context, viewJson, offeredIds);
+                (decision, int soloDropped, int soloMixed, string? soloError) =
+                    await RunSoloFallbackAsync(context, viewJson, offeredIdSources);
                 if (decision is null)
                     return Failure(context, sw, "EDIT_ROOM_FAILED", soloError ?? degradeReason!, transcriptArtifactStorageKey, chatTranscriptJson);
 
                 droppedSpanCount = soloDropped;
+                droppedMixedSourceSpanCount = soloMixed;
             }
 
             var roomMeta = new JsonObject
@@ -254,6 +269,7 @@ public class EditRoomStepExecutor : IStepExecutor
                 ["converged"] = terminationReason == "converged",
                 ["synthesisAttempts"] = synthesisAttempts,
                 ["droppedSpanCount"] = droppedSpanCount,
+                ["droppedMixedSourceSpanCount"] = droppedMixedSourceSpanCount,
                 ["degraded"] = degraded,
                 ["degradeReason"] = degradeReason,
                 ["transcriptArtifactStorageKey"] = transcriptArtifactStorageKey
@@ -456,7 +472,8 @@ public class EditRoomStepExecutor : IStepExecutor
     // ---------------------------------------------------------------------
 
     private async Task<(VideoEditDecisionOutput? Decision, int Attempts, string? Error)> SynthesizeDecisionAsync(
-        StepExecutionContext context, EditRoomStepConfig config, string viewJson, IReadOnlyList<ChatMessage> transcript)
+        StepExecutionContext context, EditRoomStepConfig config, string viewJson, IReadOnlyList<ChatMessage> transcript,
+        IReadOnlyDictionary<string, int> offeredIdSources)
     {
         IReelForgeAgent? director = _agentRegistry.GetByType(AgentType.VideoEditDirector, config.DirectorAgentDefinitionId);
         if (director is null)
@@ -530,6 +547,21 @@ public class EditRoomStepExecutor : IStepExecutor
                 continue;
             }
 
+            // Mixed-source spans get one retry with precise feedback rather than a silent drop —
+            // the same "retry, then degrade" ladder the empty-Keep case above follows. On the last
+            // attempt the decision is accepted as-is and the caller's FilterSpans drops the
+            // offending span(s), so a partially-valid final decision still compiles instead of
+            // degrading the whole room to the solo fallback.
+            int mixedCount = CountMixedSourceSpans(decision, offeredIdSources);
+            if (mixedCount > 0 && attempt < maxAttempts)
+            {
+                lastError =
+                    $"{mixedCount} Keep span(s) pair a fromId and toId from two different source clips " +
+                    "(different \"src\" values in the view). A single Keep span must start and end in the " +
+                    "SAME clip — express a cross-clip edit as a sequence of single-clip Keep spans instead.";
+                continue;
+            }
+
             return (decision, attempt, null);
         }
 
@@ -558,12 +590,12 @@ public class EditRoomStepExecutor : IStepExecutor
     // Solo fallback — today's existing single-editor pipeline, unchanged
     // ---------------------------------------------------------------------
 
-    private async Task<(VideoEditDecisionOutput? Decision, int DroppedSpanCount, string? Error)> RunSoloFallbackAsync(
-        StepExecutionContext context, string viewJson, HashSet<string> offeredIds)
+    private async Task<(VideoEditDecisionOutput? Decision, int DroppedSpanCount, int DroppedMixedSourceSpanCount, string? Error)> RunSoloFallbackAsync(
+        StepExecutionContext context, string viewJson, IReadOnlyDictionary<string, int> offeredIdSources)
     {
         IReelForgeAgent? soloEditor = _agentRegistry.GetByType(AgentType.VideoStoryEditor, null);
         if (soloEditor is null)
-            return (null, 0, "AgentType.VideoStoryEditor is not registered for the solo fallback.");
+            return (null, 0, 0, "AgentType.VideoStoryEditor is not registered for the solo fallback.");
 
         AgentRunResult result;
         try
@@ -576,15 +608,15 @@ public class EditRoomStepExecutor : IStepExecutor
         }
         catch (Exception ex)
         {
-            return (null, 0, $"Solo fallback failed: {ex.Message}");
+            return (null, 0, 0, $"Solo fallback failed: {ex.Message}");
         }
 
         if (!result.Success)
-            return (null, 0, result.FailureReason ?? "The solo fallback editor invoked FailWorkflow.");
+            return (null, 0, 0, result.FailureReason ?? "The solo fallback editor invoked FailWorkflow.");
 
         string? json = RobustJsonExtractor.ExtractJsonObject(result.Output);
         if (json is null)
-            return (null, 0, "Solo fallback output had no recognizable JSON object.");
+            return (null, 0, 0, "Solo fallback output had no recognizable JSON object.");
 
         VideoEditDecisionOutput? decision;
         try
@@ -593,18 +625,19 @@ public class EditRoomStepExecutor : IStepExecutor
         }
         catch (JsonException ex)
         {
-            return (null, 0, $"Solo fallback output was not valid JSON: {ex.Message}");
+            return (null, 0, 0, $"Solo fallback output was not valid JSON: {ex.Message}");
         }
 
         if (decision is null)
-            return (null, 0, "Solo fallback output deserialized to null.");
+            return (null, 0, 0, "Solo fallback output deserialized to null.");
 
         decision.Keep ??= [];
-        int dropped = FilterToOfferedIds(decision, offeredIds);
+        (int droppedUnoffered, int droppedMixed) = FilterSpans(decision, offeredIdSources);
+        int dropped = droppedUnoffered + droppedMixed;
         if (decision.Keep.Count == 0)
-            return (null, dropped, "Solo fallback produced no Keep spans referencing offered ids.");
+            return (null, dropped, droppedMixed, "Solo fallback produced no valid Keep spans (every span referenced an unoffered id or bridged two source clips).");
 
-        return (decision, dropped, null);
+        return (decision, dropped, droppedMixed, null);
     }
 
     // ---------------------------------------------------------------------
@@ -612,31 +645,74 @@ public class EditRoomStepExecutor : IStepExecutor
     // already applies to VideoStoryEditor's output.
     // ---------------------------------------------------------------------
 
-    /// <summary>Drops any Keep span whose FromId/ToId isn't in <paramref name="offeredIds"/>. Returns how many spans were dropped.</summary>
-    private static int FilterToOfferedIds(VideoEditDecisionOutput decision, HashSet<string> offeredIds)
+    /// <summary>
+    /// Drops any Keep span whose FromId/ToId isn't an offered id, or whose FromId/ToId come from
+    /// two DIFFERENT source clips (different <c>"src"</c> — the same rule
+    /// <c>VideoCompileStepExecutor</c> enforces as a hard <c>MIXED_SOURCE_SPAN</c> failure; dropping
+    /// it here instead keeps the step's degrade-not-fail discipline and lets the remaining
+    /// single-clip spans still compile). Returns how many spans were dropped for each reason.
+    /// For a single-source view every id maps to source 0, so the mixed-source check can never
+    /// fire there — behavior is identical to the original offered-ids-only filter.
+    /// </summary>
+    private static (int DroppedUnoffered, int DroppedMixedSource) FilterSpans(
+        VideoEditDecisionOutput decision, IReadOnlyDictionary<string, int> offeredIdSources)
     {
         decision.Keep ??= [];
-        int before = decision.Keep.Count;
-        decision.Keep = decision.Keep
-            .Where(k => offeredIds.Contains(k.FromId) && offeredIds.Contains(k.ToId))
-            .ToList();
-        return before - decision.Keep.Count;
+        int droppedUnoffered = 0;
+        int droppedMixed = 0;
+        var kept = new List<VideoEditKeepSpan>(decision.Keep.Count);
+        foreach (VideoEditKeepSpan span in decision.Keep)
+        {
+            if (span.FromId is null || span.ToId is null
+                || !offeredIdSources.TryGetValue(span.FromId, out int fromSrc)
+                || !offeredIdSources.TryGetValue(span.ToId, out int toSrc))
+            {
+                droppedUnoffered++;
+                continue;
+            }
+
+            if (fromSrc != toSrc)
+            {
+                droppedMixed++;
+                continue;
+            }
+
+            kept.Add(span);
+        }
+
+        decision.Keep = kept;
+        return (droppedUnoffered, droppedMixed);
     }
 
-    private static HashSet<string> ExtractOfferedIds(JsonNode? root)
+    /// <summary>How many Keep spans pair two offered ids from different source clips — used to give the synthesis call precise retry feedback before <see cref="FilterSpans"/> would drop them.</summary>
+    private static int CountMixedSourceSpans(
+        VideoEditDecisionOutput decision, IReadOnlyDictionary<string, int> offeredIdSources) =>
+        (decision.Keep ?? []).Count(k =>
+            k.FromId is not null && k.ToId is not null
+            && offeredIdSources.TryGetValue(k.FromId, out int fromSrc)
+            && offeredIdSources.TryGetValue(k.ToId, out int toSrc)
+            && fromSrc != toSrc);
+
+    /// <summary>
+    /// Every offered shot/silence/segment id mapped to the source-clip index it belongs to. The
+    /// bounded view only carries a <c>"src"</c> key when the analyze step actually merged more than
+    /// one source clip (see <c>VideoAnalyzeStepExecutor</c>'s ShotNode/SilenceNode/SegmentNode);
+    /// an absent key means single-source and maps to index 0.
+    /// </summary>
+    private static Dictionary<string, int> ExtractOfferedIdSources(JsonNode? root)
     {
-        var ids = new HashSet<string>(StringComparer.Ordinal);
+        var sources = new Dictionary<string, int>(StringComparer.Ordinal);
         JsonNode? view = root?["view"];
         if (view is null)
-            return ids;
+            return sources;
 
-        CollectIds(view["shots"], ids);
-        CollectIds(view["silences"], ids);
-        CollectIds(view["segments"], ids);
-        return ids;
+        CollectIdSources(view["shots"], sources);
+        CollectIdSources(view["silences"], sources);
+        CollectIdSources(view["segments"], sources);
+        return sources;
     }
 
-    private static void CollectIds(JsonNode? array, HashSet<string> ids)
+    private static void CollectIdSources(JsonNode? array, Dictionary<string, int> sources)
     {
         if (array is not JsonArray arr)
             return;
@@ -644,8 +720,14 @@ public class EditRoomStepExecutor : IStepExecutor
         foreach (JsonNode? item in arr)
         {
             string? id = item?["id"]?.GetValue<string>();
-            if (!string.IsNullOrEmpty(id))
-                ids.Add(id);
+            if (string.IsNullOrEmpty(id))
+                continue;
+
+            int src = 0;
+            if (item?["src"] is JsonValue srcValue && srcValue.TryGetValue(out int parsedSrc))
+                src = parsedSrc;
+
+            sources[id] = src;
         }
     }
 

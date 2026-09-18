@@ -85,5 +85,5 @@ export const STEP_TYPE_DESCRIPTIONS: Record<StepType, string> = {
   Extract: 'Deterministically reduce prior outputs or project files into a bounded view (no AI call)',
   VideoAnalyze: 'Deterministic ffmpeg-based derushing — silence, shot, and transcript analysis (no AI call)',
   VideoCompile: 'Deterministic ffmpeg-based cutting from an editorial decision (no AI call)',
-  EditRoom: 'Multi-agent group-chat deliberation producing one editorial decision (template-provisioned; no builder editor yet)',
+  EditRoom: 'Multi-agent group-chat deliberation over an analyzed video, producing one editorial decision (same output shape as a solo story-editor step)',
 };
