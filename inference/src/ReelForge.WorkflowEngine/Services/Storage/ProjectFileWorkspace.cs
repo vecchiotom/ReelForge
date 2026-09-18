@@ -65,6 +65,21 @@ public class ProjectFileWorkspace : IProjectFileWorkspace
         ProjectFile file = await ResolveFileAsync(projectId, fileReference, ct);
         ValidateProjectScope(projectId, file.StorageKey);
 
+        // An agent tool can be pointed at any project file by name, including audio/video/image
+        // uploads (e.g. a candidate background-music track offered to MusicSupervisor). Without
+        // this check, a binary file was decoded as UTF-8 text and returned whole — observed in
+        // production as a single MP3 producing ~2.9M "chars" of mojibake that blew the model's
+        // context and 400'd the whole request. Mirrors ProjectFilesController's IsLikelyText/
+        // ResolveUploadMimeType (R22) allowlist-not-blocklist approach, so an unrecognized binary
+        // format is refused by default rather than decoded.
+        if (!IsLikelyTextFile(file.MimeType, file.OriginalFileName))
+        {
+            throw new InvalidOperationException(
+                $"File '{file.OriginalFileName}' ({file.MimeType ?? "unknown type"}, {file.SizeBytes:N0} bytes) " +
+                "is a binary file and cannot be read as text. Use its file name and any metadata you were " +
+                "already given instead of reading its content.");
+        }
+
         GetObjectResponse response = await _s3Client.GetObjectAsync(new GetObjectRequest
         {
             BucketName = _bucketName,
@@ -408,5 +423,30 @@ public class ProjectFileWorkspace : IProjectFileWorkspace
     {
         if (!storageKey.StartsWith($"projects/{projectId}/", StringComparison.Ordinal))
             throw new UnauthorizedAccessException("Requested file is not in the project's storage scope.");
+    }
+
+    private static readonly HashSet<string> TextExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".ts", ".tsx", ".js", ".jsx", ".json", ".md", ".txt", ".css", ".html", ".cs",
+        ".yml", ".yaml", ".csv", ".xml"
+    };
+
+    internal static bool IsLikelyTextFile(string? mimeType, string fileName)
+    {
+        if (!string.IsNullOrEmpty(mimeType))
+        {
+            if (mimeType.StartsWith("text/", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (mimeType.Contains("json", StringComparison.OrdinalIgnoreCase) ||
+                mimeType.Contains("xml", StringComparison.OrdinalIgnoreCase) ||
+                mimeType.Contains("javascript", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (mimeType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase) ||
+                mimeType.StartsWith("video/", StringComparison.OrdinalIgnoreCase) ||
+                mimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+
+        return TextExtensions.Contains(Path.GetExtension(fileName));
     }
 }
