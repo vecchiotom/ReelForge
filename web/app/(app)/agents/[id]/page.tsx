@@ -10,6 +10,8 @@ import { AgentTypeBadge } from '@/components/agents/AgentTypeBadge';
 import { AgentSchemaViewer } from '@/components/agents/AgentSchemaViewer';
 import { AgentForm } from '@/components/agents/AgentForm';
 import { AgentInferenceProviderSelect } from '@/components/agents/AgentInferenceProviderSelect';
+import { AgentSkillsSelect } from '@/components/agents/AgentSkillsSelect';
+import { useSkills } from '@/lib/hooks/use-skills';
 import { ConfirmModal } from '@/components/shared/ConfirmModal';
 import { notifications } from '@mantine/notifications';
 import { useRouter } from 'next/navigation';
@@ -17,6 +19,7 @@ import { useRouter } from 'next/navigation';
 export default function AgentDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { data: agent, isLoading, mutate } = useAgent(id);
+  const { data: skillsData } = useSkills();
   const router = useRouter();
   const [editOpened, setEditOpened] = useState(false);
   const [deleteOpened, setDeleteOpened] = useState(false);
@@ -76,6 +79,35 @@ export default function AgentDetailPage({ params }: { params: Promise<{ id: stri
             inferenceProviderName={agent.inferenceProviderName}
             onUpdated={() => mutate()}
           />
+        </Card>
+
+        <Card withBorder>
+          {agent.isBuiltIn ? (
+            <Stack gap="xs">
+              <Text fw={500} size="sm">Skills</Text>
+              {agent.effectiveSkills.length > 0 ? (
+                <Group gap="xs">
+                  {agent.effectiveSkills.map((skillName) => {
+                    const skill = skillsData?.skills.find((s) => s.name === skillName);
+                    return (
+                      <Badge key={skillName} color="teal" variant="light" size="sm">
+                        {skill?.displayName ?? skillName}
+                      </Badge>
+                    );
+                  })}
+                </Group>
+              ) : (
+                <Text size="sm" c="dimmed">This agent has no skills assigned.</Text>
+              )}
+              <Text size="xs" c="dimmed">Skills are fixed for built-in agents.</Text>
+            </Stack>
+          ) : (
+            <AgentSkillsSelect
+              agentId={agent.id}
+              assignedSkills={agent.assignedSkills}
+              onUpdated={() => mutate()}
+            />
+          )}
         </Card>
 
         {agent.availableTools && agent.availableTools.length > 0 && (

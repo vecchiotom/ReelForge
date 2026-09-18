@@ -1,17 +1,20 @@
 'use client';
 
 import { Card, Text, Stack, Group, Badge, Loader } from '@mantine/core';
-import { IconServer, IconPlugConnected } from '@tabler/icons-react';
+import { IconServer, IconPlugConnected, IconBook } from '@tabler/icons-react';
 import Link from 'next/link';
 import { PageHeader } from '@/components/shared/PageHeader';
 import { useWorkflowEngineStatus } from '@/lib/hooks/use-workflow-engine';
 import { useInferenceProviders } from '@/lib/hooks/use-inference-providers';
+import { useSkills } from '@/lib/hooks/use-skills';
 import { formatDate } from '@/lib/utils/format';
 
 export default function AdminOverviewPage() {
   const { data: engineStatus, isLoading, error } = useWorkflowEngineStatus();
   const { data: providers, isLoading: providersLoading, error: providersError } = useInferenceProviders();
   const defaultProvider = providers?.find((p) => p.isDefault && p.capability === 'Chat');
+  const { data: skillsData, isLoading: skillsLoading, error: skillsError } = useSkills();
+  const skills = skillsData?.skills;
 
   return (
     <>
@@ -101,6 +104,38 @@ export default function AdminOverviewPage() {
             </Text>
           )}
           <Text size="sm" mt="sm" c="cyan.4">Manage inference providers</Text>
+        </Card>
+
+        <Card
+          withBorder
+          padding="md"
+          radius="md"
+          component={Link}
+          href="/admin/skills"
+          style={{ cursor: 'pointer' }}
+        >
+          <Group justify="space-between" mb="sm">
+            <Group gap="sm">
+              <IconBook size={20} />
+              <Text fw={600}>Skills</Text>
+            </Group>
+            {skillsLoading ? (
+              <Loader size="xs" />
+            ) : skillsError ? (
+              <Badge color="red" variant="filled">Unreachable</Badge>
+            ) : (
+              <Badge color="blue" variant="light">{skills?.length ?? 0} registered</Badge>
+            )}
+          </Group>
+          {skillsError && !skillsLoading && (
+            <Text size="sm" c="red">Could not connect to the Inference API.</Text>
+          )}
+          {!skillsLoading && !skillsError && (
+            <Text size="sm" c="dimmed">
+              Assign skills to custom agents. Built-in agents get their skills from code.
+            </Text>
+          )}
+          <Text size="sm" mt="sm" c="cyan.4">Browse skills</Text>
         </Card>
       </Stack>
     </>
