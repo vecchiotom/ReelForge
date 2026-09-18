@@ -92,7 +92,8 @@ public class VideoEditDirectorAgent : ReelForgeAgentBase
     public VideoEditDirectorAgent(
         IAgentChatClientProvider chatClients,
         IConfiguration configuration,
-        IAgentToolProvider toolProvider)
+        IAgentToolProvider toolProvider,
+        ISkillAgentToolsFactory skillAgentToolsFactory)
         // Moderate reasoning for the standalone synthesis call — that one call matters most for
         // final output quality, unlike the room-participant turns (governed separately by
         // EditRoomSeatAgent's injected options, per EditRoomStepConfig.DirectorTemperature/
@@ -100,6 +101,7 @@ public class VideoEditDirectorAgent : ReelForgeAgentBase
         : base(chatClients, configuration, "VideoEditDirector",
             "Moderates a multi-editor group-chat 'edit room' and synthesizes the room's discussion into one schema-validated editorial decision.",
             AgentType.VideoEditDirector, DefaultPrompt,
+            skillAgentToolsFactory,
             toolProvider.GetTools(AgentType.VideoEditDirector),
             agentId: null,
             outputSchemaType: typeof(VideoEditDecisionOutput),
