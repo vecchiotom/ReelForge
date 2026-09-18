@@ -97,6 +97,8 @@ public class InferenceApiDbContext : DbContext
                 .HasColumnType("jsonb");
             entity.Property(e => e.OutputSchemaJson)
                 .HasColumnType("jsonb");
+            entity.Property(e => e.AssignedSkillsJson)
+                .HasColumnType("jsonb");
             entity.HasOne(e => e.InferenceProvider)
                 .WithMany(p => p.AgentDefinitions)
                 .HasForeignKey(e => e.InferenceProviderId)

@@ -34,6 +34,10 @@ namespace ReelForge.Inference.Api.Migrations
                         .HasColumnType("text")
                         .HasColumnName("agent_type");
 
+                    b.Property<string>("AssignedSkillsJson")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("assigned_skills_json");
+
                     b.Property<string>("AvailableToolsJson")
                         .HasColumnType("text")
                         .HasColumnName("available_tools_json");
@@ -622,11 +626,11 @@ namespace ReelForge.Inference.Api.Migrations
                         .HasColumnName("true_branch_step_order");
 
                     b.Property<string>("VideoAnalyzeConfigJson")
-                        .HasColumnType("text")
+                        .HasColumnType("jsonb")
                         .HasColumnName("video_analyze_config_json");
 
                     b.Property<string>("VideoCompileConfigJson")
-                        .HasColumnType("text")
+                        .HasColumnType("jsonb")
                         .HasColumnName("video_compile_config_json");
 
                     b.Property<Guid>("WorkflowDefinitionId")

@@ -29,6 +29,15 @@ public class AgentDefinition
     /// <summary>Optional per-agent provider override. Null = use the global default provider.</summary>
     public Guid? InferenceProviderId { get; set; }
 
+    /// <summary>
+    /// Per-agent skill assignment, JSON array of skill names (e.g. ["remotion-markup"]).
+    /// ONLY meaningful for a custom (non-built-in) AgentDefinition — a built-in agent's skills
+    /// come exclusively from SkillCatalog.DefaultsFor(AgentType) in code, never from this column.
+    /// Null on a custom agent means "no skills assigned" (NOT "inherit a default" — there is no
+    /// default to inherit for a custom agent, unlike InferenceProviderId's fallback chain).
+    /// </summary>
+    public string? AssignedSkillsJson { get; set; }
+
     public ApplicationUser? Owner { get; set; }
     public InferenceProvider? InferenceProvider { get; set; }
     public ICollection<WorkflowStep> WorkflowSteps { get; set; } = new List<WorkflowStep>();

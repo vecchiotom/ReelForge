@@ -145,16 +145,37 @@ public class AgentsController : ControllerBase
         return Ok(MapToResponse(agent));
     }
 
-    private static AgentDefinitionResponse MapToResponse(AgentDefinition a)
+    /// <summary>
+    /// Public (not private) so SkillsController.SetSkills can reuse it after updating
+    /// AssignedSkillsJson, keeping the response shape identical to every other agent mutation
+    /// endpoint.
+    /// </summary>
+    public static AgentDefinitionResponse MapToResponse(AgentDefinition a)
     {
         string[]? tools = a.AvailableToolsJson != null
             ? System.Text.Json.JsonSerializer.Deserialize<string[]>(a.AvailableToolsJson)
             : null;
+
+        // AssignedSkills is only meaningful for a custom agent — a built-in row's
+        // AssignedSkillsJson is never set (see AgentDefinition.AssignedSkillsJson doc comment),
+        // so this naturally comes back null for built-ins.
+        string[]? assignedSkills = a.AssignedSkillsJson != null
+            ? System.Text.Json.JsonSerializer.Deserialize<string[]>(a.AssignedSkillsJson)
+            : null;
+
+        // EffectiveSkills resolves the "where do this agent's skills actually come from" rule
+        // server-side: SkillCatalog.DefaultsFor(agentType) for a built-in, else whatever was
+        // explicitly assigned (empty, not null, when nothing was).
+        string[] effectiveSkills = a.IsBuiltIn
+            ? [.. ReelForge.Shared.Skills.SkillCatalog.DefaultsFor(a.AgentType)]
+            : assignedSkills ?? [];
+
         return new AgentDefinitionResponse(
             a.Id, a.Name, a.Description, a.SystemPrompt,
             a.AgentType.ToString(), a.IsBuiltIn, a.OwnerId, a.ConfigJson,
             a.CreatedAt, a.Color, a.OutputSchemaJson,
             tools, a.GeneratesOutput, a.OutputSchemaName,
-            a.InferenceProviderId, a.InferenceProvider?.Name);
+            a.InferenceProviderId, a.InferenceProvider?.Name,
+            assignedSkills, effectiveSkills);
     }
 }
