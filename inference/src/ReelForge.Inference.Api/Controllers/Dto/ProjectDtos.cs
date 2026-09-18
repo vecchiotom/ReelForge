@@ -156,7 +156,10 @@ public record StepResultResponse(
     string? Status = null, string? ErrorDetails = null,
     int? IterationNumber = null, DateTime? CompletedAt = null,
     string? OutputStorageKey = null,
-    string? ArtifactStorageKey = null);
+    string? ArtifactStorageKey = null,
+    string? ToolCallsJson = null,
+    string? ReasoningJson = null,
+    string? ChatTranscriptJson = null);
 
 public record ReviewScoreResponse(
     Guid Id, int IterationNumber, int Score, string Comments, DateTime CreatedAt);

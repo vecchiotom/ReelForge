@@ -253,6 +253,9 @@ public class WorkflowExecutorService
                     stepResult.CompletedAt = DateTime.UtcNow;
                     stepResult.OutputStorageKey = result.OutputStorageKey;
                     stepResult.ArtifactStorageKey = result.ArtifactStorageKey;
+                    stepResult.ToolCallsJson = result.ToolCalls.Count > 0 ? JsonSerializer.Serialize(result.ToolCalls) : null;
+                    stepResult.ReasoningJson = result.Reasoning.Count > 0 ? JsonSerializer.Serialize(result.Reasoning) : null;
+                    stepResult.ChatTranscriptJson = result.ChatTranscriptJson;
 
                     await db.SaveChangesAsync(ct);
                     await _eventPublisher.PublishStepCompletedAsync(execution, step, stepResult, result, ct);
@@ -295,6 +298,9 @@ public class WorkflowExecutorService
                 stepResult.CompletedAt = DateTime.UtcNow;
                 stepResult.OutputStorageKey = result.OutputStorageKey;
                 stepResult.ArtifactStorageKey = result.ArtifactStorageKey;
+                stepResult.ToolCallsJson = result.ToolCalls.Count > 0 ? JsonSerializer.Serialize(result.ToolCalls) : null;
+                stepResult.ReasoningJson = result.Reasoning.Count > 0 ? JsonSerializer.Serialize(result.Reasoning) : null;
+                stepResult.ChatTranscriptJson = result.ChatTranscriptJson;
 
                 // Handle review scores for ReviewLoop steps
                 if (step.StepType == StepType.ReviewLoop && result.IterationNumber.HasValue)
@@ -742,7 +748,10 @@ public class WorkflowExecutorService
             // Easy to miss (plan R3): this method hand-copies every field of the attempt's
             // result — anything added to StepExecutionResult but not copied here is silently
             // dropped on any step that goes through a retry attempt.
-            ArtifactStorageKey = result.ArtifactStorageKey
+            ArtifactStorageKey = result.ArtifactStorageKey,
+            ToolCalls = result.ToolCalls,
+            Reasoning = result.Reasoning,
+            ChatTranscriptJson = result.ChatTranscriptJson
         };
     }
 

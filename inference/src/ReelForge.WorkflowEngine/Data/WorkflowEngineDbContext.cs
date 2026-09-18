@@ -204,6 +204,12 @@ public class WorkflowEngineDbContext : DbContext
                 .HasColumnType("text");
             entity.Property(e => e.OutputJson)
                 .HasColumnType("jsonb");
+            entity.Property(e => e.ToolCallsJson)
+                .HasColumnType("jsonb");
+            entity.Property(e => e.ReasoningJson)
+                .HasColumnType("jsonb");
+            entity.Property(e => e.ChatTranscriptJson)
+                .HasColumnType("jsonb");
             entity.Property(e => e.Status)
                 .HasConversion<string>();
         });

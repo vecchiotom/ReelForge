@@ -38,6 +38,32 @@ public class WorkflowStepResult
     /// </summary>
     public string? ArtifactStorageKey { get; set; }
 
+    /// <summary>
+    /// Tool calls made during this step, persisted from <c>StepExecutionResult.ToolCalls</c> at
+    /// completion so reopening the execution page later shows the same history a live
+    /// SSE-connected tab saw. Array of the same shape <c>WorkflowStepToolCalled</c> publishes per
+    /// call (tool name, arguments, result) — see WorkflowEvents.cs. Null when no tool calls were
+    /// made during this step.
+    /// </summary>
+    public string? ToolCallsJson { get; set; }
+
+    /// <summary>
+    /// Reasoning/thinking text captured during this step, persisted from
+    /// <c>StepExecutionResult.Reasoning</c> at completion, same rationale as
+    /// <see cref="ToolCallsJson"/>. Null when no reasoning text was captured during this step.
+    /// </summary>
+    public string? ReasoningJson { get; set; }
+
+    /// <summary>
+    /// For an EditRoom step only: the full room transcript (all turns, in order), persisted at
+    /// completion so reopening the execution page shows the complete discussion immediately
+    /// instead of only whatever a live SSE-connected tab happened to see. Per-turn shape mirrors
+    /// <c>WorkflowStepChatTurn</c>'s fields (turnIndex, speaker, speakerRole, text, truncated,
+    /// idsMentioned, totalTurns) but with the FULL untruncated text, not the ~600-char-truncated
+    /// SSE broadcast version. Null for every non-EditRoom step type.
+    /// </summary>
+    public string? ChatTranscriptJson { get; set; }
+
     public WorkflowExecution WorkflowExecution { get; set; } = null!;
     public WorkflowStep WorkflowStep { get; set; } = null!;
 }

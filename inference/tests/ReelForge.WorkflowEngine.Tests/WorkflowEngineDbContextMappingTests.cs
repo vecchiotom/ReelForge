@@ -62,6 +62,25 @@ public class WorkflowEngineDbContextMappingTests
         property!.GetColumnType().Should().Be("jsonb");
     }
 
+    [Theory]
+    [InlineData(nameof(WorkflowStepResult.ToolCallsJson))]
+    [InlineData(nameof(WorkflowStepResult.ReasoningJson))]
+    [InlineData(nameof(WorkflowStepResult.ChatTranscriptJson))]
+    public void WorkflowStepResult_diagnostics_columns_are_mapped_as_jsonb(string propertyName)
+    {
+        DbContextOptions<WorkflowEngineDbContext> options = new DbContextOptionsBuilder<WorkflowEngineDbContext>()
+            .UseSqlite("Data Source=:memory:")
+            .Options;
+
+        using var db = new WorkflowEngineDbContext(options);
+
+        var entityType = db.Model.FindEntityType(typeof(WorkflowStepResult));
+        var property = entityType?.FindProperty(propertyName);
+
+        property.Should().NotBeNull();
+        property!.GetColumnType().Should().Be("jsonb");
+    }
+
     [Fact]
     public void InferenceProvider_is_excluded_from_engine_migrations()
     {
