@@ -89,6 +89,35 @@ public class ExtractStepExecutorTests
     }
 
     [Fact]
+    public async Task Project_tolerates_a_prose_prefixed_source_from_a_tool_using_agent()
+    {
+        // Regression test: a reasoning-capable model with tools bound (e.g. ComponentInventoryAnalyzer,
+        // which reads project files before compiling its answer) routinely emits narration BEFORE
+        // its actual JSON object ("Now let me compile the complete component inventory.\n\n{...}"),
+        // observed live. ResolveInputsAsync must tolerate this exactly like every other agent-output
+        // consumer in this codebase (RobustJsonExtractor), not require the whole raw text to already
+        // be valid JSON.
+        var items = new[] { new { id = "c0", name = "Button", filePath = "src/Button.tsx" } };
+        string pureJson = JsonSerializer.Serialize(new { components = items });
+        string proseThenJson = "Now let me read the key component files.\nNow I have all the information needed. Let me compile the complete component inventory.\n\n\n" + pureJson;
+
+        const string config = """
+            {"version":1,"operation":"Project","inputs":{"source":{"from":"Previous"}},"path":"$.components","fields":["name","filePath"]}
+            """;
+
+        StepExecutionContext context = CreateContext(
+            config,
+            history: [new StepOutputHistoryEntry(1, "Inventory", proseThenJson)]);
+
+        StepExecutionResult result = await CreateExecutor().ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        JsonElement root = ParseOutput(result);
+        root.GetProperty("view").GetProperty("items").GetArrayLength().Should().Be(1);
+        root.GetProperty("view").GetProperty("items")[0].GetProperty("name").GetString().Should().Be("Button");
+    }
+
+    [Fact]
     public async Task MaxOutputChars_forces_item_drops_and_output_still_parses_as_json()
     {
         var items = Enumerable.Range(0, 200)

@@ -430,6 +430,18 @@ public class ExtractStepExecutor : IStepExecutor
                 _ => null
             };
 
+            // Previous/Step pull a prior AGENT step's raw completion text verbatim — the same
+            // failure mode RobustJsonExtractor exists for everywhere else in this codebase (video
+            // story editor decisions, room syntheses, review agent output): a reasoning-capable
+            // model emits valid JSON preceded by prose ("Now let me compile the inventory...")
+            // before the actual object, which a strict parse of the whole string rejects outright.
+            // Extracting the first balanced {...} before handing content to
+            // ExpressionEvaluator.ExtractJsonValue is a no-op for content that's already clean JSON
+            // (object OR array — ExtractJsonObject only ever narrows, never invents), so this is
+            // pure hardening, not a behavior change for the already-working case.
+            if ((inputRef.From is ExtractInputSource.Previous or ExtractInputSource.Step) && content is not null)
+                content = RobustJsonExtractor.ExtractJsonObject(content) ?? content;
+
             result[name] = new ResolvedInput(inputRef, content);
         }
 
