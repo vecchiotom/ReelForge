@@ -1137,6 +1137,25 @@ or the other, never both; a workflow author combines a rendered graphic with sep
 authoring two overlays at different placements. Empty/absent (the default) leaves an overlay a plain
 text overlay exactly as before this field existed — additive, not a replacement.
 
+**Alpha channel is validated, never trusted.** Two independent guards close the "a real,
+transparent Remotion render still comes out as a solid, opaque block over the edited video" failure
+mode (observed in production as a black square with giant drop-shadow silhouettes stamped into it):
+1. **Server-side validation** — after downloading and ffprobing the asset, `VideoCompileStepExecutor`
+   checks the probed `pix_fmt` against `AlphaPixelFormats.HasAlpha` (an allowlist of alpha-carrying
+   formats — `yuva420p`/`yuva444p10le`/`rgba`/`argb`/`gbrap`/... — same allowlist discipline as the
+   codec/color allowlists elsewhere in this file). An asset with no real alpha plane — e.g. the agent
+   ignored the documented `--pixel-format=yuva420p --codec=vp9` render recipe and produced a plain
+   H.264 file — is dropped for THIS overlay only (`droppedOverlays` reason
+   `asset_missing_alpha_channel`), the same per-overlay degrade-not-fail discipline as a corrupt or
+   unprobeable asset (`asset_download_or_probe_failed`), never composited opaque.
+2. **Filtergraph format-pinning** — even when the source genuinely carries alpha,
+   `OverlayAssetFilterBuilder` prepends `format=rgba` as the FIRST operation on the overlay's own
+   input, before `scale`. This guards against a well-known libavfilter gotcha: format negotiation
+   between `scale` and the downstream `overlay` filter can silently agree on a non-alpha common pixel
+   format even when the decoded input has a real alpha plane, discarding transparency with no error
+   of any kind. Pinning the format immediately after decode, before any negotiation happens, is what
+   makes a genuinely transparent render actually composite transparently.
+
 ### The source-to-output timeline mapping problem
 
 A placement's window was resolved against the SOURCE video during `VideoAnalyze`. But drawtext's

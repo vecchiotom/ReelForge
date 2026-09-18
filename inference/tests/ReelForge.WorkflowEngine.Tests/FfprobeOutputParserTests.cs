@@ -121,4 +121,32 @@ public class FfprobeOutputParserTests
 
         ok.Should().BeFalse();
     }
+
+    [Fact]
+    public void Parse_extracts_pix_fmt_from_the_video_stream()
+    {
+        const string json = """
+            {
+              "streams": [
+                { "codec_type": "video", "codec_name": "vp9", "pix_fmt": "yuva420p", "width": 640, "height": 360,
+                  "r_frame_rate": "30/1" }
+              ],
+              "format": { "duration": "1.5" }
+            }
+            """;
+
+        MediaProbeResult result = FfprobeOutputParser.Parse(json);
+
+        result.PixFmt.Should().Be("yuva420p");
+    }
+
+    [Fact]
+    public void Parse_leaves_pix_fmt_null_when_the_fixture_has_none()
+    {
+        // FixtureJson (above) never sets pix_fmt — the common case for an ffprobe JSON stream
+        // object where alpha is not a concern (e.g. plain source footage).
+        MediaProbeResult result = FfprobeOutputParser.Parse(FixtureJson);
+
+        result.PixFmt.Should().BeNull();
+    }
 }

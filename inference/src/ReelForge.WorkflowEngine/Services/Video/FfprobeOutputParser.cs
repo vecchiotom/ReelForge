@@ -48,12 +48,14 @@ public static class FfprobeOutputParser
         int width = 0;
         int height = 0;
         string? videoCodec = null;
+        string? pixFmt = null;
 
         if (videoStream is { } vs)
         {
             width = GetInt(vs, "width") ?? 0;
             height = GetInt(vs, "height") ?? 0;
             videoCodec = GetString(vs, "codec_name");
+            pixFmt = GetString(vs, "pix_fmt");
 
             string? rFrameRate = GetString(vs, "r_frame_rate");
             if (!string.IsNullOrWhiteSpace(rFrameRate) && TryParseRational(rFrameRate, out int num, out int den))
@@ -73,7 +75,7 @@ public static class FfprobeOutputParser
                 audioSampleRate = sr;
         }
 
-        return new MediaProbeResult(durationSec, fpsNum, fpsDen, width, height, videoCodec, audioCodec, audioSampleRate);
+        return new MediaProbeResult(durationSec, fpsNum, fpsDen, width, height, videoCodec, audioCodec, audioSampleRate, pixFmt);
     }
 
     /// <summary>

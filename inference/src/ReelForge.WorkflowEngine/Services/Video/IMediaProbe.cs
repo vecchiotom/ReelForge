@@ -14,7 +14,8 @@ public sealed record MediaProbeResult(
     int Height,
     string? VideoCodec,
     string? AudioCodec,
-    int? AudioSampleRate);
+    int? AudioSampleRate,
+    string? PixFmt = null);
 
 public interface IMediaProbe
 {

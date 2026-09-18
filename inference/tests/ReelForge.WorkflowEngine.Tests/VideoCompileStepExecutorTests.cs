@@ -1109,10 +1109,18 @@ public class VideoCompileStepExecutorTests
         mediaProbe
             .Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new MediaProbeResult(10, 30, 1, 1920, 1080, "h264", "aac", 48000));
-        // Applied AFTER the catch-all setup above — Moq resolves overlapping setups to the most
+        // A rendered-asset overlay (path contains "gfx-asset", same discriminator the corrupt-file
+        // test below overrides) defaults to a real alpha-carrying pix_fmt — the well-behaved case,
+        // since most tests exercising an asset overlay want it to actually apply, not be dropped
+        // for AlphaPixelFormats.HasAlpha failing on the catch-all's opaque "h264" default above.
+        // Applied AFTER the catch-all so it takes precedence for exactly that one path family.
+        mediaProbe
+            .Setup(p => p.ProbeAsync(It.Is<string>(s => s.Contains("gfx-asset")), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MediaProbeResult(1.5, 30, 1, 640, 360, "vp9", null, null, "yuva420p"));
+        // Applied AFTER both setups above — Moq resolves overlapping setups to the most
         // recently configured one, so a test-supplied override (e.g. "throw for this one asset
-        // path") takes precedence over the default success response without needing to know about
-        // every other path this test's executor run will probe.
+        // path", or "no alpha for this one asset path") takes precedence over the default success
+        // response without needing to know about every other path this test's executor run will probe.
         configureMediaProbe?.Invoke(mediaProbe);
 
         if (edlCaptured is not null)
@@ -1965,6 +1973,63 @@ public class VideoCompileStepExecutorTests
         JsonElement dropped = graphics.GetProperty("droppedOverlays");
         dropped.GetArrayLength().Should().Be(1);
         dropped[0].GetProperty("reason").GetString().Should().Be("asset_download_or_probe_failed");
+    }
+
+    [Fact]
+    public async Task Rendered_asset_overlay_with_no_alpha_channel_is_dropped_not_composited_opaque()
+    {
+        // A render that ignored the documented --pixel-format=yuva420p --codec=vp9 recipe (e.g.
+        // Remotion's default H.264, no alpha plane at all) must never reach the overlay filter —
+        // that would composite as a solid, opaque rectangle over the edited video ("a black square
+        // background with giant shadows"). ResolveGraphicsAsync must catch this via
+        // AlphaPixelFormats.HasAlpha and drop just that one overlay, same degrade-not-fail
+        // discipline as a corrupt/unreadable asset.
+        var placement = new VideoAnalysisPlacement(
+            "p0", "s0", "LowerThird", new VideoAnalysisRect(0.1, 0.8, 0.6, 0.15),
+            "ShotMiddle", 4.0, 6.0, 0.8, "Light");
+
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" },
+            placements: new[] { placement });
+
+        string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
+        string assetKey = $"projects/{ProjectId}/outputFiles/{GraphicsExecutionId:D}/opaque.mov";
+        string graphicsPlanJson = JsonSerializer.Serialize(new
+        {
+            overlays = new[]
+            {
+                new { placementId = "p0", kind = "LowerThird", text = "", subtext = "", duration = "Short", emphasis = "Normal", renderedAssetStorageKey = assetKey, reason = "no-alpha render" }
+            },
+            planRationale = "test"
+        });
+
+        StepExecutionContext context = CreateGraphicsContext(
+            artifact, decisionJson, graphicsPlanJson, out Mock<IProjectFileWorkspace> workspace);
+
+        workspace
+            .Setup(w => w.DownloadStorageKeyToFileAsync(It.IsAny<Guid>(), assetKey, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns<Guid, string, string, CancellationToken>((_, _, destPath, _) =>
+            {
+                File.WriteAllBytes(destPath, new byte[] { 0x00 });
+                return Task.CompletedTask;
+            });
+
+        JsonElement edl = default;
+        StepExecutionResult result = await CreateExecutor(
+            workspace, edlCaptured: e => edl = e,
+            configureMediaProbe: probe => probe
+                .Setup(p => p.ProbeAsync(It.Is<string>(s => s.Contains("gfx-asset")), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new MediaProbeResult(1.5, 30, 1, 640, 360, "h264", null, null, "yuv420p")))
+            .ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, "a missing alpha channel must degrade this ONE overlay, never fail the whole compile");
+        JsonElement graphics = edl.GetProperty("graphics");
+        graphics.GetProperty("applied").GetBoolean().Should().BeFalse();
+        graphics.GetProperty("appliedOverlayCount").GetInt32().Should().Be(0);
+        JsonElement dropped = graphics.GetProperty("droppedOverlays");
+        dropped.GetArrayLength().Should().Be(1);
+        dropped[0].GetProperty("reason").GetString().Should().Be("asset_missing_alpha_channel");
     }
 
     [Fact]

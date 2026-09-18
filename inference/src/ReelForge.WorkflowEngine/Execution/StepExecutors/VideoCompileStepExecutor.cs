@@ -1740,6 +1740,7 @@ public class VideoCompileStepExecutor : IStepExecutor
                 string rawAssetExtension = Path.GetExtension(overlay.RenderedAssetStorageKey);
                 string assetExtension = AllowedRenderedAssetExtensions.Contains(rawAssetExtension) ? rawAssetExtension : ".webm";
                 string localAssetPath = scratch.GetPath($"gfx-asset-{Guid.NewGuid():N}{assetExtension}");
+                MediaProbeResult assetProbe;
                 try
                 {
                     await _workspace.DownloadStorageKeyToFileAsync(
@@ -1751,7 +1752,7 @@ public class VideoCompileStepExecutor : IStepExecutor
                     // hold the cut hostage" guarantee this method exists to uphold — so a bad
                     // asset must be caught and dropped HERE, one overlay at a time, never let
                     // through to the encoder.
-                    await _mediaProbe.ProbeAsync(localAssetPath, ct);
+                    assetProbe = await _mediaProbe.ProbeAsync(localAssetPath, ct);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -1763,6 +1764,22 @@ public class VideoCompileStepExecutor : IStepExecutor
                         "VideoCompile step {StepOrder}: rendered asset for placement {PlacementId} could not be downloaded/probed; dropping this overlay.",
                         context.Step.StepOrder, overlay.PlacementId);
                     dropped.Add(new DroppedOverlay(overlay.PlacementId, "asset_download_or_probe_failed"));
+                    continue;
+                }
+
+                // The one invariant every rendered-asset overlay promises everywhere in this
+                // feature's prompts/docs — "a transparent-background clip" — is never trusted from
+                // the model. A render that ignored the documented --pixel-format=yuva420p
+                // --codec=vp9 recipe (or otherwise lost its alpha plane) would otherwise composite
+                // as a solid, opaque rectangle over the edited video — exactly the "black square
+                // with giant shadows" failure mode this check exists to catch, one overlay at a
+                // time, same degrade-not-fail discipline as the probe failure above.
+                if (!AlphaPixelFormats.HasAlpha(assetProbe.PixFmt))
+                {
+                    _logger.LogWarning(
+                        "VideoCompile step {StepOrder}: rendered asset for placement {PlacementId} has no alpha channel (pix_fmt={PixFmt}); dropping this overlay rather than compositing it opaque.",
+                        context.Step.StepOrder, overlay.PlacementId, assetProbe.PixFmt ?? "(unknown)");
+                    dropped.Add(new DroppedOverlay(overlay.PlacementId, "asset_missing_alpha_channel"));
                     continue;
                 }
 

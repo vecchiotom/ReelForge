@@ -34,13 +34,16 @@ public class OverlayAssetFilterBuilderTests
     }
 
     [Fact]
-    public void Chain_starts_from_the_base_label_and_ends_at_vout()
+    public void Chain_consumes_the_base_label_into_the_overlay_op_and_ends_at_vout()
     {
+        // The chain's FIRST segment scales/time-shifts the overlay's own input into [ovsrc0] — the
+        // base label is only consumed by the SECOND segment, the actual overlay= op, since that's
+        // the one compositing onto the base chain. See BuildFilterChain's remarks.
         string chain = OverlayAssetFilterBuilder.BuildFilterChain(
             "[vcut]", new[] { AssetOverlay() }, probedWidth: 1920, probedHeight: 1080,
             inputIndexForIndex: i => i + 1);
 
-        chain.Should().StartWith("[vcut]");
+        chain.Should().Contain("[vcut][ovsrc0]overlay=");
         chain.TrimEnd().Should().EndWith("[vout]");
     }
 
@@ -51,7 +54,7 @@ public class OverlayAssetFilterBuilderTests
             "[vtxt]", new[] { AssetOverlay() }, probedWidth: 1920, probedHeight: 1080,
             inputIndexForIndex: i => i + 1, finalLabel: "[vout]");
 
-        chain.Should().StartWith("[vtxt]");
+        chain.Should().Contain("[vtxt][ovsrc0]overlay=");
         chain.TrimEnd().Should().EndWith("[vout]");
     }
 
@@ -64,7 +67,7 @@ public class OverlayAssetFilterBuilderTests
             "[vcut]", new[] { AssetOverlay() }, probedWidth: 1920, probedHeight: 1080,
             inputIndexForIndex: i => i + 1);
 
-        chain.Should().Contain("[1:v]scale=");
+        chain.Should().Contain("[1:v]format=rgba,scale=");
     }
 
     [Fact]
@@ -75,8 +78,8 @@ public class OverlayAssetFilterBuilderTests
             probedWidth: 1920, probedHeight: 1080,
             inputIndexForIndex: i => i + 1);
 
-        chain.Should().Contain("[1:v]scale=");
-        chain.Should().Contain("[2:v]scale=");
+        chain.Should().Contain("[1:v]format=rgba,scale=");
+        chain.Should().Contain("[2:v]format=rgba,scale=");
     }
 
     [Fact]
@@ -124,6 +127,22 @@ public class OverlayAssetFilterBuilderTests
             inputIndexForIndex: i => i + 1);
 
         chain.Should().Contain("setpts=PTS+4.5/TB");
+    }
+
+    [Fact]
+    public void Overlay_input_is_forced_to_rgba_before_scale_so_alpha_survives_filtergraph_negotiation()
+    {
+        // Regression test: libavfilter's format negotiation between scale and the downstream
+        // overlay can silently pick a non-alpha common pixel format even when the decoded input
+        // genuinely carries alpha — the real-world cause of a correctly-rendered, genuinely
+        // transparent Remotion asset compositing as a solid, opaque block ("a black square
+        // background with giant shadows") over the edited video. format=rgba must be the FIRST
+        // operation on the overlay's own input, before scale ever runs.
+        string chain = OverlayAssetFilterBuilder.BuildFilterChain(
+            "[vcut]", new[] { AssetOverlay() }, probedWidth: 1920, probedHeight: 1080,
+            inputIndexForIndex: i => i + 1);
+
+        chain.Should().Contain("[1:v]format=rgba,scale=");
     }
 
     [Fact]

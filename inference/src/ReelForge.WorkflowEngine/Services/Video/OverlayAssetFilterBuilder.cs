@@ -72,9 +72,19 @@ public static class OverlayAssetFilterBuilder
 
             // Scale to the placement's own box and delay this input's timeline so its content
             // starts playing exactly at the overlay's output-timeline start — see remarks above.
+            // format=rgba comes FIRST, before scale: libavfilter's format negotiation between
+            // scale and the downstream overlay can otherwise silently pick a non-alpha common
+            // pixel format even when the decoded input genuinely carries alpha (a well-known
+            // ffmpeg gotcha), which is exactly what turned a real transparent-background render
+            // into a solid, opaque block over the edited video. Forcing rgba here pins the
+            // format before any negotiation happens, regardless of the source's own alpha
+            // subsampling (yuva420p, yuva444p10le, argb, ...) — VideoCompileStepExecutor has
+            // already rejected any overlay asset lacking a real alpha plane at all (see
+            // AlphaPixelFormats.HasAlpha in ResolveGraphicsAsync), so this is strictly a
+            // format-pinning step, never a source of new transparency that wasn't already there.
             string scaledLabel = $"[ovsrc{i}]";
             segments.Add(
-                $"[{inputIndex}:v]scale={boxW}:{boxH}:flags=bilinear,setpts=PTS+{start}/TB{scaledLabel}");
+                $"[{inputIndex}:v]format=rgba,scale={boxW}:{boxH}:flags=bilinear,setpts=PTS+{start}/TB{scaledLabel}");
 
             string outLabel = isLast ? finalLabel : $"[ov{i}]";
             segments.Add(
