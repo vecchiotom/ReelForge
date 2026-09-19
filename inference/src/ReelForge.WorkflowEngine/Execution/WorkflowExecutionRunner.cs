@@ -57,6 +57,13 @@ public sealed class WorkflowExecutionRunner : IHostedService
     private readonly SemaphoreSlim _slots;
 
     /// <summary>
+    /// Injected directly rather than resolved per-scope: it is a singleton, so there is no
+    /// captive-dependency hazard, and <see cref="StopAsync"/> would otherwise spin up one DI scope
+    /// per in-flight execution just to reach the same instance.
+    /// </summary>
+    private readonly ExecutionCancellationRegistry _cancellationRegistry;
+
+    /// <summary>
     /// Ties every in-flight execution to the process lifetime, and <i>only</i> to it. This is the
     /// token <see cref="WorkflowExecutorService.ExecuteAsync"/> now receives, replacing the
     /// transport's <c>ConsumeContext.CancellationToken</c> — the substitution that actually fixes
@@ -70,9 +77,11 @@ public sealed class WorkflowExecutionRunner : IHostedService
     public WorkflowExecutionRunner(
         IServiceScopeFactory scopeFactory,
         IConfiguration configuration,
+        ExecutionCancellationRegistry cancellationRegistry,
         ILogger<WorkflowExecutionRunner> logger)
     {
         _scopeFactory = scopeFactory;
+        _cancellationRegistry = cancellationRegistry;
         _logger = logger;
 
         int maxConcurrency = Math.Max(1, configuration.GetValue("WorkflowEngine:MaxConcurrency", 4));
@@ -179,9 +188,8 @@ public sealed class WorkflowExecutionRunner : IHostedService
 
         foreach (Guid executionId in _running.Keys)
         {
-            using IServiceScope scope = _scopeFactory.CreateScope();
-            scope.ServiceProvider.GetRequiredService<ExecutionCancellationRegistry>()
-                .TryCancel(executionId, "Interrupted: the workflow engine shut down while this execution was running.");
+            _cancellationRegistry.TryCancel(
+                executionId, "Interrupted: the workflow engine shut down while this execution was running.");
         }
 
         await _lifetimeCts.CancelAsync();
