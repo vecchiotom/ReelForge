@@ -60,12 +60,30 @@ public class ProjectFileAgentTools
             context.ExecutionId,
             context.ProjectId,
             fileReference);
-        string content = await _workspace.ReadFileAsync(context.ProjectId, fileReference, CancellationToken.None);
-        _logger.LogInformation(
-            "Tool result read_project_file returned {ContentChars} chars for reference {FileReference}",
-            content.Length,
-            fileReference);
-        return content;
+        try
+        {
+            string content = await _workspace.ReadFileAsync(context.ProjectId, fileReference, CancellationToken.None);
+            _logger.LogInformation(
+                "Tool result read_project_file returned {ContentChars} chars for reference {FileReference}",
+                content.Length,
+                fileReference);
+            return content;
+        }
+        catch (InvalidOperationException ex)
+        {
+            // ProjectFileWorkspace.ReadFileAsync deliberately throws rather than decoding a
+            // binary file (music/SFX/video candidate, etc.) as UTF-8 text — a real guardrail
+            // (see its own doc comment), not a bug. Left uncaught here, that exception propagated
+            // all the way out of the agent run and failed the WHOLE step outright — observed live
+            // producing a real promo video: VideoStoryEditor's own curiosity about an unrelated
+            // file (a music-track candidate it never needed) took down a step that otherwise had
+            // everything it needed. Returning the message AS THE TOOL RESULT (the same
+            // catch-and-degrade discipline SearchProjectFiles above already applies) lets the
+            // agent see the refusal and continue past it instead.
+            _logger.LogInformation(
+                "Tool result read_project_file for reference {FileReference} refused: {Message}", fileReference, ex.Message);
+            return $"Error: {ex.Message}";
+        }
     }
 
     [Description("Search project files semantically using vector index and return the most relevant file snippets for the current project.")]
