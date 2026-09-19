@@ -17,13 +17,11 @@ namespace ReelForge.Shared.Inference;
 /// <list type="number">
 /// <item>
 /// <b>Sampling parameters.</b> Anthropic deprecated <c>temperature</c>, <c>top_p</c> and
-/// <c>top_k</c> SERVER-side, and it is not merely advisory — newer releases of the Anthropic SDK
-/// mark these properties <c>[Obsolete]</c> with the wording "Models released after Claude Opus 4.6
-/// do not support setting temperature. A value of 1.0 will be accepted for backwards
-/// compatibility, all other values will be rejected with a 400 error" (and likewise: any
-/// <c>top_k</c> is rejected, <c>top_p</c> is rejected below 0.99). The pinned SDK version predates
-/// those annotations, but the API behaviour is the same — it is enforced by the service, not the
-/// client. EVERY agent in this solution sets a <c>Temperature</c> (0.2–0.8) and some set
+/// <c>top_k</c> server-side, and the SDK's own <c>[Obsolete]</c> text is explicit that this is not
+/// merely advisory: "Models released after Claude Opus 4.6 do not support setting temperature. A
+/// value of 1.0 will be accepted for backwards compatibility, all other values will be rejected
+/// with a 400 error" (and likewise: any <c>top_k</c> is rejected, <c>top_p</c> is rejected below
+/// 0.99). EVERY agent in this solution sets a <c>Temperature</c> (0.2–0.8) and some set
 /// <c>TopP</c>, so forwarding them would make every agent run against a current Claude model fail
 /// with an HTTP 400.
 /// </item>
@@ -43,11 +41,14 @@ namespace ReelForge.Shared.Inference;
 /// </para>
 /// <para>
 /// Consequences worth knowing. A per-agent temperature and reasoning effort are NOT applied on the
-/// Anthropic path: ReelForge never sets <see cref="ChatOptions.Reasoning"/>, so no reasoning
-/// configuration is sent and the model is left at its own defaults. Forwarding effort properly
-/// would mean mapping ReelForge's vLLM/Qwen-flavoured vocabulary (<c>none/low/medium/xhigh</c>)
-/// onto <see cref="ReasoningOptions.Effort"/>, a deliberate follow-up rather than part of this
-/// seam.
+/// Anthropic path: ReelForge never sets <see cref="ChatOptions.Reasoning"/>, so no
+/// <c>output_config.effort</c> is sent. Under the SDK's default thinking mode the model still
+/// thinks, at its own default effort, and those tokens count against <c>max_tokens</c> — see
+/// <c>ChatClientFactory.AnthropicDefaultMaxOutputTokens</c>. Nothing here ever sets
+/// <see cref="ReasoningEffort.None"/> either: that maps to <c>thinking.type=disabled</c>, which
+/// models that always think reject with a 400. Forwarding effort properly would mean mapping
+/// ReelForge's vLLM/Qwen-flavoured vocabulary (<c>none/low/medium/xhigh</c>) onto
+/// <see cref="ReasoningOptions.Effort"/>, a deliberate follow-up rather than part of this seam.
 /// </para>
 /// </remarks>
 public sealed class AnthropicChatOptionsAdapter : DelegatingChatClient

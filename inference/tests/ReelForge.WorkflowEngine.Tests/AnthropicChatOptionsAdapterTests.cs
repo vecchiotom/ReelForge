@@ -56,10 +56,9 @@ public class AnthropicChatOptionsAdapterTests
     [Fact]
     public async Task GetResponseAsync_strips_the_sampling_parameters_Claude_rejects()
     {
-        // Anthropic rejects these server-side: "Models released after Claude Opus 4.6 do not
+        // The Anthropic SDK's own [Obsolete] text: "Models released after Claude Opus 4.6 do not
         // support setting temperature. A value of 1.0 will be accepted for backwards compatibility,
-        // all other values will be rejected with a 400 error" (the wording newer Anthropic SDK
-        // releases carry as [Obsolete] on these properties) — and likewise any top_k, and top_p
+        // all other values will be rejected with a 400 error" — and likewise any top_k, and top_p
         // below 0.99. Every agent in this solution sets a Temperature, so forwarding these would
         // 400 every single agent run against a current Claude model.
         RecordingChatClient inner = new();

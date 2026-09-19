@@ -8,34 +8,31 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="9.0.14" />
-    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.0.0-rc2" />
-    <PackageReference Include="Azure.AI.OpenAI" Version="2.8.0-beta.1" />
-    <PackageReference Include="OpenAI" Version="2.8.0" />
+    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.22.0" />
+    <PackageReference Include="Azure.AI.OpenAI" Version="2.9.0-beta.1" />
+    <PackageReference Include="OpenAI" Version="2.13.0" />
     <!--
-      PINNED, and the version ceiling is load-bearing. Do not bump without reading this.
+      These five move together. Microsoft.Agents.AI.* pulls Microsoft.Extensions.AI.Abstractions
+      and OpenAI transitively, and the family is only safe at versions compiled against the SAME
+      Abstractions — a mismatch is invisible to the compiler and throws TypeLoadException on the
+      first agent run (see docs/anthropic-provider.md for the incident that established this).
 
-      The `Anthropic` package is first-party from v10 onward (3.x and below were the community
-      tryAGI build, now `tryAGI.Anthropic`). Its constraint here is its Microsoft.Extensions.AI
-      dependency, NOT its own API:
+      Verified compatible as a set, against assembly metadata rather than release notes:
+        Microsoft.Agents.AI.* 1.22.0  -> Abstractions 10.10.0, OpenAI 2.13.0; 119 references into
+                                         Microsoft.Extensions.AI, none dangling
+        Azure.AI.OpenAI 2.9.0-beta.1  -> built against OpenAI 2.9.1 but unifies upward to 2.13.0:
+                                         82 types and 145 member references, none missing
+        Anthropic 12.49.0             -> Abstractions 10.5.1, unifies up to 10.10.0
+        OpenAI 2.13.0                 -> exactly what Microsoft.Extensions.AI.OpenAI 10.10.0 wants,
+                                         and still carries ChatCompletionOptions.ReasoningEffortLevel
+                                         with its implicit conversion from string, which
+                                         ReelForgeAgentBase.BuildChatOptions relies on
 
-        Anthropic 12.9.0  -> Microsoft.Extensions.AI.Abstractions 10.2.0  (unifies to the 10.3.0
-                             Microsoft.Agents.AI.OpenAI already brings; nothing else moves)
-        Anthropic 12.10.0 -> Microsoft.Extensions.AI.Abstractions 10.4.0  (BREAKS THE BUILD, below)
-
-      Abstractions 10.4.0 REMOVED seven public types (FunctionApproval{Request,Response}Content,
-      McpServerToolApproval{Request,Response}Content, UserInput{Request,Response}Content,
-      IToolReductionStrategy). Microsoft.Agents.AI.Workflows 1.0.0-rc2 was compiled against 10.3.0
-      and still references them from Specialized.AIAgentHostExecutor.ConfigureUserInputHandling.
-      Nothing in this solution names that executor, but InProcessExecution.RunStreamingAsync
-      instantiates it to host an AIAgent — which is exactly what every room step
-      (EditRoom/GraphicsRoom/ColorGradeRoom) does. So a newer Anthropic throws
-      TypeLoadException at run time in all 13 room tests, while `dotnet build` passes clean.
-
-      Lifting the ceiling means upgrading the whole Microsoft.Agents.AI family (rc2 -> 1.22.0),
-      which in turn requires OpenAI 2.8.0 -> 2.13.0 and a matching Azure.AI.OpenAI. That is a
-      separate piece of work, not a version bump.
+      Azure.AI.OpenAI is the laggard (2.9.0-beta.1 is the newest published) and is therefore the
+      thing most likely to block the next bump of this set. Re-run the type/member reference scan
+      against whatever OpenAI version the new Microsoft.Agents.AI wants before assuming it is fine.
     -->
-    <PackageReference Include="Anthropic" Version="12.9.0" />
+    <PackageReference Include="Anthropic" Version="12.49.0" />
     <PackageReference Include="Microsoft.AspNetCore.DataProtection.Abstractions" Version="9.0.14" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="9.0.9" />
   </ItemGroup>

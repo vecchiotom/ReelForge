@@ -165,35 +165,45 @@ risks an HTTP timeout. Agents run through `AIAgent.RunAsync`, which does not str
 
 ## Dependency note
 
-The `Anthropic` package is **pinned to 12.9.0, and the ceiling is load-bearing.** The constraint is
-its `Microsoft.Extensions.AI` dependency, not its own API:
+The `Anthropic` package tracks the latest release (12.49.0). Getting there required upgrading the
+whole `Microsoft.Agents.AI` family, and the reason is worth keeping:
 
-| Anthropic | requires Abstractions | effect |
-|---|---|---|
-| 12.9.0 | 10.2.0 | unifies to the 10.3.0 `Microsoft.Agents.AI.OpenAI` already brings — nothing else moves |
-| 12.10.0+ | 10.4.0+ | **breaks every room step at run time** |
-
-Abstractions **10.4.0 removed seven public types** (`FunctionApproval{Request,Response}Content`,
+**The incident.** Anthropic ≥ 12.10 requires `Microsoft.Extensions.AI.Abstractions` ≥ 10.4.0, and
+10.4.0 **removed seven public types** (`FunctionApproval{Request,Response}Content`,
 `McpServerToolApproval{Request,Response}Content`, `UserInput{Request,Response}Content`,
 `IToolReductionStrategy`). `Microsoft.Agents.AI.Workflows` 1.0.0-rc2 was compiled against 10.3.0 and
-still references them from `Specialized.AIAgentHostExecutor.ConfigureUserInputHandling`.
-
-Nothing in this solution names that executor — but `InProcessExecution.RunStreamingAsync`
-instantiates it to host an `AIAgent`, which is exactly what `EditRoom`, `GraphicsRoom` and
-`ColorGradeRoom` do. So a newer Anthropic package produces:
+still referenced them from `Specialized.AIAgentHostExecutor.ConfigureUserInputHandling`. Nothing in
+this solution names that executor — but `InProcessExecution.RunStreamingAsync` instantiates it to
+host an `AIAgent`, which is exactly what `EditRoom`, `GraphicsRoom` and `ColorGradeRoom` do. Result:
 
 ```
 System.TypeLoadException : Could not load type 'Microsoft.Extensions.AI.UserInputResponseContent'
   from assembly 'Microsoft.Extensions.AI.Abstractions, Version=10.5.0.0'
-    at Microsoft.Agents.AI.Workflows.Specialized.AIAgentHostExecutor.ConfigureUserInputHandling
 ```
 
-…in all 13 room tests, while `dotnet build` passes clean. This was found by CI, not by review.
+…in all 13 room tests, with `dotnet build` passing clean. A static review had found those references
+and judged them dormant on the grounds that nothing named the executor; the grep was right and the
+conclusion was wrong. **Only CI caught it.**
 
-Lifting the ceiling is a separate piece of work: the `Microsoft.Agents.AI` family is now at 1.22.0
-(this repo is on `1.0.0-rc2`), and 1.17.0+ requires Abstractions ≥ 10.7.0 while
-`Microsoft.Agents.AI.OpenAI` 1.22.0 requires `OpenAI` 2.13.0 against the pinned 2.8.0 — so it pulls
-in the OpenAI and Azure.AI.OpenAI packages too, and touches every agent and all three rooms.
+**The rule this leaves behind.** `Microsoft.Agents.AI.*`, `Microsoft.Extensions.AI.*`, `OpenAI`,
+`Azure.AI.OpenAI` and `Anthropic` are one version set. Mixing versions compiled against different
+`Microsoft.Extensions.AI.Abstractions` releases is invisible to the compiler and fails at run time.
+Before bumping any of them, scan the candidate assembly's type and member references against what
+the others actually ship — the method is in the csproj comment, and it is what verified the current
+set.
+
+**Current set**, all checked that way:
+
+| Package | Version | Note |
+|---|---|---|
+| `Microsoft.Agents.AI{,.OpenAI,.Workflows}` | 1.22.0 | 119 refs into Microsoft.Extensions.AI, none dangling |
+| `Microsoft.Extensions.AI.Abstractions` | 10.10.0 | transitive |
+| `OpenAI` | 2.13.0 | exactly what `Microsoft.Extensions.AI.OpenAI` 10.10.0 requires |
+| `Azure.AI.OpenAI` | 2.9.0-beta.1 | built against OpenAI 2.9.1; 82 types + 145 members verified present in 2.13.0 |
+| `Anthropic` | 12.49.0 | requires Abstractions 10.5.1, unifies up |
+
+`Azure.AI.OpenAI` is the laggard — 2.9.0-beta.1 is the newest published, and it is the most likely
+blocker for the next bump of this set.
 
 ## No schema migration
 
