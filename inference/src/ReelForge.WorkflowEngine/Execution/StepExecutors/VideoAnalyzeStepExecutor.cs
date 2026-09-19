@@ -988,7 +988,14 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         }
 
         IReadOnlyList<(double StartSec, double EndSec)> silenceSpans = Array.Empty<(double, double)>();
-        if (config.DetectSilence)
+        // Real B-roll/stock footage routinely ships with no audio stream at all (e.g. silent
+        // typing/keyboard close-ups). ffmpeg's silencedetect filter operates on an audio stream
+        // that doesn't exist here, and fails outright ("Output file does not contain any
+        // stream") rather than degrading — the same failure mode
+        // VideoCompileStepExecutor.EncodeReencodeAsync already guards against for its own no-
+        // audio sources (see "Source_with_no_audio_stream_..." there). Probe already ran above,
+        // so this is a free check, not an extra ffmpeg invocation.
+        if (config.DetectSilence && probe.AudioCodec is not null)
         {
             await ReportAsync(context, progress, VideoAnalyzeProgressPlan.Stage.DetectSilence, progressPrefix + "Detecting silence", sourceIndex);
             silenceSpans = await _silenceDetector.DetectAsync(

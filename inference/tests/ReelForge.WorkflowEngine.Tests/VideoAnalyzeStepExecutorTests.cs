@@ -73,6 +73,43 @@ public class VideoAnalyzeStepExecutorTests
     }
 
     [Fact]
+    public async Task Source_with_no_audio_stream_skips_silence_detection_instead_of_crashing()
+    {
+        // Real B-roll/stock footage routinely has no audio stream at all (e.g. a silent
+        // typing/keyboard close-up) — found live producing a real promo video. ffmpeg's
+        // silencedetect filter operates on an audio stream that doesn't exist here and fails
+        // outright ("Output file does not contain any stream") rather than degrading, taking down
+        // the WHOLE step (every other source in a multi-source analyze included) instead of just
+        // skipping silence spans for this one audio-less source.
+        var shots = new[] { (0.0, 5.0) };
+
+        StepExecutionContext context = CreateContext(
+            out Mock<IProjectFileWorkspace> workspace,
+            out Mock<IMediaProbe> probe,
+            out Mock<ISilenceDetector> silence,
+            out Mock<IShotDetector> shotDetector,
+            out _, out _,
+            configOverride: cfg => cfg with { Transcription = VideoTranscriptionMode.Off, AnalyzeAudioLevels = false });
+
+        probe.Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MediaProbeResult(5, 30, 1, 1920, 1080, "h264", null, null));
+        shotDetector
+            .Setup(s => s.DetectShotsAsync(It.IsAny<string>(), It.IsAny<double>(), It.IsAny<double>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(shots);
+
+        StepExecutionResult result = await CreateExecutor(workspace, probe, silence, shotDetector, out _, out _).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+        silence.Verify(
+            s => s.DetectAsync(It.IsAny<string>(), It.IsAny<double>(), It.IsAny<double>(), It.IsAny<double?>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "silencedetect must never run against a source with no audio stream at all");
+
+        using JsonDocument doc = JsonDocument.Parse(result.Output);
+        doc.RootElement.GetProperty("view").GetProperty("silences").GetArrayLength().Should().Be(0);
+    }
+
+    [Fact]
     public async Task Persisted_artifact_OfferedIds_matches_the_truncated_view_not_the_full_analysis()
     {
         // Regression test (found by Copilot review): the persisted artifact's OfferedIds must be
