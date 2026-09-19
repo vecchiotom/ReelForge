@@ -32,7 +32,7 @@ jobs:
       shell: ${{ steps.filter.outputs.shell }}
       workflows: ${{ steps.filter.outputs.workflows }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -78,7 +78,7 @@ jobs:
       run:
         working-directory: ${{ matrix.module }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v5
         with:
@@ -134,7 +134,7 @@ jobs:
       matrix:
         module: [api, sandbox]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v5
         with:
@@ -156,7 +156,7 @@ jobs:
       run:
         working-directory: inference
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -200,7 +200,7 @@ jobs:
     # Blocking: the solution was run through `dotnet format` during the .NET 10
     # upgrade and committed clean, so drift here is a real regression.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -229,7 +229,7 @@ jobs:
     env:
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
@@ -301,7 +301,7 @@ jobs:
             context: ./nginx
             file: ./nginx/Dockerfile
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: docker/setup-buildx-action@v3
 
@@ -328,7 +328,7 @@ jobs:
       needs.changes.outputs.workflows == 'true' ||
       needs.changes.outputs.nginx == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Lint GitHub Actions workflows
         uses: raven-actions/actionlint@v2
