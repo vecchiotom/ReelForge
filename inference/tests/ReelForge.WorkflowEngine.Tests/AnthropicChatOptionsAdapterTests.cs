@@ -151,6 +151,39 @@ public class AnthropicChatOptionsAdapterTests
         options.RawRepresentationFactory.Should().NotBeNull();
     }
 
+    [Fact]
+    public void Dispose_disposes_the_client_it_was_given_ownership_of()
+    {
+        // Nothing else will: the Anthropic SDK's own IChatClient wrapper has an empty Dispose (its
+        // IL body is a bare `ret`), so the AnthropicClient it wraps is never released unless this
+        // adapter does it. CodeQL flagged exactly that as a missing-Dispose leak.
+        RecordingChatClient inner = new();
+        TrackedDisposable owned = new();
+        AnthropicChatOptionsAdapter client = new(inner, owned);
+
+        client.Dispose();
+
+        owned.DisposeCount.Should().Be(1);
+    }
+
+    [Fact]
+    public void Dispose_is_safe_when_no_ownership_was_transferred()
+    {
+        RecordingChatClient inner = new();
+        AnthropicChatOptionsAdapter client = new(inner);
+
+        Action act = () => client.Dispose();
+
+        act.Should().NotThrow();
+    }
+
+    private sealed class TrackedDisposable : IDisposable
+    {
+        public int DisposeCount { get; private set; }
+
+        public void Dispose() => DisposeCount++;
+    }
+
     /// <summary>
     /// Captures the <see cref="ChatOptions"/> it was handed. Same hand-written-fake approach the
     /// room executor tests use rather than Moq, since <see cref="IChatClient"/> has an async

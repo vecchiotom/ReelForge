@@ -50,9 +50,42 @@ namespace ReelForge.Shared.Inference;
 /// seam.
 /// </para>
 /// </remarks>
-public sealed class AnthropicChatOptionsAdapter(IChatClient innerClient)
-    : DelegatingChatClient(innerClient)
+public sealed class AnthropicChatOptionsAdapter : DelegatingChatClient
 {
+    private readonly IDisposable? _ownedClient;
+
+    /// <param name="innerClient">The SDK's <see cref="IChatClient"/> adapter to delegate to.</param>
+    /// <param name="ownedClient">
+    /// The underlying <c>AnthropicClient</c>, whose lifetime this wrapper takes over.
+    /// <para>
+    /// It has to be passed explicitly because nothing else disposes it: the SDK's own
+    /// <c>AnthropicChatClient.Dispose</c> is an empty method (verified in the assembly — its IL
+    /// body is a bare <c>ret</c>), so the adapter returned by <c>AsIChatClient</c> does not own the
+    /// client it wraps. Without this the <c>AnthropicClient</c> — which is
+    /// <see cref="IDisposable"/>, and holds an <c>HttpClient</c> — would be created and never
+    /// released, which is what CodeQL's "Missing Dispose call on local IDisposable" flags.
+    /// </para>
+    /// <para>
+    /// Note this only makes ownership explicit and correct; it does not change when disposal
+    /// happens today. <c>ChatClientFactory</c> caches every client it builds for the lifetime of
+    /// the process and is not itself disposable, which is deliberate — these are connection-pooled
+    /// clients shared across executions, exactly like the two OpenAI arms.
+    /// </para>
+    /// </param>
+    public AnthropicChatOptionsAdapter(IChatClient innerClient, IDisposable? ownedClient = null)
+        : base(innerClient)
+        => _ownedClient = ownedClient;
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _ownedClient?.Dispose();
+        }
+
+        base.Dispose(disposing);
+    }
+
     public override Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
         ChatOptions? options = null,

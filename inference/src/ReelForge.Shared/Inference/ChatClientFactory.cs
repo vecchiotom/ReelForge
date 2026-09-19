@@ -160,7 +160,11 @@ public sealed class ChatClientFactory : IChatClientFactory
             Timeout = TimeSpan.FromSeconds(provider.TimeoutSeconds)
         };
 
+        // The adapter takes ownership of `client`: the SDK's own IChatClient wrapper does not
+        // dispose the AnthropicClient it wraps (its Dispose is an empty method), so without this
+        // the client — an IDisposable holding an HttpClient — would never be released.
         return new AnthropicChatOptionsAdapter(
-            client.AsIChatClient(provider.ModelName, AnthropicDefaultMaxOutputTokens));
+            client.AsIChatClient(provider.ModelName, AnthropicDefaultMaxOutputTokens),
+            client);
     }
 }
