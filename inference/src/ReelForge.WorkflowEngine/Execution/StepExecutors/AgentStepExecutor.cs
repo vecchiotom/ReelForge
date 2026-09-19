@@ -172,6 +172,56 @@ public class AgentStepExecutor : IStepExecutor
             }
         }
 
+        // An agent that DECLARES a structured output schema must actually produce a parseable JSON
+        // object. Without this check the schema contract was declared but never verified: the step
+        // was marked Completed on any output at all, and the breakage surfaced at whatever distant
+        // consumer eventually tried to read it.
+        //
+        // Observed live producing a real promo: a VideoStoryEditor step returned 38KB of pure
+        // reasoning prose containing not a single brace, was recorded Completed, and the workflow
+        // then spent ~50 more minutes running MotionGraphicsPlanner, SoundDesigner and Colorist on
+        // top of a decision that did not exist -- before VideoCompile finally failed with
+        // "Decision input did not contain a recognizable JSON object", a message that names the
+        // compile step rather than the step that actually broke.
+        //
+        // Validating with ExtractLastJsonObject specifically (not a private parser, and not the
+        // first-match ExtractJsonObject) is the point: it is the exact extractor the downstream
+        // consumers use for these payloads, so a step that passes here cannot fail there for lack
+        // of a JSON object. Using the stricter first-match variant would also false-fail a
+        // reasoning model whose chain-of-thought contains incidental brace shorthand before the
+        // real answer -- the very case ExtractLastJsonObject exists to handle. Returning Failed
+        // rather than throwing hands this to the normal retry-with-feedback path, which gives the
+        // agent another attempt that is actually told what was wrong.
+        if (agent.OutputSchemaType != null &&
+            RobustJsonExtractor.ExtractLastJsonObject(result.Output ?? string.Empty) == null)
+        {
+            string schemaFailure =
+                $"Agent '{agent.Name}' declares the structured output schema " +
+                $"'{agent.OutputSchemaType.Name}' but its response contained no parseable JSON " +
+                "object. Return ONLY a single JSON object matching the schema — no prose, no " +
+                "markdown fences, no commentary.";
+            _logger.LogWarning(
+                "Agent step {StepOrder}: {AgentName} produced no JSON object despite declaring schema {Schema}. " +
+                "OutputChars={OutputChars}",
+                context.Step.StepOrder, agent.Name, agent.OutputSchemaType.Name, (result.Output ?? string.Empty).Length);
+
+            return new StepExecutionResult
+            {
+                Output = result.Output,
+                NextStepIndex = context.CurrentStepIndex + 1,
+                NewIterationCount = context.IterationCount,
+                DurationMs = sw.ElapsedMilliseconds,
+                TokensUsed = result.TokensUsed,
+                InputTokens = result.InputTokens,
+                OutputTokens = result.OutputTokens,
+                ToolCalls = result.ToolCalls,
+                Reasoning = result.Reasoning,
+                Status = StepStatus.Failed,
+                ErrorDetails = schemaFailure,
+                OutputStorageKey = outputStorageKey
+            };
+        }
+
         return new StepExecutionResult
         {
             Output = result.Output,

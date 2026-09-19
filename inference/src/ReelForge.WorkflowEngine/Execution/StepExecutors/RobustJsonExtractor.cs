@@ -67,6 +67,34 @@ internal static class RobustJsonExtractor
     /// </summary>
     public static string? ExtractLastJsonObject(string raw)
     {
+        string? found = ScanForLastJsonObject(raw);
+        if (found != null) return found;
+
+        // Doubled-opening-brace repair, generalizing <see cref="CollapseDuplicateLeadingBrace"/>
+        // from its original single caller to every structured-output payload. Same backend defect
+        // that helper was written for -- this stack's vLLM server, under guided decoding
+        // (`response_format: json_schema`), emits
+        //     {{\n  "keep": ["s0", "s2"], ... }
+        // with one spurious leading `{` and only one matching close, so the object sits
+        // permanently one level deep, depth never returns to 0, and the scan above reports
+        // "no JSON object". Reproduced directly against the endpoint while diagnosing a
+        // VideoCompile step that failed with exactly that message.
+        //
+        // That helper's doc comment is careful to call itself narrow, because collapsing braces
+        // unconditionally would corrupt a schema whose root legitimately opens with a nested
+        // object -- and unlike VideoShotCaption, the payloads reaching this method (e.g.
+        // VideoEditDecisionOutput, whose Keep is a list of objects) do have nesting. Running the
+        // repair ONLY on the already-failed path is what makes it safe here: any response that
+        // produces a balanced object never reaches this line, so a genuine nested structure is
+        // returned by the scan above and never rewritten.
+        string collapsed = CollapseDuplicateLeadingBrace(raw);
+        // Reference equality: the helper returns the input unchanged when there is nothing to fix,
+        // so this also avoids a pointless second full scan.
+        return ReferenceEquals(collapsed, raw) ? null : ScanForLastJsonObject(collapsed);
+    }
+
+    private static string? ScanForLastJsonObject(string raw)
+    {
         int depth = 0;
         bool inString = false;
         bool escape = false;
