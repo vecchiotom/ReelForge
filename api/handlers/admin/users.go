@@ -42,7 +42,7 @@ func handleCreateUser(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(CreateUserResponse{
+	_ = json.NewEncoder(w).Encode(CreateUserResponse{
 		User:              toUserResponse(user),
 		TemporaryPassword: otp,
 	})
@@ -61,7 +61,7 @@ func handleListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func handleGetUser(w http.ResponseWriter, r *http.Request) {
@@ -78,7 +78,7 @@ func handleGetUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(toUserResponse(user))
+	_ = json.NewEncoder(w).Encode(toUserResponse(user))
 }
 
 func handleUpdateUser(w http.ResponseWriter, r *http.Request) {
@@ -139,7 +139,7 @@ func handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(toUserResponse(user))
+	_ = json.NewEncoder(w).Encode(toUserResponse(user))
 }
 
 func handleDeleteUser(w http.ResponseWriter, r *http.Request) {

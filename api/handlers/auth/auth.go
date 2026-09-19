@@ -43,7 +43,7 @@ func handleToken(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Perform a dummy bcrypt comparison so the response timing for an unknown
 		// email matches the timing for a known email with a wrong password.
-		bcrypt.CompareHashAndPassword([]byte(dummyPasswordHash), []byte(req.Password))
+		_ = bcrypt.CompareHashAndPassword([]byte(dummyPasswordHash), []byte(req.Password))
 		http.Error(w, `{"error":"invalid credentials"}`, http.StatusUnauthorized)
 		return
 	}
@@ -84,7 +84,7 @@ func handleToken(w http.ResponseWriter, r *http.Request) {
 	})
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(TokenResponse{
+	_ = json.NewEncoder(w).Encode(TokenResponse{
 		AccessToken:        token,
 		TokenType:          "Bearer",
 		ExpiresIn:          86400,
@@ -140,5 +140,5 @@ func handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"message": "password changed successfully"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"message": "password changed successfully"})
 }

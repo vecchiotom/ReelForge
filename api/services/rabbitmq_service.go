@@ -21,8 +21,8 @@ type WorkflowEvent struct {
 
 // SSEHub manages a set of SSE subscriber channels and broadcasts events to them.
 type SSEHub struct {
-	mu             sync.RWMutex
-	clients        map[chan WorkflowEvent]string
+	mu                sync.RWMutex
+	clients           map[chan WorkflowEvent]string
 	connectionsByUser map[string]int
 }
 
@@ -48,7 +48,7 @@ func (h *SSEHub) Subscribe(scopeKey string) (chan WorkflowEvent, bool) {
 		return nil, false
 	}
 	h.clients[ch] = scopeKey
-	h.connectionsByUser[scopeKey] = h.connectionsByUser[scopeKey] + 1
+	h.connectionsByUser[scopeKey]++
 	h.mu.Unlock()
 	return ch, true
 }
@@ -103,7 +103,7 @@ const (
 	// ReelForge.Shared.IntegrationEvents.
 	exchangeStepChatTurn = "ReelForge.Shared.IntegrationEvents:WorkflowStepChatTurn"
 
-    queueName = "go-api-workflow-events"
+	queueName = "go-api-workflow-events"
 )
 
 // StartRabbitMQConsumer connects to RabbitMQ, binds to the workflow event
