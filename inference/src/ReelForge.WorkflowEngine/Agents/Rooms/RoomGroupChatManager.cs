@@ -28,6 +28,12 @@ public abstract class RoomGroupChatManager : GroupChatManager
     /// <summary>The literal token every room's director prompt is instructed to emit once the room has converged on a decision.</summary>
     public const string SentinelToken = "ROOM_DECIDED";
 
+    /// <summary>
+    /// The director occupies the LAST <see cref="DirectorAliasCount"/> slots of <c>allParticipants</c>,
+    /// not just one — see the constructor's remarks for why two identical registrations are required.
+    /// </summary>
+    private const int DirectorAliasCount = 2;
+
     private readonly IReadOnlyList<AIAgent> _allParticipants;
     private readonly IRoomStepConfig _config;
     private readonly IReadOnlySet<string> _offeredIds;
@@ -78,11 +84,47 @@ public abstract class RoomGroupChatManager : GroupChatManager
         return found;
     }
 
-    /// <param name="allParticipants">Seats in the same order as the config's <c>EffectiveSeats</c>, with the director appended last.</param>
+    /// <param name="allParticipants">
+    /// Seats in the same order as the config's <c>EffectiveSeats</c>, with the director appended
+    /// LAST <em>TWICE</em> — two separate <see cref="RoomSeatAgent"/> registrations, each wrapping
+    /// its OWN inner director agent instance (same resolved chat client/instructions/tools; see the
+    /// remarks below for why sharing one inner instance across both wrappers does not work).
+    /// </param>
     /// <param name="config">The step's resolved room configuration (schedule/termination knobs only are read here).</param>
     /// <param name="offeredIds">The offered id vocabulary extracted from the bounded view, used for convergence detection only.</param>
     /// <param name="directorSeatName">The <see cref="AIAgent.Name"/> the director's <see cref="RoomSeatAgent"/> wrapper reports — used to recognise the director's own turns in history.</param>
     /// <param name="idMentionPattern">The compiled regex recognizing this room's offered-id namespace in free-form turn text (candidate id captured as group 1).</param>
+    /// <remarks>
+    /// <c>Microsoft.Agents.AI.Workflows</c> 1.22.0's internal <c>GroupChatHost.TakeTurnAsync</c>
+    /// (decompiled and confirmed against the shipped 1.22.0 assembly — absent from 1.0.0-rc2)
+    /// added a guard that was not there before: if <c>SelectNextAgentAsync</c> returns the SAME
+    /// registered participant that took the immediately preceding turn, the host treats the room
+    /// as having nothing left to say and ends it right there, without ever invoking that agent
+    /// again — silently short-circuiting the turn instead of sending it. That collides head-on
+    /// with this scheduler's own design once the round-robin phase ends: every room wants the
+    /// SAME director to keep speaking for every remaining turn up to the ceiling (see
+    /// <c>SelectNextAgentAsync</c> below), which under 1.22.0 now ends the room one turn early the
+    /// very first time the director would otherwise speak twice in a row. Two distinct director
+    /// registrations — alternated, never the same object on consecutive turns — sidestep the new
+    /// guard without changing what "the director" means: both receive the identical growing history
+    /// each turn (the group chat broadcasts <c>_history</c> to every registered participant, not a
+    /// per-participant slice), so which alias answers a given turn is a scheduling-identity detail
+    /// only, invisible to the transcript (both report <see cref="AIAgent.Name"/> as
+    /// <paramref name="directorSeatName"/>) and to the model itself.
+    /// <para>
+    /// The two aliases must be built from SEPARATE inner agent instances, not one inner agent
+    /// wrapped twice: <c>AIAgent.Id</c> defaults to a fresh random GUID per instance, but
+    /// <c>DelegatingAIAgent</c> (what <see cref="RoomSeatAgent"/> is) forwards its <c>IdCore</c> to
+    /// <c>InnerAgent.Id</c>. <c>AgentWorkflowBuilder</c> derives each participant's internal
+    /// executor-binding id from Name+Id, and both aliases must keep the SAME Name — so a shared
+    /// inner agent gives both aliases the identical Id too, and
+    /// <c>GroupChatWorkflowBuilder.Build()</c> throws ("Cannot bind executor with ID '...' because
+    /// an executor with the same ID but different instance is already bound.") the moment the
+    /// workflow is built. Confirmed live against the real 1.22.0 assembly. See
+    /// <c>RoomStepExecutorBase.RunRoomAsync</c>, which builds each alias's inner agent independently
+    /// for exactly this reason.
+    /// </para>
+    /// </remarks>
     protected RoomGroupChatManager(
         IReadOnlyList<AIAgent> allParticipants,
         IRoomStepConfig config,
@@ -90,29 +132,33 @@ public abstract class RoomGroupChatManager : GroupChatManager
         string directorSeatName,
         Regex idMentionPattern)
     {
-        if (allParticipants.Count < 2)
-            throw new ArgumentException("A room needs at least one seat plus the director.", nameof(allParticipants));
+        if (allParticipants.Count < 1 + DirectorAliasCount)
+            throw new ArgumentException("A room needs at least one seat plus two director registrations.", nameof(allParticipants));
 
         _allParticipants = allParticipants;
         _config = config;
         _offeredIds = offeredIds;
         _directorSeatName = directorSeatName;
         _idMentionPattern = idMentionPattern;
-        _editorCount = allParticipants.Count - 1;
+        _editorCount = allParticipants.Count - DirectorAliasCount;
     }
 
     /// <summary>
     /// Round-robins the seats (indices <c>0..seatCount-1</c> of <c>allParticipants</c>)
-    /// for the config's <c>Rounds</c> full passes, then always returns the director
-    /// (the last participant) for every turn after that.
+    /// for the config's <c>Rounds</c> full passes, then alternates between the director's two
+    /// alias registrations (the last <see cref="DirectorAliasCount"/> participants) for every turn
+    /// after that — see the constructor's remarks for why a single director registration can no
+    /// longer produce more than one consecutive turn under Microsoft.Agents.AI.Workflows 1.22.0.
     /// </summary>
     protected override ValueTask<AIAgent> SelectNextAgentAsync(
         IReadOnlyList<ChatMessage> history, CancellationToken cancellationToken)
     {
         int i = IterationCount;
-        AIAgent next = i < _editorCount * _config.Rounds
-            ? _allParticipants[i % _editorCount]
-            : _allParticipants[^1];
+        if (i < _editorCount * _config.Rounds)
+            return ValueTask.FromResult(_allParticipants[i % _editorCount]);
+
+        int directorTurn = i - (_editorCount * _config.Rounds);
+        AIAgent next = _allParticipants[^(DirectorAliasCount - directorTurn % DirectorAliasCount)];
         return ValueTask.FromResult(next);
     }
 

@@ -18,6 +18,7 @@ interface InferenceProviderFormProps {
 const KIND_OPTIONS: { value: InferenceProviderKind; label: string }[] = [
   { value: 'AzureOpenAI', label: 'Azure OpenAI' },
   { value: 'OpenAICompatible', label: 'OpenAI-compatible' },
+  { value: 'Anthropic', label: 'Anthropic (Claude)' },
 ];
 
 const CAPABILITY_OPTIONS: { value: InferenceProviderCapability; label: string }[] = [
@@ -25,6 +26,42 @@ const CAPABILITY_OPTIONS: { value: InferenceProviderCapability; label: string }[
   { value: 'Transcription', label: 'Transcription (ASR)' },
   { value: 'Vision', label: 'Vision (shot captioning)' },
 ];
+
+/** Anthropic's production API. Prefilled because the backend requires a non-empty endpoint. */
+const ANTHROPIC_DEFAULT_ENDPOINT = 'https://api.anthropic.com';
+
+/**
+ * Per-kind field wording and examples. Keyed by kind rather than branched on `isAzure`, so a third
+ * kind does not turn every label into a nested ternary.
+ */
+const KIND_FIELD_HINTS: Record<
+  InferenceProviderKind,
+  { endpointLabel: string; modelLabel: string; endpointPlaceholder: string; modelPlaceholder: string }
+> = {
+  AzureOpenAI: {
+    endpointLabel: 'Endpoint',
+    modelLabel: 'Deployment name',
+    endpointPlaceholder: 'https://my-resource.openai.azure.com',
+    modelPlaceholder: 'gpt-4o-mini',
+  },
+  OpenAICompatible: {
+    endpointLabel: 'Base URL',
+    modelLabel: 'Model',
+    endpointPlaceholder: 'http://localhost:8000/v1',
+    modelPlaceholder: 'meta-llama/Llama-3-8b',
+  },
+  Anthropic: {
+    endpointLabel: 'Base URL',
+    modelLabel: 'Model',
+    endpointPlaceholder: ANTHROPIC_DEFAULT_ENDPOINT,
+    modelPlaceholder: 'claude-opus-5',
+  },
+};
+
+/** Anthropic has no speech-to-text API; the backend rejects this pairing with a 400. */
+const CAPABILITIES_UNSUPPORTED_BY_KIND: Partial<Record<InferenceProviderKind, InferenceProviderCapability[]>> = {
+  Anthropic: ['Transcription'],
+};
 
 export function InferenceProviderForm({ opened, onClose, onSuccess, provider }: InferenceProviderFormProps) {
   const [loading, setLoading] = useState(false);
@@ -73,11 +110,45 @@ export function InferenceProviderForm({ opened, onClose, onSuccess, provider }: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opened, provider]);
 
-  const isAzure = form.values.kind === 'AzureOpenAI';
-  const endpointLabel = isAzure ? 'Endpoint' : 'Base URL';
-  const modelLabel = isAzure ? 'Deployment name' : 'Model';
-  const endpointPlaceholder = isAzure ? 'https://my-resource.openai.azure.com' : 'http://localhost:8000/v1';
-  const modelPlaceholder = isAzure ? 'gpt-4o-mini' : 'meta-llama/Llama-3-8b';
+  const { endpointLabel, modelLabel, endpointPlaceholder, modelPlaceholder } =
+    KIND_FIELD_HINTS[form.values.kind] ?? KIND_FIELD_HINTS.OpenAICompatible;
+
+  // Anthropic rejects a blank key outright rather than falling back to the container's environment,
+  // so the `env:` sentinel is the only way to ask for that — worth saying here, since it is not
+  // discoverable and the failure otherwise only shows up at run time.
+  const apiKeyDescription = [
+    isEdit ? 'Leave blank to keep the current key.' : null,
+    form.values.kind === 'Anthropic'
+      ? 'Enter env: to use the ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN environment variables instead of storing a key.'
+      : null,
+  ]
+    .filter(Boolean)
+    .join(' ') || undefined;
+
+  const unsupportedCapabilities = CAPABILITIES_UNSUPPORTED_BY_KIND[form.values.kind] ?? [];
+  const capabilityOptions = CAPABILITY_OPTIONS.filter((o) => !unsupportedCapabilities.includes(o.value));
+
+  // Switching kind can invalidate the currently selected capability (Anthropic cannot transcribe).
+  // Leaving the stale value selected would submit a combination the backend rejects with a 400 and
+  // — worse — the Select would render a value no longer in its option list, showing blank. Fall
+  // back to Chat, which every kind supports. Endpoint is prefilled on the same switch because the
+  // backend requires a non-empty one and Anthropic's is a fixed, well-known URL.
+  const handleKindChange = (value: string | null) => {
+    if (!value) return;
+    const kind = value as InferenceProviderKind;
+    form.setFieldValue('kind', kind);
+
+    if ((CAPABILITIES_UNSUPPORTED_BY_KIND[kind] ?? []).includes(form.values.capability)) {
+      form.setFieldValue('capability', 'Chat');
+    }
+
+    if (kind === 'Anthropic' && !form.values.endpoint.trim()) {
+      form.setFieldValue('endpoint', ANTHROPIC_DEFAULT_ENDPOINT);
+    } else if (kind !== 'Anthropic' && form.values.endpoint.trim() === ANTHROPIC_DEFAULT_ENDPOINT) {
+      // Only clear the value we prefilled ourselves — never a URL the user typed.
+      form.setFieldValue('endpoint', '');
+    }
+  };
 
   const handleTest = async () => {
     setTesting(true);
@@ -167,11 +238,12 @@ export function InferenceProviderForm({ opened, onClose, onSuccess, provider }: 
             data={KIND_OPTIONS}
             allowDeselect={false}
             {...form.getInputProps('kind')}
+            onChange={handleKindChange}
           />
           <Select
             label="Capability"
             description="Chat providers serve agent completions; Transcription providers serve ASR for VideoAnalyze steps; Vision providers serve VideoAnalyze's optional shot captioning. Each has its own independent default."
-            data={CAPABILITY_OPTIONS}
+            data={capabilityOptions}
             allowDeselect={false}
             {...form.getInputProps('capability')}
           />
@@ -181,7 +253,7 @@ export function InferenceProviderForm({ opened, onClose, onSuccess, provider }: 
             label="API Key"
             type="password"
             placeholder={provider?.apiKeyLastFour ? `•••• ${provider.apiKeyLastFour}` : 'sk-...'}
-            description={isEdit ? 'Leave blank to keep the current key' : undefined}
+            description={apiKeyDescription}
             {...form.getInputProps('apiKey')}
           />
           <NumberInput

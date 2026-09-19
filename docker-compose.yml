@@ -131,6 +131,12 @@ services:
       AzureOpenAI__Endpoint: ${AZURE_OPENAI_ENDPOINT:-}
       AzureOpenAI__ApiKey: ${AZURE_OPENAI_API_KEY:-}
       AzureOpenAI__DeploymentName: ${AZURE_OPENAI_DEPLOYMENT:-gpt-4o-mini}
+      # Read by the Anthropic SDK itself (not by any ReelForge config binding) when an
+      # `inference_providers` row of kind Anthropic stores the literal `env:` as its api key, so a
+      # developer can run against their own credentials without persisting a secret. See
+      # docs/anthropic-provider.md for which credential is permitted where.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
       RabbitMQ__Host: rabbitmq
       RabbitMQ__Username: ${RABBITMQ_USER:-guest}
       RabbitMQ__Password: ${RABBITMQ_PASSWORD:-guest}
@@ -179,6 +185,12 @@ services:
       AzureOpenAI__Endpoint: ${AZURE_OPENAI_ENDPOINT:-}
       AzureOpenAI__ApiKey: ${AZURE_OPENAI_API_KEY:-}
       AzureOpenAI__DeploymentName: ${AZURE_OPENAI_DEPLOYMENT:-gpt-4o-mini}
+      # Read by the Anthropic SDK itself (not by any ReelForge config binding) when an
+      # `inference_providers` row of kind Anthropic stores the literal `env:` as its api key, so a
+      # developer can run against their own credentials without persisting a secret. See
+      # docs/anthropic-provider.md for which credential is permitted where.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
       RabbitMQ__Host: rabbitmq
       RabbitMQ__Username: ${RABBITMQ_USER:-guest}
       RabbitMQ__Password: ${RABBITMQ_PASSWORD:-guest}

@@ -285,10 +285,28 @@ public enum ContextMode
 /// <summary>
 /// The kind of backend an <see cref="InferenceProvider"/> talks to.
 /// </summary>
+/// <remarks>
+/// Persisted as a string (<c>.HasConversion&lt;string&gt;()</c> in both DbContexts), so adding a
+/// member here needs no EF migration — the same reason <see cref="InferenceProviderCapability.Vision"/>
+/// needed none.
+/// </remarks>
 public enum InferenceProviderKind
 {
     AzureOpenAI,
-    OpenAICompatible
+    OpenAICompatible,
+
+    /// <summary>
+    /// Anthropic's first-party Messages API (<c>api.anthropic.com</c>), via the official
+    /// <c>Anthropic</c> NuGet SDK. Claude speaks a different wire protocol from OpenAI's Chat
+    /// Completions — this is deliberately NOT modelled as an <see cref="OpenAICompatible"/> row
+    /// pointed at a translating gateway, so no proxy sits between the engine and the model.
+    /// <para>
+    /// Chat and <see cref="InferenceProviderCapability.Vision"/> only: Anthropic exposes no
+    /// speech-to-text endpoint, so a <see cref="InferenceProviderCapability.Transcription"/> row of
+    /// this kind is rejected at the API boundary rather than failing later inside a workflow.
+    /// </para>
+    /// </summary>
+    Anthropic
 }
 
 /// <summary>

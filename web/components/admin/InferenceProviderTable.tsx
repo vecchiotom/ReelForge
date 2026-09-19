@@ -3,7 +3,18 @@
 import { Table, Badge, ActionIcon, Group, Tooltip } from '@mantine/core';
 import { IconEdit, IconTrash, IconCircleCheck, IconCircleX, IconCircleDashed } from '@tabler/icons-react';
 import Link from 'next/link';
-import type { InferenceProvider } from '@/lib/types/inference-provider';
+import type { InferenceProvider, InferenceProviderKind } from '@/lib/types/inference-provider';
+
+/**
+ * Badge styling per provider kind. A lookup rather than a ternary so a kind added to the backend
+ * enum but missed here degrades to its raw name, instead of being silently mislabelled as whatever
+ * sat on the ternary's false branch.
+ */
+const KIND_BADGE: Record<InferenceProviderKind, { label: string; color: string }> = {
+  AzureOpenAI: { label: 'Azure OpenAI', color: 'blue' },
+  OpenAICompatible: { label: 'OpenAI-compatible', color: 'grape' },
+  Anthropic: { label: 'Anthropic', color: 'orange' },
+};
 
 interface InferenceProviderTableProps {
   providers: InferenceProvider[];
@@ -53,8 +64,8 @@ export function InferenceProviderTable({ providers, onDelete }: InferenceProvide
             <Table.Tr key={provider.id}>
               <Table.Td>{provider.name}</Table.Td>
               <Table.Td>
-                <Badge color={provider.kind === 'AzureOpenAI' ? 'blue' : 'grape'} variant="light" size="sm">
-                  {provider.kind === 'AzureOpenAI' ? 'Azure OpenAI' : 'OpenAI-compatible'}
+                <Badge color={KIND_BADGE[provider.kind]?.color ?? 'gray'} variant="light" size="sm">
+                  {KIND_BADGE[provider.kind]?.label ?? provider.kind}
                 </Badge>
               </Table.Td>
               <Table.Td>

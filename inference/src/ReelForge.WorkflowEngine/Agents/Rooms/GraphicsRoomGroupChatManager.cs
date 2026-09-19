@@ -22,7 +22,7 @@ public class GraphicsRoomGroupChatManager : RoomGroupChatManager
     public static IReadOnlyList<string> ExtractOfferedIdMentions(string? text, IReadOnlySet<string> offeredIds) =>
         ExtractIdMentions(text, offeredIds, OfferedIdMentionPattern);
 
-    /// <param name="allParticipants">Seats in the same order as <see cref="GraphicsRoomStepConfig.EffectiveSeats"/>, with the director appended last.</param>
+    /// <param name="allParticipants">Seats in the same order as <see cref="GraphicsRoomStepConfig.EffectiveSeats"/>, with the director appended last TWICE (see the base constructor's remarks).</param>
     /// <param name="config">The step's resolved configuration.</param>
     /// <param name="offeredIds">The offered placement-id vocabulary extracted from the bounded view's <c>view.placements</c>, used for convergence detection only.</param>
     /// <param name="directorSeatName">The <see cref="AIAgent.Name"/> the director's <see cref="RoomSeatAgent"/> wrapper reports — used to recognise the director's own turns in history.</param>

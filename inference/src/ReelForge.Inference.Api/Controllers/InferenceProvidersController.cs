@@ -104,7 +104,7 @@ public class InferenceProvidersController : ControllerBase
 
         if (!TryParseKind(request.Kind, out InferenceProviderKind kind))
         {
-            return BadRequest(new { error = $"Invalid kind '{request.Kind}'. Expected 'AzureOpenAI' or 'OpenAICompatible'." });
+            return BadRequest(new { error = $"Invalid kind '{request.Kind}'. Expected one of {KnownKinds}." });
         }
 
         // Default to Chat when omitted, for backward compatibility with any existing frontend
@@ -113,6 +113,11 @@ public class InferenceProvidersController : ControllerBase
         if (!string.IsNullOrWhiteSpace(request.Capability) && !TryParseCapability(request.Capability, out capability))
         {
             return BadRequest(new { error = $"Invalid capability '{request.Capability}'. Expected 'Chat', 'Transcription', or 'Vision'." });
+        }
+
+        if (IsUnsupportedCombination(kind, capability, out string unsupported))
+        {
+            return BadRequest(new { error = unsupported });
         }
 
         bool nameTaken = await _db.InferenceProviders.AnyAsync(p => p.Name == request.Name, ct);
@@ -193,7 +198,7 @@ public class InferenceProvidersController : ControllerBase
         {
             if (!TryParseKind(request.Kind, out InferenceProviderKind kind))
             {
-                return BadRequest(new { error = $"Invalid kind '{request.Kind}'. Expected 'AzureOpenAI' or 'OpenAICompatible'." });
+                return BadRequest(new { error = $"Invalid kind '{request.Kind}'. Expected one of {KnownKinds}." });
             }
 
             entity.Kind = kind;
@@ -224,6 +229,15 @@ public class InferenceProvidersController : ControllerBase
             }
 
             entity.Capability = capability;
+        }
+
+        // Checked against the POST-UPDATE state rather than against the request, because kind and
+        // capability are applied in separate blocks above and either may be absent: a request that
+        // only flips kind to Anthropic on a row that is already Transcription would otherwise slip
+        // through, as would the mirror case.
+        if (IsUnsupportedCombination(entity.Kind, entity.Capability, out string unsupported))
+        {
+            return BadRequest(new { error = unsupported });
         }
 
         // string? fields follow the Go admin-user "omit = unchanged" convention: null/absent
@@ -323,6 +337,16 @@ public class InferenceProvidersController : ControllerBase
         InferenceProvider? entity = await _db.InferenceProviders.FirstOrDefaultAsync(p => p.Id == id, ct);
         if (entity == null) return NotFound();
 
+        // The same guard Create/Update/TestUnsaved apply. Without it, an unsupported row — only
+        // reachable by a direct database write, which is exactly the case the factory's defensive
+        // arm exists for — reaches the factory, whose explanatory NotSupportedException is then
+        // swallowed by the catch-all below and reported as the generic "Provider test failed.".
+        // That defeats the purpose of the one endpoint whose job is to explain misconfiguration.
+        if (IsUnsupportedCombination(entity.Kind, entity.Capability, out string unsupportedSaved))
+        {
+            return BadRequest(new { error = unsupportedSaved });
+        }
+
         string apiKey = string.Empty;
         if (!string.IsNullOrEmpty(entity.ApiKeyEncrypted))
         {
@@ -419,13 +443,18 @@ public class InferenceProvidersController : ControllerBase
 
         if (string.IsNullOrWhiteSpace(kindStr) || !TryParseKind(kindStr, out InferenceProviderKind kind))
         {
-            return BadRequest(new { error = $"Invalid or missing kind '{kindStr}'. Expected 'AzureOpenAI' or 'OpenAICompatible'." });
+            return BadRequest(new { error = $"Invalid or missing kind '{kindStr}'. Expected one of {KnownKinds}." });
         }
 
         InferenceProviderCapability capability = InferenceProviderCapability.Chat;
         if (!string.IsNullOrWhiteSpace(capabilityStr) && !TryParseCapability(capabilityStr, out capability))
         {
             return BadRequest(new { error = $"Invalid capability '{capabilityStr}'. Expected 'Chat', 'Transcription', or 'Vision'." });
+        }
+
+        if (IsUnsupportedCombination(kind, capability, out string unsupportedCombination))
+        {
+            return BadRequest(new { error = unsupportedCombination });
         }
 
         TestInferenceProviderResponse result;
@@ -463,10 +492,8 @@ public class InferenceProvidersController : ControllerBase
             // Reasoning models (e.g. Qwen3 with thinking mode on) spend output tokens on a
             // hidden reasoning chain before emitting any visible content — a too-tight budget
             // gets exhausted mid-thought and comes back with content: null, which used to read
-            // as success here (no emptiness check) even though nothing useful was returned. 128
-            // gives a non-reasoning model plenty of headroom for "ping" while still comfortably
-            // covering a short reasoning preamble.
-            ChatOptions options = new() { MaxOutputTokens = 128 };
+            // as success here (no emptiness check) even though nothing useful was returned.
+            ChatOptions options = new() { MaxOutputTokens = PingMaxOutputTokens(provider.Kind) };
 
             ChatResponse response = await chatClient.GetResponseAsync(messages, options, ct);
             stopwatch.Stop();
@@ -547,7 +574,7 @@ public class InferenceProvidersController : ControllerBase
                 });
             // See the matching comment in RunTestAsync — a reasoning model needs headroom beyond
             // its hidden chain-of-thought before content ever appears.
-            ChatOptions options = new() { MaxOutputTokens = 128 };
+            ChatOptions options = new() { MaxOutputTokens = PingMaxOutputTokens(provider.Kind) };
 
             ChatResponse response = await chatClient.GetResponseAsync(new[] { message }, options, ct);
             stopwatch.Stop();
@@ -655,7 +682,10 @@ public class InferenceProvidersController : ControllerBase
             return;
         }
 
-        if (apiKey.Length == 0)
+        // Whitespace-only counts as clearing, not as storing. Storing it would show the admin a
+        // confident `hasApiKey: true` with a last-four, while every consumer trims the value back
+        // to empty and behaves as though no key were configured at all.
+        if (apiKey.Trim().Length == 0)
         {
             // Explicit empty string: clear the key.
             entity.ApiKeyEncrypted = null;
@@ -663,6 +693,9 @@ public class InferenceProvidersController : ControllerBase
             return;
         }
 
+        // Trimmed before storage so the stored value matches what consumers actually use, and so
+        // a stray pasted space cannot produce a second, redundant client-cache entry.
+        apiKey = apiKey.Trim();
         entity.ApiKeyEncrypted = _secretProtector.Protect(apiKey);
         entity.ApiKeyLastFour = apiKey.Length <= 4 ? apiKey : apiKey[^4..];
     }
@@ -696,6 +729,50 @@ public class InferenceProvidersController : ControllerBase
                 (b[0] == 172 && b[1] >= 16 && b[1] <= 31) ||
                 (b[0] == 192 && b[1] == 168) ||
                 (b[0] == 169 && b[1] == 254)));
+    }
+
+    /// <summary>
+    /// Output-token budget for a one-word connectivity ping. 128 is ample headroom for "ping" plus
+    /// a short reasoning preamble on an OpenAI-shaped backend.
+    /// <para>
+    /// Anthropic needs more headroom: a current Claude model may spend reasoning tokens before
+    /// emitting visible content, and those are charged against <c>max_tokens</c> — so a 128-token
+    /// ceiling risks being consumed before any content appears, making a correctly configured
+    /// provider report the misleading "Provider returned an empty response", which is then
+    /// persisted to LastTestError.
+    /// </para>
+    /// </summary>
+    private static int PingMaxOutputTokens(InferenceProviderKind kind) =>
+        kind == InferenceProviderKind.Anthropic ? 4096 : 128;
+
+    /// <summary>
+    /// Rendered from the enum rather than hand-listed, so adding a provider kind cannot leave an
+    /// error message quietly advertising a stale set of valid values.
+    /// </summary>
+    private static readonly string KnownKinds =
+        string.Join(", ", Enum.GetNames<InferenceProviderKind>().Select(n => $"'{n}'"));
+
+    /// <summary>
+    /// Rejects kind/capability combinations that cannot ever work, at the boundary where the row
+    /// is written rather than hours later inside a workflow step. Today that is exactly one pair:
+    /// Anthropic exposes no speech-to-text API, so it can never serve Transcription. Chat and
+    /// Vision both resolve through <c>IChatClientFactory</c> and are fine.
+    /// </summary>
+    private static bool IsUnsupportedCombination(
+        InferenceProviderKind kind,
+        InferenceProviderCapability capability,
+        out string error)
+    {
+        if (kind == InferenceProviderKind.Anthropic && capability == InferenceProviderCapability.Transcription)
+        {
+            error = "Anthropic providers cannot serve the Transcription capability — Anthropic " +
+                    "exposes no speech-to-text API. Use a provider of kind 'AzureOpenAI' or " +
+                    "'OpenAICompatible' for transcription.";
+            return true;
+        }
+
+        error = string.Empty;
+        return false;
     }
 
     private static bool TryParseKind(string? value, out InferenceProviderKind kind) =>

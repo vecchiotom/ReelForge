@@ -1,4 +1,12 @@
-export type InferenceProviderKind = 'AzureOpenAI' | 'OpenAICompatible';
+/**
+ * The kind of backend a provider row talks to. Mirrors the backend `InferenceProviderKind` enum
+ * (ReelForge.Shared/Data/Models/Enums.cs) exactly.
+ *
+ * `Anthropic` targets Claude through Anthropic's first-party Messages API. It supports the `Chat`
+ * and `Vision` capabilities only — Anthropic exposes no speech-to-text API, so the backend rejects
+ * an `Anthropic` + `Transcription` row with a 400. See docs/anthropic-provider.md.
+ */
+export type InferenceProviderKind = 'AzureOpenAI' | 'OpenAICompatible' | 'Anthropic';
 
 /**
  * What an InferenceProvider row can be used for. Mirrors the backend `InferenceProviderCapability`

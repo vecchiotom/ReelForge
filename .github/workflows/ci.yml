@@ -287,6 +287,10 @@ jobs:
             context: ./site
             file: ./site/Dockerfile
             target: production
+            # The Dockerfile bakes this into the bundle at build time. Without it the ARG resolves
+            # to the empty string and the image would carry site-config's source default instead of
+            # the canonical origin; see docs/marketing-site.md.
+            build_args: NEXT_PUBLIC_SITE_URL=https://reelforge.com
           - name: sandbox-runtime
             context: ./sandbox
             file: ./sandbox/Dockerfile
@@ -308,6 +312,7 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.file }}
           target: ${{ matrix.target }}
+          build-args: ${{ matrix.build_args }}
           push: false
           load: false
           cache-from: type=gha,scope=${{ matrix.name }}
