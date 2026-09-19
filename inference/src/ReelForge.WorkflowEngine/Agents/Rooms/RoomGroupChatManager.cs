@@ -29,10 +29,12 @@ public abstract class RoomGroupChatManager : GroupChatManager
     public const string SentinelToken = "ROOM_DECIDED";
 
     /// <summary>
-    /// The director occupies the LAST <see cref="DirectorAliasCount"/> slots of <c>allParticipants</c>,
-    /// not just one — see the constructor's remarks for why two identical registrations are required.
+    /// How many interchangeable registrations EVERY logical participant — each seat AND the
+    /// director — occupies in <c>allParticipants</c>, which is therefore laid out in consecutive
+    /// pairs: <c>[seat0, seat0, seat1, seat1, ..., director, director]</c>. See the constructor's
+    /// remarks for why one registration per participant is not enough.
     /// </summary>
-    private const int DirectorAliasCount = 2;
+    public const int ParticipantAliasCount = 2;
 
     private readonly IReadOnlyList<AIAgent> _allParticipants;
     private readonly IRoomStepConfig _config;
@@ -85,10 +87,13 @@ public abstract class RoomGroupChatManager : GroupChatManager
     }
 
     /// <param name="allParticipants">
-    /// Seats in the same order as the config's <c>EffectiveSeats</c>, with the director appended
-    /// LAST <em>TWICE</em> — two separate <see cref="RoomSeatAgent"/> registrations, each wrapping
-    /// its OWN inner director agent instance (same resolved chat client/instructions/tools; see the
-    /// remarks below for why sharing one inner instance across both wrappers does not work).
+    /// Every logical participant registered <see cref="ParticipantAliasCount"/> times in
+    /// consecutive slots — the seats first, in the same order as the config's
+    /// <c>EffectiveSeats</c>, then the director last:
+    /// <c>[seat0, seat0, seat1, seat1, ..., director, director]</c>. Each alias is a separate
+    /// <see cref="RoomSeatAgent"/> wrapping its OWN inner agent instance (same resolved chat
+    /// client/instructions/tools; see the remarks below for why sharing one inner instance across
+    /// two wrappers does not work).
     /// </param>
     /// <param name="config">The step's resolved room configuration (schedule/termination knobs only are read here).</param>
     /// <param name="offeredIds">The offered id vocabulary extracted from the bounded view, used for convergence detection only.</param>
@@ -101,23 +106,29 @@ public abstract class RoomGroupChatManager : GroupChatManager
     /// registered participant that took the immediately preceding turn, the host treats the room
     /// as having nothing left to say and ends it right there, without ever invoking that agent
     /// again — silently short-circuiting the turn instead of sending it. That collides head-on
-    /// with this scheduler's own design once the round-robin phase ends: every room wants the
-    /// SAME director to keep speaking for every remaining turn up to the ceiling (see
-    /// <c>SelectNextAgentAsync</c> below), which under 1.22.0 now ends the room one turn early the
-    /// very first time the director would otherwise speak twice in a row. Two distinct director
-    /// registrations — alternated, never the same object on consecutive turns — sidestep the new
-    /// guard without changing what "the director" means: both receive the identical growing history
-    /// each turn (the group chat broadcasts <c>_history</c> to every registered participant, not a
-    /// per-participant slice), so which alias answers a given turn is a scheduling-identity detail
-    /// only, invisible to the transcript (both report <see cref="AIAgent.Name"/> as
-    /// <paramref name="directorSeatName"/>) and to the model itself.
+    /// with this scheduler's design in TWO places: the director speaks every remaining turn once
+    /// the round-robin phase ends, and a room configured with a single seat repeats that seat
+    /// across rounds. Either one ends the room early under 1.22.0.
     /// <para>
-    /// The two aliases must be built from SEPARATE inner agent instances, not one inner agent
-    /// wrapped twice: <c>AIAgent.Id</c> defaults to a fresh random GUID per instance, but
+    /// Rather than special-case the phases that happen to repeat today, EVERY participant gets
+    /// <see cref="ParticipantAliasCount"/> interchangeable registrations and
+    /// <c>SelectNextAgentAsync</c> alternates between them on turn parity, which makes
+    /// "never the same registration twice in a row" hold arithmetically for any schedule (see that
+    /// method's remarks for the one-line proof). Aliasing costs nothing semantically: every
+    /// registration receives the identical growing history each turn — the group chat broadcasts
+    /// <c>_history</c> to every registered participant, not a per-participant slice — so which
+    /// alias answers a given turn is a scheduling-identity detail only, invisible to the transcript
+    /// (aliases of one participant share a <see cref="AIAgent.Name"/>, the director's being
+    /// <paramref name="directorSeatName"/>), to the sentinel and convergence checks, and to the
+    /// model itself.
+    /// </para>
+    /// <para>
+    /// A participant's aliases must be built from SEPARATE inner agent instances, not one inner
+    /// agent wrapped twice: <c>AIAgent.Id</c> defaults to a fresh random GUID per instance, but
     /// <c>DelegatingAIAgent</c> (what <see cref="RoomSeatAgent"/> is) forwards its <c>IdCore</c> to
     /// <c>InnerAgent.Id</c>. <c>AgentWorkflowBuilder</c> derives each participant's internal
-    /// executor-binding id from Name+Id, and both aliases must keep the SAME Name — so a shared
-    /// inner agent gives both aliases the identical Id too, and
+    /// executor-binding id from Name+Id, and a participant's aliases must keep the SAME Name — so a
+    /// shared inner agent gives those aliases the identical Id too, and
     /// <c>GroupChatWorkflowBuilder.Build()</c> throws ("Cannot bind executor with ID '...' because
     /// an executor with the same ID but different instance is already bound.") the moment the
     /// workflow is built. Confirmed live against the real 1.22.0 assembly. See
@@ -132,33 +143,61 @@ public abstract class RoomGroupChatManager : GroupChatManager
         string directorSeatName,
         Regex idMentionPattern)
     {
-        if (allParticipants.Count < 1 + DirectorAliasCount)
-            throw new ArgumentException("A room needs at least one seat plus two director registrations.", nameof(allParticipants));
+        if (allParticipants.Count % ParticipantAliasCount != 0)
+        {
+            throw new ArgumentException(
+                $"Every room participant must be registered exactly {ParticipantAliasCount} times, so the " +
+                $"participant list's length must be a multiple of {ParticipantAliasCount}.",
+                nameof(allParticipants));
+        }
+
+        if (allParticipants.Count < 2 * ParticipantAliasCount)
+        {
+            throw new ArgumentException(
+                $"A room needs at least one seat plus the director, each registered {ParticipantAliasCount} times.",
+                nameof(allParticipants));
+        }
 
         _allParticipants = allParticipants;
         _config = config;
         _offeredIds = offeredIds;
         _directorSeatName = directorSeatName;
         _idMentionPattern = idMentionPattern;
-        _editorCount = allParticipants.Count - DirectorAliasCount;
+        _editorCount = (allParticipants.Count / ParticipantAliasCount) - 1;
     }
 
     /// <summary>
-    /// Round-robins the seats (indices <c>0..seatCount-1</c> of <c>allParticipants</c>)
-    /// for the config's <c>Rounds</c> full passes, then alternates between the director's two
-    /// alias registrations (the last <see cref="DirectorAliasCount"/> participants) for every turn
-    /// after that — see the constructor's remarks for why a single director registration can no
-    /// longer produce more than one consecutive turn under Microsoft.Agents.AI.Workflows 1.22.0.
+    /// Picks the LOGICAL speaker — round-robin over the seats for the config's <c>Rounds</c> full
+    /// passes, then the director for every turn after that — and then returns one of that
+    /// participant's <see cref="ParticipantAliasCount"/> interchangeable registrations, chosen by
+    /// the turn's parity.
     /// </summary>
+    /// <remarks>
+    /// The parity term is what upholds the invariant the constructor's remarks describe: this
+    /// method must never return the SAME registration on two consecutive turns. It holds for every
+    /// seat count, every <c>Rounds</c> value, and any future change to the logical schedule above,
+    /// because it is arithmetic rather than a property of the schedule — for consecutive turns
+    /// <c>i</c> and <c>i+1</c> the returned indices are
+    /// <c>2·logical(i) + (i%2)</c> and <c>2·logical(i+1) + ((i+1)%2)</c>, and those can only be
+    /// equal if <c>2·(logical(i) - logical(i+1))</c> equals ±1, which no integer satisfies.
+    /// <para>
+    /// Relying on the schedule instead is exactly what broke before: alternating aliases only in
+    /// the director phase left the round-robin phase able to repeat a registration whenever a room
+    /// was configured with a SINGLE seat and <c>Rounds &gt;= 2</c> (the default), which selected
+    /// that one seat twice in a row and ended the room before the director ever spoke.
+    /// </para>
+    /// </remarks>
     protected override ValueTask<AIAgent> SelectNextAgentAsync(
         IReadOnlyList<ChatMessage> history, CancellationToken cancellationToken)
     {
         int i = IterationCount;
-        if (i < _editorCount * _config.Rounds)
-            return ValueTask.FromResult(_allParticipants[i % _editorCount]);
 
-        int directorTurn = i - (_editorCount * _config.Rounds);
-        AIAgent next = _allParticipants[^(DirectorAliasCount - directorTurn % DirectorAliasCount)];
+        // Seats occupy logical indices 0.._editorCount-1; the director is the one after them.
+        int logical = i < _editorCount * _config.Rounds
+            ? i % _editorCount
+            : _editorCount;
+
+        AIAgent next = _allParticipants[(logical * ParticipantAliasCount) + (i % ParticipantAliasCount)];
         return ValueTask.FromResult(next);
     }
 
@@ -272,10 +311,13 @@ public abstract class RoomGroupChatManager : GroupChatManager
             if (string.Equals(msg.AuthorName, _directorSeatName, StringComparison.Ordinal))
                 continue;
 
+            // Seat s owns the alias pair starting at s * ParticipantAliasCount, so the seat NAMES
+            // are at every ParticipantAliasCount'th slot — NOT at 0.._editorCount-1, which under
+            // the paired layout would walk off the end of the seats and miss the last one entirely.
             bool isEditorSeat = false;
             for (int s = 0; s < _editorCount; s++)
             {
-                if (string.Equals(msg.AuthorName, _allParticipants[s].Name, StringComparison.Ordinal))
+                if (string.Equals(msg.AuthorName, _allParticipants[s * ParticipantAliasCount].Name, StringComparison.Ordinal))
                 {
                     isEditorSeat = true;
                     break;

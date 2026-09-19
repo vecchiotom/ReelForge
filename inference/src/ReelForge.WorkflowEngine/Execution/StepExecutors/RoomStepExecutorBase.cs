@@ -517,35 +517,45 @@ public abstract class RoomStepExecutorBase<TDecision> : IStepExecutor where TDec
             }
         }
 
-        List<AIAgent> allParticipants = new(seats.Count + 1);
-        foreach (EditRoomSeat seat in seats)
-        {
-            AIAgent inner = await BuildInnerAgentAsync(SeatAgentType, seat.AgentDefinitionId, ct);
-            allParticipants.Add(new RoomSeatAgent(
-                inner, seat.Name, BuildSeatDirective(seat), config.Temperature, Math.Max(16, config.MaxTurnTokens),
-                config.ReasoningEffort, OnTurnCompleted));
-        }
-
-        // The director is registered TWICE, deliberately, as two SEPARATE inner-agent instances —
-        // see RoomGroupChatManager's constructor remarks for why one registration is no longer
-        // enough under Microsoft.Agents.AI.Workflows 1.22.0 (the group-chat host now refuses to
-        // re-invoke the SAME registered participant on two consecutive turns, which the ceiling
-        // phase — the director speaks every remaining turn — would otherwise hit the very first
-        // time the director spoke twice in a row).
+        // EVERY participant — each seat and the director alike — is registered
+        // RoomGroupChatManager.ParticipantAliasCount times, as that many SEPARATE inner-agent
+        // instances. See RoomGroupChatManager's constructor remarks for the full reasoning; the
+        // short version is that Microsoft.Agents.AI.Workflows 1.22.0's group-chat host refuses to
+        // re-invoke the SAME registered participant on two consecutive turns (it silently ends the
+        // room instead), and the scheduler repeats a participant in two places: the director speaks
+        // every remaining turn after the round-robin phase, and a SINGLE-seat room repeats that one
+        // seat across rounds. Aliasing every participant lets SelectNextAgentAsync guarantee
+        // "never the same registration twice in a row" arithmetically, for any schedule, instead of
+        // patching whichever phase happens to repeat today.
         //
-        // Building two INDEPENDENT inner agents here (rather than one inner agent wrapped by two
+        // Building INDEPENDENT inner agents per alias (rather than one inner agent wrapped by two
         // RoomSeatAgent instances) is load-bearing, not cosmetic: AIAgent.Id defaults to a fresh
         // random GUID per instance, but DelegatingAIAgent (what RoomSeatAgent is) forwards IdCore
         // to InnerAgent.Id, so two wrappers around the SAME inner agent would carry the IDENTICAL
         // Id. AgentWorkflowBuilder derives each participant's internal executor-binding id from
-        // Name + Id, and both aliases must keep the SAME Name ("Director" — the transcript/sentinel
-        // detection depend on it), so a shared inner agent collides and
+        // Name + Id, and a participant's aliases must keep the SAME Name (the transcript, sentinel
+        // and convergence checks all key off it), so a shared inner agent collides and
         // GroupChatWorkflowBuilder.Build() throws "Cannot bind executor with ID '...' because an
         // executor with the same ID but different instance is already bound." (confirmed by
-        // decompiling and exercising the real 1.22.0 assembly). Two separate BuildInnerAgentAsync
-        // calls give each alias its own random Id while resolving through the identical chat
-        // client/instructions/tools — functionally still "the director", just two object instances.
-        for (int alias = 0; alias < 2; alias++)
+        // decompiling and exercising the real 1.22.0 assembly). Separate BuildInnerAgentAsync calls
+        // give each alias its own random Id while resolving through the identical chat
+        // client/instructions/tools — functionally still one participant, just two object
+        // instances. The extra calls are cheap: the chat client itself is cached by
+        // ChatClientFactory, so an alias costs an agent wrapper, not a connection or a round trip.
+        List<AIAgent> allParticipants = new((seats.Count + 1) * RoomGroupChatManager.ParticipantAliasCount);
+        foreach (EditRoomSeat seat in seats)
+        {
+            for (int alias = 0; alias < RoomGroupChatManager.ParticipantAliasCount; alias++)
+            {
+                AIAgent inner = await BuildInnerAgentAsync(SeatAgentType, seat.AgentDefinitionId, ct);
+                allParticipants.Add(new RoomSeatAgent(
+                    inner, seat.Name, BuildSeatDirective(seat), config.Temperature, Math.Max(16, config.MaxTurnTokens),
+                    config.ReasoningEffort, OnTurnCompleted));
+            }
+        }
+
+        // The director's own aliases, same rule and same reasoning as the seats above.
+        for (int alias = 0; alias < RoomGroupChatManager.ParticipantAliasCount; alias++)
         {
             AIAgent directorInner = await BuildInnerAgentAsync(DirectorAgentType, config.DirectorAgentDefinitionId, ct);
             allParticipants.Add(new RoomSeatAgent(
