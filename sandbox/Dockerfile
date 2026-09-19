@@ -35,7 +35,7 @@ RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.Version=${VERSION}" -o /app/s
 # untrusted container is a standing invitation — the moment any daemon endpoint
 # becomes reachable it is root on the host — and it buys the render path nothing.
 # ─────────────────────────────────────────────────────────────────────────────
-FROM node:22-bookworm-slim AS sandbox-runtime
+FROM node:25-bookworm-slim AS sandbox-runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
 	ca-certificates \
