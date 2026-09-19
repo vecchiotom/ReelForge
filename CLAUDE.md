@@ -220,6 +220,43 @@ inference/
 
 **InferenceProvider** (new entity, table `inference_providers`): `Id`, `Name` (unique), `Kind` (`InferenceProviderKind`), **`Capability`** (`InferenceProviderCapability`, default `Chat`), `Endpoint`, `ModelName`, `ApiKeyEncrypted`/`ApiKeyLastFour` (never returned in plaintext), `IsDefault` (**composite unique partial index on `(capability, is_default)` where `is_default`** — at most one default row *per capability*, so a Transcription default, a Vision default, and a Chat default all coexist independently; the index is generic over any `capability` value, so adding `Vision` needed no schema migration), `IsEnabled`, `TimeoutSeconds`, `ExtraHeadersJson`, `LastTestAt`/`LastTestOk`/`LastTestError`. Chat-completion resolution (`IInferenceProviderResolver.ResolveAsync`), transcription resolution (`ResolveTranscriptionAsync`), and vision resolution (`ResolveVisionAsync`) each filter on their own `Capability` explicitly — never "any `IsDefault` row" — since the three default rows are independent.
 
+### Workflow Execution Liveness
+
+`WorkflowExecutionRequestedConsumer` **dispatches only** — it hands the request to
+`WorkflowExecutionRunner` (singleton + `IHostedService`) and returns, so the RabbitMQ delivery is
+acknowledged in milliseconds. The execution then runs on a background task bound to the process
+lifetime, never to the transport.
+
+This is load-bearing, not a refactor. The consumer used to `await` the whole workflow inline, which
+left the delivery unacknowledged for the execution's entire duration and made RabbitMQ's
+`consumer_timeout` a **hard wall-clock cap on how long any workflow could run**. When it fired,
+MassTransit cancelled `ConsumeContext.CancellationToken` — the same token `ExecuteAsync` was given
+as its cancellation signal — so the execution died mid-step and lost everything. Three consecutive
+`lean-context-promo` runs were destroyed this way at *exactly* 120.0 minutes each. Raising
+`consumer_timeout` (which an earlier round of this bug did, 30 min → 2 h) only moves the wall.
+
+Consequences worth knowing when touching this area:
+
+- **`WorkflowEngine:MaxConcurrency` is enforced by the runner's semaphore**, not by MassTransit's
+  `ConcurrentMessageLimit` any more (an immediate ack means the endpoint's limit only bounds
+  hand-offs). The slot is acquired *in the consumer*, before dispatch, so a consumer blocked
+  waiting holds a delivery that has done no work — a timeout there is harmless, since the
+  execution is still `Queued` and redelivery simply starts it later.
+- **Cancellation carries provenance.** `ExecutionCancellationRegistry` records *why* each
+  cancellation happened and `MarkCancelledAsync` reports that verbatim. It previously hardcoded
+  `"Cancelled by user request"` for every cancellation — and since the genuine user path writes
+  its own distinct `"Stopped by user {id}"`, that string was only ever reachable for cancellations
+  that were *not* user requests. Never reintroduce a user-blaming default.
+- **A hard process kill now leaves the row `Running`** rather than relying on redelivery. That is
+  an accepted trade: `ExecuteAsync` refuses to start anything not in `Queued` status, so the
+  redelivery it replaces was already discarded on arrival. Graceful shutdown is handled —
+  `StopAsync` signals in-flight executions and waits.
+- **`Agents:<name>:RunTimeoutSeconds`** overrides `WorkflowEngine:AgentRunTimeoutSeconds` per agent
+  (ceiling 4 h). Needed because agent workloads differ by an order of magnitude: on a self-hosted
+  backend measured at ~9.3 output tokens/sec, `RemotionComponentTranslator`'s multi-round
+  tool-calling run exceeds the global 3000 s, and hitting that cap is what put it into the retry
+  the 120-minute kill then landed in.
+
 ### Integration Events (MassTransit)
 
 | Event | Publisher | Consumer |
@@ -648,7 +685,7 @@ All services have Dockerfiles and are orchestrated via `docker-compose.yml` at t
 | `postgres` | `postgres:16-alpine` | 5432 (**loopback only**) | 5432 | Volume `pgdata`, healthcheck via `pg_isready` |
 | `minio` | `minio/minio:latest` | 9000/9001 (**loopback only**) | 9000/9001 | Volume `miniodata`, console on 9001 |
 | `minio-init` | `minio/mc:latest` | — | — | One-shot: creates the `reelforge` bucket, then exits |
-| `rabbitmq` | `rabbitmq:3-management-alpine` | 5672/15672 (**loopback only**) | 5672/15672 | Volume `rabbitmqdata`, management UI on 15672; `./rabbitmq/conf.d` mounted read-only at `/etc/rabbitmq/conf.d` (`loopback_users = none` so go-api/inference/workflow-engine can authenticate as `guest` over the compose network; `consumer_timeout = 7200000` so a long `VideoAnalyze`/`VideoCompile` step is never force-killed by RabbitMQ's own 30-minute default) |
+| `rabbitmq` | `rabbitmq:3-management-alpine` | 5672/15672 (**loopback only**) | 5672/15672 | Volume `rabbitmqdata`, management UI on 15672; `./rabbitmq/conf.d` mounted read-only at `/etc/rabbitmq/conf.d` (`loopback_users = none` so go-api/inference/workflow-engine can authenticate as `guest` over the compose network; `consumer_timeout = 7200000` as defence-in-depth only — it is **no longer** a workflow duration budget, see "Workflow execution liveness" below) |
 | `whisper` | `ghcr.io/speaches-ai/speaches:latest-cpu` | 127.0.0.1:`WHISPER_PORT` (default 9002) | 8000 | Local, OpenAI-Whisper-API-compatible ASR server (CPU inference, int8 compute) for `VideoAnalyze` transcription; volume `whisper-hf-cache` for downloaded model weights. Not auto-wired — register it as an `inference_providers` row (`Capability: Transcription`, `Kind: OpenAICompatible`, endpoint `http://whisper:8000`) via `/admin/inference-providers` to use it |
 
 ```bash
