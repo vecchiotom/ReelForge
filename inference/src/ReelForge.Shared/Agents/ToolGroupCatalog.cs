@@ -67,9 +67,18 @@ public static class ToolGroupCatalog
             "EnsureSandbox", "WriteSandboxFile", "EditSandboxFile", "ApplySandboxFileEdits",
             "DeleteSandboxPath", "InstallNpmPackages", "RunSandboxNpmScript"
         ],
+        // CompleteSandbox is deliberately NOT granted. The sandbox is keyed by EXECUTION, not by
+        // step, so an agent tearing it down destroys the workspace every later step in the same
+        // execution still depends on — and an agent cannot know whether it is the last one. It is
+        // also wrong even for a final step: the agent still has to emit its structured answer
+        // after the call, and the framework may touch the sandbox again on the way there.
+        // Observed live: MotionGraphicsPlanner rendered both of its overlay assets, uploaded them,
+        // called CompleteSandbox because its own prompt told it to, then failed its step on the
+        // next sandbox call with a bare "sandbox not found" 404. Reclamation belongs to the
+        // sandbox service's idle janitor (SANDBOX_TTL, default 1h), which already owns it.
         ToolGroup.SandboxRender =>
         [
-            "RunSandboxRemotionCommand", "RenderVideoAndUploadToStorage", "CompleteSandbox"
+            "RunSandboxRemotionCommand", "RenderVideoAndUploadToStorage"
         ],
         ToolGroup.WorkflowControl =>
         [

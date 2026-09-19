@@ -78,7 +78,6 @@ public class AuthorAgentImpl : ReelForgeAgentBase
             build errors, fix those issues first by installing packages and adjusting source files.
           15. Call `WriteProjectFile` to persist the final RenderManifest JSON as a project file and record any installed
             packages under `InstalledPackages` so later agents know what was added.
-          16. Call `CompleteSandbox` to clean up the sandbox when all work is done.
 
         Always call `EnsureSandbox` before any sandbox operation.
 

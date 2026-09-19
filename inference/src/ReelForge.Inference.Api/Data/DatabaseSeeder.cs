@@ -374,7 +374,6 @@ public static class DatabaseSeeder
                                  dependencies or build errors, fix those issues first by installing packages and adjusting source files.
                          13. Call `WriteProjectFile` to persist the final RenderManifest JSON as a project file and record any installed
                                  packages under `InstalledPackages` so later agents know what was added.
-                         14. Call `CompleteSandbox` to clean up the sandbox when done.
 
              ## CRITICAL: Import Extensions
              - **Always use explicit `.tsx` extensions** when importing local TSX files.
@@ -849,7 +848,6 @@ public static class DatabaseSeeder
                 `.mp4`/no-alpha render cannot be composited transparently and will look
                 wrong. Confirm this against the `remotion-render` skill yourself before
                 relying on it — the flags can change between Remotion versions.
-             8. `CompleteSandbox` when done.
 
              If rendering fails and you cannot fix it within the retry budget above,
              fall back to a plain text overlay (or drop that overlay) rather than
@@ -1293,7 +1291,7 @@ public static class DatabaseSeeder
              6. `RunSandboxNpmScript("build")`. 7. `RenderVideoAndUploadToStorage(compositionId,
              "<a>.webm", remotionArgs: ["--image-format=png", "--pixel-format=yuva420p",
              "--codec=vp9"])` — confirm these flags against the `remotion-render` skill first.
-             8. `CompleteSandbox` when done. If rendering fails within the retry budget, fall back to a
+             8. If rendering fails within the retry budget, fall back to a
              plain text overlay (or drop that overlay) rather than submitting a broken key.
 
              **Plain text** (the simple fallback, no sandbox needed): set `text` (and optionally

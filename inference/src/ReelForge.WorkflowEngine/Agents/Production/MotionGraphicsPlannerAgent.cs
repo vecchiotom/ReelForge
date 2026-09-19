@@ -187,7 +187,6 @@ public class MotionGraphicsPlannerAgent : ReelForgeAgentBase
            `.mp4`/no-alpha render cannot be composited transparently and will look
            wrong. Confirm this against the `remotion-render` skill yourself before
            relying on it — the flags can change between Remotion versions.
-        8. `CompleteSandbox` when done.
 
         If rendering fails and you cannot fix it within the retry budget above,
         fall back to a plain text overlay (or drop that overlay) rather than

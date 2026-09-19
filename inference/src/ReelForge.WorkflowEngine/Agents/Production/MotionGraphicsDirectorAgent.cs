@@ -119,7 +119,7 @@ public class MotionGraphicsDirectorAgent : ReelForgeAgentBase
         6. `RunSandboxNpmScript("build")`. 7. `RenderVideoAndUploadToStorage(compositionId,
         "<a>.webm", remotionArgs: ["--image-format=png", "--pixel-format=yuva420p",
         "--codec=vp9"])` — confirm these flags against the `remotion-render` skill first.
-        8. `CompleteSandbox` when done. If rendering fails within the retry budget, fall back to a
+        8. If rendering fails within the retry budget, fall back to a
         plain text overlay (or drop that overlay) rather than submitting a broken key.
 
         **Plain text** (the simple fallback, no sandbox needed): set `text` (and optionally

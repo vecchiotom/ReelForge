@@ -98,8 +98,8 @@ public class AgentToolProvider : IAgentToolProvider
         ToolGroup.SandboxRender =>
         [
             AIFunctionFactory.Create(_sandboxTools.RunSandboxRemotionCommand),
-            AIFunctionFactory.Create(_sandboxTools.RenderVideoAndUploadToStorage),
-            AIFunctionFactory.Create(_sandboxTools.CompleteSandbox)
+            AIFunctionFactory.Create(_sandboxTools.RenderVideoAndUploadToStorage)
+            // CompleteSandbox intentionally omitted — see ToolGroupCatalog.SandboxRender.
         ],
 
         ToolGroup.WorkflowControl =>
