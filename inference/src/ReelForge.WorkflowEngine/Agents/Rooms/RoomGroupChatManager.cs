@@ -135,22 +135,41 @@ public abstract class RoomGroupChatManager : GroupChatManager
     }
 
     /// <summary>
-    /// Ceiling check first (mirrors <see cref="GroupChatManager"/>'s own default
-    /// <c>ShouldTerminateAsync</c> implementation — <c>IterationCount &gt;= MaximumIterationCount</c>
-    /// — which overriding this method entirely SHADOWS rather than composes with; the ceiling is
-    /// NOT enforced automatically just because <c>MaximumIterationCount</c> is set, contrary to an
-    /// earlier assumption here corrected after decompiling the real rc2 assembly. This method must
-    /// therefore check it explicitly, unconditionally, before any mode-specific logic), then the
-    /// sentinel check (director's most recent turn contains <see cref="SentinelToken"/>) and/or
-    /// offered-id-mention convergence check across consecutive seat rounds, gated by the config's
-    /// <c>Termination</c>. <see cref="EditRoomTerminationMode.FixedTurns"/> skips both
-    /// mode-specific checks so only the ceiling can end the room. Safe to call at iteration 0
-    /// (empty/opening-only history).
+    /// Ceiling check first (overriding this method entirely SHADOWS
+    /// <see cref="GroupChatManager"/>'s own default <c>ShouldTerminateAsync</c> rather than
+    /// composing with it; the ceiling is NOT enforced automatically just because
+    /// <c>MaximumIterationCount</c> is set, contrary to an earlier assumption here corrected after
+    /// decompiling the real assembly. This method must therefore check it explicitly,
+    /// unconditionally, before any mode-specific logic), then the sentinel check (director's most
+    /// recent turn contains <see cref="SentinelToken"/>) and/or offered-id-mention convergence
+    /// check across consecutive seat rounds, gated by the config's <c>Termination</c>.
+    /// <see cref="EditRoomTerminationMode.FixedTurns"/> skips both mode-specific checks so only the
+    /// ceiling can end the room. Safe to call at iteration 0 (empty/opening-only history).
     /// </summary>
+    /// <remarks>
+    /// The ceiling counts TURNS PRESENT IN THE TRANSCRIPT, deliberately, rather than
+    /// <see cref="GroupChatManager.IterationCount"/>. Both were equivalent under
+    /// Microsoft.Agents.AI.Workflows 1.0.0-rc2, but 1.22.0 rewrote the group-chat graph
+    /// (<c>GroupChatWorkflowBuilder.Build</c>, plus a new <c>GroupChatHost.BroadcastAsync</c>) and
+    /// moved the point at which this method is consulted relative to that counter. The result was
+    /// a silent off-by-one: a room configured for N turns ran N-1, which matters most for
+    /// <see cref="EditRoomTerminationMode.FixedTurns"/>, where the ceiling is the TARGET rather
+    /// than a backstop. Note the shift is specific to the termination check —
+    /// <see cref="SelectNextAgentAsync"/> reads the same <c>IterationCount</c> and still produces
+    /// the correct round-robin order, which is why it is left alone.
+    /// <para>
+    /// <c>history</c> is the canonical transcript: one opening message followed by one entry per
+    /// completed turn, and it is already current with the turn that just finished when this is
+    /// called. Counting it is therefore independent of where in the host's loop the framework
+    /// chooses to ask — which is the property that broke, and the reason not to re-derive the
+    /// answer from an internal counter again.
+    /// </para>
+    /// </remarks>
     protected override ValueTask<bool> ShouldTerminateAsync(
         IReadOnlyList<ChatMessage> history, CancellationToken cancellationToken)
     {
-        if (IterationCount >= MaximumIterationCount)
+        int completedTurns = Math.Max(0, history.Count - 1);
+        if (completedTurns >= MaximumIterationCount)
             return ValueTask.FromResult(true);
 
         if (_config.Termination == EditRoomTerminationMode.FixedTurns)
