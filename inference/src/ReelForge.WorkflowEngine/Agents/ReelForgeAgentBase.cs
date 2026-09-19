@@ -67,10 +67,21 @@ public abstract class ReelForgeAgentBase : IReelForgeAgent
         // heavy model's "thinking" time on a complex multi-round tool-calling task, not a stuck
         // loop (verified: the underlying vLLM server answers a trivial request in ~1.5s immediately
         // afterward, so it isn't globally wedged).
+        // Per-agent override, falling back to the global value. Added because a single global cap
+        // cannot fit agents whose workloads differ by an order of magnitude: on a self-hosted
+        // backend measured at ~9.6 output tokens/sec, RemotionComponentTranslator's multi-round
+        // tool-calling run (sandbox setup, skill loading, writing N TSX files, lint/type repair
+        // cycles) legitimately needs longer than the global 3000s, while giving every agent that
+        // much rope would let a genuinely stuck one sit there for an hour before anyone noticed.
+        // The ceiling is 4 hours rather than the old 1: that limit was only ever defensible while
+        // a 2-hour RabbitMQ consumer_timeout capped the whole execution anyway, and that coupling
+        // is gone (see WorkflowExecutionRunner) — an agent timeout is now a real budget rather
+        // than a number the transport would overrule first.
         _agentRunTimeoutSeconds = Math.Clamp(
-            configuration.GetValue("WorkflowEngine:AgentRunTimeoutSeconds", 300),
+            configuration.GetValue<int?>($"Agents:{name}:RunTimeoutSeconds")
+                ?? configuration.GetValue("WorkflowEngine:AgentRunTimeoutSeconds", 300),
             30,
-            3600);
+            14400);
 
         string configKey = $"Agents:{name}:SystemPrompt";
         SystemPrompt = BuildSystemPrompt(

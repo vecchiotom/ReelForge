@@ -1,0 +1,41 @@
+version: "2"
+
+# Shared by both Go modules (api/ and sandbox/) — golangci-lint walks up from
+# its working directory to find this file.
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errorlint
+    - gocritic
+    - misspell
+    - nilerr
+    - noctx
+    - revive
+    - unconvert
+    - usestdlibvars
+    - wastedassign
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+  # Never silently truncate output: CI must show every finding, not the first
+  # three of each kind.
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+
+formatters:
+  enable:
+    - gofmt
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

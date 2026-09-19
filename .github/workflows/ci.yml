@@ -1,0 +1,394 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same ref supersedes the previous run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Which stacks does this change actually touch? ────────────────────────
+  # Every downstream job is gated on this so a copy tweak in /site doesn't
+  # rebuild seven Docker images. On push to master everything runs.
+  changes:
+    name: Detect changed stacks
+    runs-on: ubuntu-latest
+    outputs:
+      api: ${{ steps.filter.outputs.api }}
+      sandbox: ${{ steps.filter.outputs.sandbox }}
+      inference: ${{ steps.filter.outputs.inference }}
+      web: ${{ steps.filter.outputs.web }}
+      site: ${{ steps.filter.outputs.site }}
+      nginx: ${{ steps.filter.outputs.nginx }}
+      docker: ${{ steps.filter.outputs.docker }}
+      shell: ${{ steps.filter.outputs.shell }}
+      workflows: ${{ steps.filter.outputs.workflows }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # On push events paths-filter diffs against the previous commit; the
+          # `predicate-quantifier` default ("some") is what we want here.
+          filters: |
+            api:
+              - 'api/**'
+              - '.golangci.yml'
+            sandbox:
+              - 'sandbox/**'
+              - '.golangci.yml'
+            inference:
+              - 'inference/**'
+            web:
+              - 'web/**'
+            site:
+              - 'site/**'
+            nginx:
+              - 'nginx/**'
+            docker:
+              - '**/Dockerfile'
+              - 'docker-compose.yml'
+            shell:
+              - '**/*.sh'
+            workflows:
+              - '.github/workflows/**'
+
+  # ── Go: api/ and sandbox/ are two separate modules ───────────────────────
+  go:
+    name: Go · ${{ matrix.module }}
+    runs-on: ubuntu-latest
+    needs: changes
+    if: >-
+      github.event_name != 'pull_request' ||
+      needs.changes.outputs.api == 'true' ||
+      needs.changes.outputs.sandbox == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [api, sandbox]
+    defaults:
+      run:
+        working-directory: ${{ matrix.module }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # Single source of truth for the Go version: each module's go.mod.
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Verify go.mod / go.sum are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt-clean:"
+            echo "$unformatted"
+            gofmt -d .
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./... -race -covermode=atomic -coverprofile=coverage.out
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-go-${{ matrix.module }}
+          path: ${{ matrix.module }}/coverage.out
+          if-no-files-found: ignore
+
+  golangci-lint:
+    name: golangci-lint · ${{ matrix.module }}
+    runs-on: ubuntu-latest
+    needs: changes
+    if: >-
+      github.event_name != 'pull_request' ||
+      needs.changes.outputs.api == 'true' ||
+      needs.changes.outputs.sandbox == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [api, sandbox]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.5.0
+          working-directory: ${{ matrix.module }}
+
+  # ── .NET 9: the three-project inference solution + its test project ──────
+  dotnet:
+    name: .NET · inference
+    runs-on: ubuntu-latest
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.inference == 'true'
+    defaults:
+      run:
+        working-directory: inference
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('inference/**/*.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Restore
+        run: dotnet restore ReelForge.sln
+
+      - name: Build (Release)
+        # Roslyn + the built-in .NET analyzers run as part of the build.
+        run: dotnet build ReelForge.sln -c Release --no-restore
+
+      - name: Test
+        run: >-
+          dotnet test ReelForge.sln -c Release --no-build
+          --logger "trx;LogFileName=test-results.trx"
+          --logger "console;verbosity=normal"
+          --results-directory TestResults
+          --collect:"XPlat Code Coverage"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-test-results
+          path: inference/TestResults/**
+          if-no-files-found: ignore
+
+  dotnet-format:
+    name: .NET format (advisory)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.inference == 'true'
+    # Advisory only: the solution has never been run through `dotnet format`,
+    # so this reports drift without blocking. Flip continue-on-error to false
+    # once `dotnet format inference/ReelForge.sln` has been committed clean.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: dotnet format --verify-no-changes
+        working-directory: inference
+        run: dotnet format ReelForge.sln --verify-no-changes --severity warn
+
+  # ── Next.js: web (dashboard) and site (marketing) ────────────────────────
+  node:
+    name: Node · ${{ matrix.app }}
+    runs-on: ubuntu-latest
+    needs: changes
+    if: >-
+      github.event_name != 'pull_request' ||
+      needs.changes.outputs.web == 'true' ||
+      needs.changes.outputs.site == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [web, site]
+    defaults:
+      run:
+        working-directory: ${{ matrix.app }}
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the node:22-alpine base image both Dockerfiles build from.
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ${{ matrix.app }}/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+  # ── Container images build (no push — deployment is out of scope) ────────
+  docker:
+    name: Docker · ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    needs: changes
+    if: >-
+      github.event_name != 'pull_request' ||
+      needs.changes.outputs.docker == 'true' ||
+      needs.changes.outputs.api == 'true' ||
+      needs.changes.outputs.sandbox == 'true' ||
+      needs.changes.outputs.inference == 'true' ||
+      needs.changes.outputs.web == 'true' ||
+      needs.changes.outputs.site == 'true' ||
+      needs.changes.outputs.nginx == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: go-api
+            context: ./api
+            file: ./api/Dockerfile
+          - name: inference-api
+            context: ./inference
+            file: ./inference/src/ReelForge.Inference.Api/Dockerfile
+          - name: workflow-engine
+            context: ./inference
+            file: ./inference/src/ReelForge.WorkflowEngine/Dockerfile
+          - name: web
+            context: ./web
+            file: ./web/Dockerfile
+            target: production
+          - name: site
+            context: ./site
+            file: ./site/Dockerfile
+            target: production
+          - name: sandbox-runtime
+            context: ./sandbox
+            file: ./sandbox/Dockerfile
+            target: sandbox-runtime
+          - name: sandbox-executor
+            context: ./sandbox
+            file: ./sandbox/Dockerfile
+            target: control-plane
+          - name: nginx
+            context: ./nginx
+            file: ./nginx/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          push: false
+          load: false
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,scope=${{ matrix.name }},mode=max
+
+  # ── Static analysis of the infrastructure files themselves ───────────────
+  infra-lint:
+    name: Infra lint
+    runs-on: ubuntu-latest
+    needs: changes
+    if: >-
+      github.event_name != 'pull_request' ||
+      needs.changes.outputs.docker == 'true' ||
+      needs.changes.outputs.shell == 'true' ||
+      needs.changes.outputs.workflows == 'true' ||
+      needs.changes.outputs.nginx == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint GitHub Actions workflows
+        uses: raven-actions/actionlint@v2
+
+      - name: ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          severity: warning
+
+      - name: Hadolint
+        # One invocation over every Dockerfile; thresholds and rule exemptions
+        # live in .hadolint.yaml so local runs match CI exactly.
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo hadolint/hadolint:v2.12.0-alpine \
+            hadolint --config .hadolint.yaml \
+              api/Dockerfile \
+              inference/src/ReelForge.Inference.Api/Dockerfile \
+              inference/src/ReelForge.WorkflowEngine/Dockerfile \
+              web/Dockerfile \
+              site/Dockerfile \
+              sandbox/Dockerfile \
+              nginx/Dockerfile
+
+      - name: Validate docker-compose.yml
+        # `docker compose config` resolves interpolation and schema-checks the
+        # file. .env.example supplies the variables a real .env would.
+        run: |
+          cp .env.example .env
+          # .env.example intentionally leaves these two empty and compose marks
+          # them required (`:?`), so supply throwaway values for the schema check.
+          # The leading newline matters: .env.example has no trailing newline.
+          {
+            printf '\n'
+            echo "JWT_SIGNING_KEY=ci-schema-check-signing-key-0123456789abcdef"
+            echo "SANDBOX_API_TOKEN=ci-schema-check-token"
+          } >> .env
+          docker compose config --quiet
+          rm -f .env
+
+  # ── Single required check to point branch protection at ──────────────────
+  ci:
+    name: CI
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      # `changes` is included so a failure there (which silently skips every
+      # downstream job) still fails the gate. `dotnet-format` is deliberately
+      # absent — it is advisory.
+      - changes
+      - go
+      - golangci-lint
+      - dotnet
+      - node
+      - docker
+      - infra-lint
+    steps:
+      - name: Fail if any required job failed or was cancelled
+        run: |
+          results='${{ join(needs.*.result, ' ') }}'
+          echo "Job results: $results"
+          for r in $results; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::A required job finished with result '$r'"; exit 1 ;;
+            esac
+          done

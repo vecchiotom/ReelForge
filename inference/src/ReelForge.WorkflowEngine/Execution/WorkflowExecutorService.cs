@@ -85,7 +85,9 @@ public class WorkflowExecutorService
         _budgetOptions = budgetOptions?.Value;
     }
 
-    public async Task ExecuteAsync(Guid executionId, string correlationId, CancellationToken ct)
+    // virtual so WorkflowExecutionLivenessTests can substitute a stub body and exercise the
+    // dispatch/liveness plumbing without a database, a bus, or any agents.
+    public virtual async Task ExecuteAsync(Guid executionId, string correlationId, CancellationToken ct)
     {
         using Activity? workflowActivity = ReelForgeDiagnostics.ActivitySource.StartActivity("ExecuteWorkflow");
         workflowActivity?.SetTag("execution.id", executionId.ToString());
@@ -618,9 +620,19 @@ public class WorkflowExecutorService
     /// </summary>
     private async Task MarkCancelledAsync(WorkflowExecution execution, WorkflowEngineDbContext db, Guid executionId)
     {
-        _logger.LogInformation("Workflow execution {ExecutionId} was cancelled", executionId);
+        // Report the cause the canceller actually recorded, never an assumed one. This used to
+        // hardcode "Cancelled by user request" for every cancellation, which made a broker-side
+        // kill (RabbitMQ closing the channel once consumer_timeout elapsed) indistinguishable from
+        // a real Stop click — and, worse, actively blamed the user for it. Three consecutive
+        // multi-hour executions were written off that way before the real cause was found, each
+        // dying at exactly the 120-minute consumer_timeout with nobody having touched Stop.
+        // Note that the genuine user path (CancelExecutionAsync) has always written its own
+        // distinct "Stopped by user {id}" message, so the old string was only ever reachable for
+        // cancellations that were NOT user requests — it was wrong 100% of the time it appeared.
+        string reason = _cancellationRegistry.GetReason(executionId);
+        _logger.LogInformation("Workflow execution {ExecutionId} was cancelled: {Reason}", executionId, reason);
         execution.Status = ExecutionStatus.Cancelled;
-        execution.ErrorMessage = "Cancelled by user request";
+        execution.ErrorMessage = reason;
         execution.CompletedAt = DateTime.UtcNow;
         await db.SaveChangesAsync(CancellationToken.None);
         // publish as failed so existing consumers treat it similarly
@@ -639,8 +651,9 @@ public class WorkflowExecutorService
     {
         _logger.LogInformation("Cancellation requested for execution {ExecutionId} by user {UserId}", executionId, requestedByUserId);
 
-        // cancel any running token
-        if (_cancellationRegistry.TryCancel(executionId))
+        // cancel any running token, recording who asked so MarkCancelledAsync can report the real
+        // cause rather than inferring one (see ExecutionCancellationRegistry._reasons).
+        if (_cancellationRegistry.TryCancel(executionId, $"Stopped by user {requestedByUserId}"))
         {
             _logger.LogInformation("Triggered cancellation token for running execution {ExecutionId}", executionId);
         }
@@ -763,6 +776,23 @@ public class WorkflowExecutorService
                 _logger.LogInformation(
                     "Step {StepOrder} invoked FailWorkflow: {Reason}",
                     step.StepOrder, awf.Reason);
+                throw;
+            }
+            // A timed-out agent run is not retried. Retrying costs the FULL per-attempt budget
+            // again for a near-certain repeat: no partial progress carries over between attempts
+            // (see AgentStepExecutor), so attempt 2 restarts the identical workload with the
+            // identical budget. With a raised per-agent budget the waste is severe — a 3-hour
+            // RemotionComponentTranslator timeout retried 3x is 9 hours of the same wall — and it
+            // is what turned one translator timeout into the multi-hour window that the old
+            // 120-minute transport kill then landed inside. Fail fast with the real reason
+            // instead, so the operator can raise Agents:<name>:RunTimeoutSeconds or reduce the
+            // step's workload rather than waiting out N identical attempts.
+            catch (TimeoutException tex)
+            {
+                _logger.LogWarning(tex,
+                    "Step {StepOrder} ({StepType}) timed out on attempt {Attempt}/{Max}; not retrying, " +
+                    "because a from-scratch retry would repeat the same workload under the same budget",
+                    step.StepOrder, step.StepType, attemptNumber, maxRetries);
                 throw;
             }
             catch (Exception ex) when (ex is not InvalidOperationException && ex is not AgentWorkflowException && attemptNumber < maxRetries)

@@ -14,5 +14,5 @@ func RegisterHealthRoutes(router *mux.Router) {
 
 func healthCheckHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": config.Version})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": config.Version})
 }
