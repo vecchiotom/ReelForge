@@ -145,38 +145,57 @@ public class WorkflowExecutorServiceReviewLoopTests
 
         WorkflowStep step1 = new()
         {
-            Id = Guid.NewGuid(), StepOrder = 1, StepType = StepType.VideoAnalyze,
-            AgentDefinitionId = analyzeAgent.Id, AgentDefinition = analyzeAgent
+            Id = Guid.NewGuid(),
+            StepOrder = 1,
+            StepType = StepType.VideoAnalyze,
+            AgentDefinitionId = analyzeAgent.Id,
+            AgentDefinition = analyzeAgent
         };
         WorkflowStep step2 = new()
         {
-            Id = Guid.NewGuid(), StepOrder = 2, StepType = StepType.Agent,
-            AgentDefinitionId = storyEditorAgent.Id, AgentDefinition = storyEditorAgent,
+            Id = Guid.NewGuid(),
+            StepOrder = 2,
+            StepType = StepType.Agent,
+            AgentDefinitionId = storyEditorAgent.Id,
+            AgentDefinition = storyEditorAgent,
             AgentInputContextMode = AgentInputContextMode.PreviousStepOnly
         };
         WorkflowStep step3 = new()
         {
-            Id = Guid.NewGuid(), StepOrder = 3, StepType = StepType.VideoCompile,
-            AgentDefinitionId = compileAgent.Id, AgentDefinition = compileAgent
+            Id = Guid.NewGuid(),
+            StepOrder = 3,
+            StepType = StepType.VideoCompile,
+            AgentDefinitionId = compileAgent.Id,
+            AgentDefinition = compileAgent
         };
         WorkflowStep step4 = new()
         {
-            Id = Guid.NewGuid(), StepOrder = 4, StepType = StepType.ReviewLoop,
-            AgentDefinitionId = reviewAgent.Id, AgentDefinition = reviewAgent,
-            LoopTargetStepOrder = 2, MaxIterations = 2, MinScore = 7,
+            Id = Guid.NewGuid(),
+            StepOrder = 4,
+            StepType = StepType.ReviewLoop,
+            AgentDefinitionId = reviewAgent.Id,
+            AgentDefinition = reviewAgent,
+            LoopTargetStepOrder = 2,
+            MaxIterations = 2,
+            MinScore = 7,
             AgentInputContextMode = AgentInputContextMode.FullWorkflow
         };
 
         WorkflowDefinition definition = new()
         {
-            Id = workflowDefId, Name = "test", ProjectId = projectId,
+            Id = workflowDefId,
+            Name = "test",
+            ProjectId = projectId,
             Steps = new List<WorkflowStep> { step1, step2, step3, step4 }
         };
 
         WorkflowExecution execution = new()
         {
-            Id = executionId, WorkflowDefinitionId = workflowDefId, ProjectId = projectId,
-            Status = ExecutionStatus.Queued, WorkflowDefinition = definition
+            Id = executionId,
+            WorkflowDefinitionId = workflowDefId,
+            ProjectId = projectId,
+            Status = ExecutionStatus.Queued,
+            WorkflowDefinition = definition
         };
 
         db.AgentDefinitions.AddRange(analyzeAgent, storyEditorAgent, compileAgent, reviewAgent);

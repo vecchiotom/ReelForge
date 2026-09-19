@@ -473,7 +473,7 @@ public class VideoMultiSourceTests
             AnalyzeAudioLevels: false,
             Vision: VideoVisionMode.Optional,
             MinCaptionShotSeconds: 0.0);
-            // Sources left null/empty — falls back to the single legacy Source field (one-element list).
+        // Sources left null/empty — falls back to the single legacy Source field (one-element list).
 
         StepExecutionContext context = CreateAnalyzeContext(config);
         VideoAnalyzeStepExecutor executor = CreateAnalyzeExecutor(

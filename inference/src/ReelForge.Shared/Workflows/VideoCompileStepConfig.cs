@@ -104,9 +104,9 @@ public sealed record VideoCompileStepConfig(
     int Crf = 20,
     string Preset = "veryfast",
     bool RegisterProjectFile = true,     // registers the compiled video as a re-editable ProjectFile row
-    // -- Phase 3: optional motion-graphics overlays (see docs/video-editing.md
-    //    "Motion graphics (Phase 3)"). EnableGraphics=false (default) is byte-identical to the
-    //    pre-Phase-3 compile path — this is the load-bearing backward-compatibility guarantee. --
+                                         // -- Phase 3: optional motion-graphics overlays (see docs/video-editing.md
+                                         //    "Motion graphics (Phase 3)"). EnableGraphics=false (default) is byte-identical to the
+                                         //    pre-Phase-3 compile path — this is the load-bearing backward-compatibility guarantee. --
     /// <summary>
     /// Which step's resolved <c>MotionGraphicsPlanOutput</c> to apply. <c>null</c> (default) means
     /// no graphics plan is even looked for. Reuses <see cref="ExtractInputRef"/> verbatim, same as

@@ -338,8 +338,14 @@ public static class ChromaQuadTracker
 
             smoothed.Add(run[i] with
             {
-                X0 = x0 / n, Y0 = y0 / n, X1 = x1 / n, Y1 = y1 / n,
-                X2 = x2 / n, Y2 = y2 / n, X3 = x3 / n, Y3 = y3 / n
+                X0 = x0 / n,
+                Y0 = y0 / n,
+                X1 = x1 / n,
+                Y1 = y1 / n,
+                X2 = x2 / n,
+                Y2 = y2 / n,
+                X3 = x3 / n,
+                Y3 = y3 / n
             });
         }
 

@@ -19,7 +19,7 @@ Two workflows:
 | `go` (matrix: `api`, `sandbox`) | both Go modules | `go mod tidy` is a no-op, `gofmt`, `go vet`, `go build ./...`, `go test ./... -race` + coverage artifact |
 | `golangci-lint` (matrix: `api`, `sandbox`) | both Go modules | golangci-lint v2.5.0, config in [`.golangci.yml`](../.golangci.yml) |
 | `dotnet` | `inference/ReelForge.sln` (Shared, Inference.Api, WorkflowEngine, WorkflowEngine.Tests) | `dotnet restore`/`build -c Release` (Roslyn + .NET analyzers run here), `dotnet test` with TRX + Cobertura coverage artifacts |
-| `dotnet-format` | same solution | `dotnet format --verify-no-changes --severity warn` — **advisory, `continue-on-error: true`** (see below) |
+| `dotnet-format` | same solution | `dotnet format --verify-no-changes --severity warn` — blocking |
 | `node` (matrix: `web`, `site`) | both Next.js apps | `npm ci`, `tsc --noEmit`, `npm run lint` (ESLint), `npm run build` |
 | `docker` (matrix: 8 images) | every Dockerfile | buildx build, no push, GHA layer cache per image. Builds `web`/`site` at their `production` target and `sandbox` at both `sandbox-runtime` and `control-plane` |
 | `infra-lint` | the plumbing | actionlint (+ shellcheck on `run:` blocks), ShellCheck on `*.sh`, hadolint on all seven Dockerfiles, `docker compose config` schema check |
@@ -71,11 +71,6 @@ docker compose config --quiet    # needs JWT_SIGNING_KEY + SANDBOX_API_TOKEN set
 
 ## Known gaps
 
-- **`dotnet-format` is advisory.** The solution has never been run through
-  `dotnet format`, so gating on it would fail on day one for reasons unrelated to
-  any given change. To make it blocking: run
-  `dotnet format inference/ReelForge.sln`, commit the result, then flip
-  `continue-on-error` to `false` on the `dotnet-format` job.
 - **`api/` has no tests.** `go test ./...` passes trivially there (`[no test
   files]`); the gate exists so the first test added is enforced from then on.
   `sandbox/` has `main_test.go` and it passes.

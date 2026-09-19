@@ -1120,12 +1120,15 @@ public class VideoCompileStepExecutor : IStepExecutor
         {
             return JsonSerializer.Deserialize<T>(json, options);
         }
-        catch (JsonException ex)
+        catch (JsonException)
         {
             string? normalized = RobustJsonExtractor.NormalizeQuotedStrings(json);
-            return normalized is not null
-                ? JsonSerializer.Deserialize<T>(normalized, options)
-                : throw ex;
+            if (normalized is null)
+            {
+                throw;
+            }
+
+            return JsonSerializer.Deserialize<T>(normalized, options);
         }
     }
 
@@ -1194,43 +1197,43 @@ public class VideoCompileStepExecutor : IStepExecutor
         switch (source.Kind)
         {
             case VideoSourceKind.ProjectFile:
-            {
-                if (!source.ProjectFileId.HasValue)
-                    return (null, "The analyze step's Source=ProjectFile has no ProjectFileId.");
+                {
+                    if (!source.ProjectFileId.HasValue)
+                        return (null, "The analyze step's Source=ProjectFile has no ProjectFileId.");
 
-                IReadOnlyList<ProjectWorkspaceFile> files =
-                    await _workspace.ListFilesAsync(context.Execution.ProjectId, context.CancellationToken);
-                ProjectWorkspaceFile? file = files.FirstOrDefault(f => f.Id == source.ProjectFileId.Value);
-                return file is null
-                    ? (null, $"ProjectFile '{source.ProjectFileId.Value}' was not found in this project.")
-                    : (file.StorageKey, null);
-            }
+                    IReadOnlyList<ProjectWorkspaceFile> files =
+                        await _workspace.ListFilesAsync(context.Execution.ProjectId, context.CancellationToken);
+                    ProjectWorkspaceFile? file = files.FirstOrDefault(f => f.Id == source.ProjectFileId.Value);
+                    return file is null
+                        ? (null, $"ProjectFile '{source.ProjectFileId.Value}' was not found in this project.")
+                        : (file.StorageKey, null);
+                }
 
             case VideoSourceKind.StepOutput:
-            {
-                if (historyBeforeAnalyzeStep is null)
-                    return (null, "Cross-execution AnalysisStepResultId with Source=StepOutput is not supported; use ProjectFile for cross-execution recompiles.");
-                if (!source.StepOrder.HasValue)
-                    return (null, "The analyze step's Source=StepOutput has no StepOrder.");
+                {
+                    if (historyBeforeAnalyzeStep is null)
+                        return (null, "Cross-execution AnalysisStepResultId with Source=StepOutput is not supported; use ProjectFile for cross-execution recompiles.");
+                    if (!source.StepOrder.HasValue)
+                        return (null, "The analyze step's Source=StepOutput has no StepOrder.");
 
-                StepOutputHistoryEntry? entry = historyBeforeAnalyzeStep
-                    .FirstOrDefault(h => h.StepOrder == source.StepOrder.Value);
-                return entry is null || string.IsNullOrWhiteSpace(entry.OutputStorageKey)
-                    ? (null, $"Step {source.StepOrder.Value} did not produce a video/media OutputStorageKey.")
-                    : (entry.OutputStorageKey, null);
-            }
+                    StepOutputHistoryEntry? entry = historyBeforeAnalyzeStep
+                        .FirstOrDefault(h => h.StepOrder == source.StepOrder.Value);
+                    return entry is null || string.IsNullOrWhiteSpace(entry.OutputStorageKey)
+                        ? (null, $"Step {source.StepOrder.Value} did not produce a video/media OutputStorageKey.")
+                        : (entry.OutputStorageKey, null);
+                }
 
             case VideoSourceKind.PreviousStepOutput:
-            {
-                if (historyBeforeAnalyzeStep is null)
-                    return (null, "Cross-execution AnalysisStepResultId with Source=PreviousStepOutput is not supported; use ProjectFile for cross-execution recompiles.");
+                {
+                    if (historyBeforeAnalyzeStep is null)
+                        return (null, "Cross-execution AnalysisStepResultId with Source=PreviousStepOutput is not supported; use ProjectFile for cross-execution recompiles.");
 
-                StepOutputHistoryEntry? entry = historyBeforeAnalyzeStep
-                    .LastOrDefault(h => !string.IsNullOrWhiteSpace(h.OutputStorageKey));
-                return entry is null
-                    ? (null, "The analyze step's Source=PreviousStepOutput, but no step before it produced a video/media OutputStorageKey.")
-                    : (entry.OutputStorageKey, null);
-            }
+                    StepOutputHistoryEntry? entry = historyBeforeAnalyzeStep
+                        .LastOrDefault(h => !string.IsNullOrWhiteSpace(h.OutputStorageKey));
+                    return entry is null
+                        ? (null, "The analyze step's Source=PreviousStepOutput, but no step before it produced a video/media OutputStorageKey.")
+                        : (entry.OutputStorageKey, null);
+                }
 
             default:
                 return (null, $"Unknown VideoSourceKind '{source.Kind}'.");

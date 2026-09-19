@@ -26,4 +26,4 @@ public sealed record VideoSourceRef(
     VideoSourceKind Kind,
     Guid? ProjectFileId = null,  // Kind=ProjectFile   -> project_files.storage_key
     int? StepOrder = null);      // Kind=StepOutput    -> that step's workflow_step_results.output_storage_key
-                                  // Kind=PreviousStepOutput -> latest completed result with a non-null key (StepOrder ignored)
+                                 // Kind=PreviousStepOutput -> latest completed result with a non-null key (StepOrder ignored)

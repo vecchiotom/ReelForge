@@ -88,7 +88,7 @@ public class OverlayTextSanitizerTests
         // U+1F600 (😀) is a surrogate pair in UTF-16 (2 chars). Force a truncation boundary
         // that would land mid-pair if truncation were a naive str[..n].
         string emoji = "😀"; // 😀 — itself gets sanitized away (see below), but the
-                                       // truncation routine must never throw or corrupt regardless.
+                             // truncation routine must never throw or corrupt regardless.
         string padded = "AB" + emoji + "CD";
         Action act = () => OverlayTextSanitizer.Sanitize(padded, 3);
         act.Should().NotThrow();

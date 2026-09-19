@@ -221,18 +221,18 @@ public static class SeamTransitionPlanner
 
     private static (double DurationSec, double OverlapSec, string XfadeTransition) DurationsFor(
         SeamTreatment treatment, VideoCompileStepConfig config) => treatment switch
-    {
-        SeamTreatment.HardCut => (0, 0, ""),
-        SeamTreatment.AudioOnly => (2 * Math.Max(0, config.AudioSeamRampMs) / 1000.0, 0, ""),
-        SeamTreatment.DipCut => (2 * Math.Max(0, config.DipCutMs) / 1000.0, 0, ""),
-        SeamTreatment.SoftCut => (SecOf(config.SoftCutMs), SecOf(config.SoftCutMs), "fade"),
-        SeamTreatment.Dissolve => (SecOf(config.DissolveMs), SecOf(config.DissolveMs), "fade"),
-        SeamTreatment.DipToBlack => (SecOf(config.DipToBlackMs), SecOf(config.DipToBlackMs), "fadeblack"),
-        // WhipBlur is a dissolve-family crossfade (a whip-pan blend) using the Dissolve duration
-        // budget — only the xfade transition name differs from R5/R5b's Dissolve outcome.
-        SeamTreatment.WhipBlur => (SecOf(config.DissolveMs), SecOf(config.DissolveMs), "hblur"),
-        _ => (0, 0, "")
-    };
+        {
+            SeamTreatment.HardCut => (0, 0, ""),
+            SeamTreatment.AudioOnly => (2 * Math.Max(0, config.AudioSeamRampMs) / 1000.0, 0, ""),
+            SeamTreatment.DipCut => (2 * Math.Max(0, config.DipCutMs) / 1000.0, 0, ""),
+            SeamTreatment.SoftCut => (SecOf(config.SoftCutMs), SecOf(config.SoftCutMs), "fade"),
+            SeamTreatment.Dissolve => (SecOf(config.DissolveMs), SecOf(config.DissolveMs), "fade"),
+            SeamTreatment.DipToBlack => (SecOf(config.DipToBlackMs), SecOf(config.DipToBlackMs), "fadeblack"),
+            // WhipBlur is a dissolve-family crossfade (a whip-pan blend) using the Dissolve duration
+            // budget — only the xfade transition name differs from R5/R5b's Dissolve outcome.
+            SeamTreatment.WhipBlur => (SecOf(config.DissolveMs), SecOf(config.DissolveMs), "hblur"),
+            _ => (0, 0, "")
+        };
 
     private static double SecOf(int ms) => Math.Max(0, ms) / 1000.0;
 

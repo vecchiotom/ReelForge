@@ -1274,20 +1274,27 @@ public class VideoAnalyzeStepExecutorTests
         int offeredWithFullDetail = await RunAndGetOfferedIdCountAsync(
             cfg => cfg with
             {
-                DetectSilence = false, Transcription = VideoTranscriptionMode.Off,
-                AnalyzeVisuals = true, VisualDetail = VideoVisualDetail.Full,
-                AnalyzeAudioLevels = false, DetectNearDuplicates = false,
-                MaxOutputChars = 700, MaxViewSegments = 1000
+                DetectSilence = false,
+                Transcription = VideoTranscriptionMode.Off,
+                AnalyzeVisuals = true,
+                VisualDetail = VideoVisualDetail.Full,
+                AnalyzeAudioLevels = false,
+                DetectNearDuplicates = false,
+                MaxOutputChars = 700,
+                MaxViewSegments = 1000
             },
             withGrid: true);
 
         int offeredWithVisualsOff = await RunAndGetOfferedIdCountAsync(
             cfg => cfg with
             {
-                DetectSilence = false, Transcription = VideoTranscriptionMode.Off,
+                DetectSilence = false,
+                Transcription = VideoTranscriptionMode.Off,
                 AnalyzeVisuals = false,
-                AnalyzeAudioLevels = false, DetectNearDuplicates = false,
-                MaxOutputChars = 700, MaxViewSegments = 1000
+                AnalyzeAudioLevels = false,
+                DetectNearDuplicates = false,
+                MaxOutputChars = 700,
+                MaxViewSegments = 1000
             },
             withGrid: false);
 
@@ -1312,9 +1319,13 @@ public class VideoAnalyzeStepExecutorTests
             out _, out _,
             configOverride: cfg => cfg with
             {
-                DetectSilence = false, Transcription = VideoTranscriptionMode.Off,
-                AnalyzeVisuals = true, AnalyzeAudioLevels = false, DetectNearDuplicates = false,
-                VisualGridWidth = 2048, VisualGridHeight = 4096
+                DetectSilence = false,
+                Transcription = VideoTranscriptionMode.Off,
+                AnalyzeVisuals = true,
+                AnalyzeAudioLevels = false,
+                DetectNearDuplicates = false,
+                VisualGridWidth = 2048,
+                VisualGridHeight = 4096
             });
 
         probe.Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -1363,9 +1374,12 @@ public class VideoAnalyzeStepExecutorTests
             out _, out _,
             configOverride: cfg => cfg with
             {
-                DetectSilence = false, Transcription = VideoTranscriptionMode.Off,
-                AnalyzeVisuals = true, VisualDetail = VideoVisualDetail.Full,
-                AnalyzeAudioLevels = true, DetectNearDuplicates = false,
+                DetectSilence = false,
+                Transcription = VideoTranscriptionMode.Off,
+                AnalyzeVisuals = true,
+                VisualDetail = VideoVisualDetail.Full,
+                AnalyzeAudioLevels = true,
+                DetectNearDuplicates = false,
                 MaxOutputChars = 24_000
             });
 
@@ -1441,8 +1455,10 @@ public class VideoAnalyzeStepExecutorTests
             out _, out _,
             configOverride: cfg => cfg with
             {
-                DetectSilence = false, Transcription = VideoTranscriptionMode.Off,
-                AnalyzeVisuals = false, AnalyzeAudioLevels = false
+                DetectSilence = false,
+                Transcription = VideoTranscriptionMode.Off,
+                AnalyzeVisuals = false,
+                AnalyzeAudioLevels = false
             });
 
         probe.Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -1608,7 +1624,9 @@ public class VideoAnalyzeStepExecutorTests
             out Mock<IInferenceProviderResolver> providerResolver,
             configOverride: cfg => cfg with
             {
-                Vision = VideoVisionMode.Optional, DetectSilence = false, DetectShots = false,
+                Vision = VideoVisionMode.Optional,
+                DetectSilence = false,
+                DetectShots = false,
                 Transcription = VideoTranscriptionMode.Off
             });
 
@@ -1642,7 +1660,9 @@ public class VideoAnalyzeStepExecutorTests
             out Mock<IInferenceProviderResolver> providerResolver,
             configOverride: cfg => cfg with
             {
-                Vision = VideoVisionMode.Optional, DetectSilence = false, DetectShots = false,
+                Vision = VideoVisionMode.Optional,
+                DetectSilence = false,
+                DetectShots = false,
                 Transcription = VideoTranscriptionMode.Off
             });
 
@@ -1675,7 +1695,9 @@ public class VideoAnalyzeStepExecutorTests
             out Mock<IInferenceProviderResolver> providerResolver,
             configOverride: cfg => cfg with
             {
-                Vision = VideoVisionMode.Required, DetectSilence = false, DetectShots = false,
+                Vision = VideoVisionMode.Required,
+                DetectSilence = false,
+                DetectShots = false,
                 Transcription = VideoTranscriptionMode.Off
             });
 
@@ -1704,7 +1726,9 @@ public class VideoAnalyzeStepExecutorTests
             out Mock<IInferenceProviderResolver> providerResolver,
             configOverride: cfg => cfg with
             {
-                Vision = VideoVisionMode.Required, DetectSilence = false, DetectShots = false,
+                Vision = VideoVisionMode.Required,
+                DetectSilence = false,
+                DetectShots = false,
                 Transcription = VideoTranscriptionMode.Off
             });
 
@@ -1737,9 +1761,15 @@ public class VideoAnalyzeStepExecutorTests
             out Mock<IInferenceProviderResolver> providerResolver,
             configOverride: cfg => cfg with
             {
-                Vision = VideoVisionMode.Optional, DetectSilence = false, Transcription = VideoTranscriptionMode.Off,
-                AnalyzeVisuals = false, AnalyzeAudioLevels = false, DetectNearDuplicates = false,
-                MaxCaptionedShots = 10, MinCaptionShotSeconds = 0.0, VisionTimeoutSeconds = 60
+                Vision = VideoVisionMode.Optional,
+                DetectSilence = false,
+                Transcription = VideoTranscriptionMode.Off,
+                AnalyzeVisuals = false,
+                AnalyzeAudioLevels = false,
+                DetectNearDuplicates = false,
+                MaxCaptionedShots = 10,
+                MinCaptionShotSeconds = 0.0,
+                VisionTimeoutSeconds = 60
             });
 
         probe.Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -1812,9 +1842,14 @@ public class VideoAnalyzeStepExecutorTests
             out Mock<IInferenceProviderResolver> providerResolver,
             configOverride: cfg => cfg with
             {
-                Vision = VideoVisionMode.Required, DetectSilence = false, Transcription = VideoTranscriptionMode.Off,
-                AnalyzeVisuals = false, AnalyzeAudioLevels = false, DetectNearDuplicates = false,
-                MaxCaptionedShots = 10, MinCaptionShotSeconds = 0.0
+                Vision = VideoVisionMode.Required,
+                DetectSilence = false,
+                Transcription = VideoTranscriptionMode.Off,
+                AnalyzeVisuals = false,
+                AnalyzeAudioLevels = false,
+                DetectNearDuplicates = false,
+                MaxCaptionedShots = 10,
+                MinCaptionShotSeconds = 0.0
             });
 
         probe.Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -1882,9 +1917,13 @@ public class VideoAnalyzeStepExecutorTests
             out Mock<IInferenceProviderResolver> providerResolver,
             configOverride: cfg => extraOverride(cfg with
             {
-                Vision = VideoVisionMode.Required, DetectSilence = false, Transcription = VideoTranscriptionMode.Off,
-                AnalyzeAudioLevels = false, DetectNearDuplicates = false,
-                MaxCaptionedShots = 10, MinCaptionShotSeconds = 0.0
+                Vision = VideoVisionMode.Required,
+                DetectSilence = false,
+                Transcription = VideoTranscriptionMode.Off,
+                AnalyzeAudioLevels = false,
+                DetectNearDuplicates = false,
+                MaxCaptionedShots = 10,
+                MinCaptionShotSeconds = 0.0
             }));
 
         probe.Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -1961,9 +2000,15 @@ public class VideoAnalyzeStepExecutorTests
             out Mock<IInferenceProviderResolver> providerResolver,
             configOverride: cfg => cfg with
             {
-                Vision = VideoVisionMode.Required, DetectSilence = false, Transcription = VideoTranscriptionMode.Off,
-                AnalyzeVisuals = false, AnalyzeAudioLevels = false, DetectNearDuplicates = false,
-                MaxCaptionedShots = 10, MinCaptionShotSeconds = 0.0, PersistKeyframes = true
+                Vision = VideoVisionMode.Required,
+                DetectSilence = false,
+                Transcription = VideoTranscriptionMode.Off,
+                AnalyzeVisuals = false,
+                AnalyzeAudioLevels = false,
+                DetectNearDuplicates = false,
+                MaxCaptionedShots = 10,
+                MinCaptionShotSeconds = 0.0,
+                PersistKeyframes = true
             });
 
         probe.Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -2095,9 +2140,13 @@ public class VideoAnalyzeStepExecutorTests
             {
                 VideoAnalyzeStepConfig c = cfg with
                 {
-                    DetectSilence = false, Transcription = VideoTranscriptionMode.Off,
-                    AnalyzeVisuals = true, AnalyzeAudioLevels = true, DetectNearDuplicates = false,
-                    VisualDetail = VideoVisualDetail.Full, MaxOutputChars = 24_000
+                    DetectSilence = false,
+                    Transcription = VideoTranscriptionMode.Off,
+                    AnalyzeVisuals = true,
+                    AnalyzeAudioLevels = true,
+                    DetectNearDuplicates = false,
+                    VisualDetail = VideoVisualDetail.Full,
+                    MaxOutputChars = 24_000
                 };
                 return extraOverride is not null ? extraOverride(c) : c;
             });
@@ -2236,10 +2285,15 @@ public class VideoAnalyzeStepExecutorTests
             out _, out _,
             configOverride: cfg => cfg with
             {
-                DetectSilence = false, Transcription = VideoTranscriptionMode.Off,
-                AnalyzeVisuals = true, AnalyzeAudioLevels = false, DetectNearDuplicates = false,
-                VisualDetail = VideoVisualDetail.Full, MaxOutputChars = 24_000,
-                LookSimilarityThreshold = 0.5, MaxViewLookGroups = 1
+                DetectSilence = false,
+                Transcription = VideoTranscriptionMode.Off,
+                AnalyzeVisuals = true,
+                AnalyzeAudioLevels = false,
+                DetectNearDuplicates = false,
+                VisualDetail = VideoVisualDetail.Full,
+                MaxOutputChars = 24_000,
+                LookSimilarityThreshold = 0.5,
+                MaxViewLookGroups = 1
             });
 
         probe.Setup(p => p.ProbeAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -2332,9 +2386,13 @@ public class VideoAnalyzeStepExecutorTests
             {
                 VideoAnalyzeStepConfig c = cfg with
                 {
-                    DetectSilence = false, Transcription = VideoTranscriptionMode.Off,
-                    AnalyzeVisuals = true, AnalyzeAudioLevels = false, DetectNearDuplicates = false,
-                    VisualDetail = VideoVisualDetail.Full, MaxOutputChars = 24_000
+                    DetectSilence = false,
+                    Transcription = VideoTranscriptionMode.Off,
+                    AnalyzeVisuals = true,
+                    AnalyzeAudioLevels = false,
+                    DetectNearDuplicates = false,
+                    VisualDetail = VideoVisualDetail.Full,
+                    MaxOutputChars = 24_000
                 };
                 return extraOverride is not null ? extraOverride(c) : c;
             });
@@ -2610,10 +2668,16 @@ public class VideoAnalyzeStepExecutorTests
             {
                 VideoAnalyzeStepConfig c = cfg with
                 {
-                    DetectSilence = false, Transcription = VideoTranscriptionMode.Off,
-                    AnalyzeVisuals = true, AnalyzeAudioLevels = false, DetectNearDuplicates = false,
-                    VisualDetail = VideoVisualDetail.Full, MaxOutputChars = 24_000,
-                    EmitOverlayPlacements = true, MaxPlacementsPerShot = 1, MaxTimeSlicesPerRegion = 3
+                    DetectSilence = false,
+                    Transcription = VideoTranscriptionMode.Off,
+                    AnalyzeVisuals = true,
+                    AnalyzeAudioLevels = false,
+                    DetectNearDuplicates = false,
+                    VisualDetail = VideoVisualDetail.Full,
+                    MaxOutputChars = 24_000,
+                    EmitOverlayPlacements = true,
+                    MaxPlacementsPerShot = 1,
+                    MaxTimeSlicesPerRegion = 3
                 };
                 return extraOverride is not null ? extraOverride(c) : c;
             });

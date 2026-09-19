@@ -2705,8 +2705,12 @@ public class VideoCompileStepExecutorTests
         string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
         string gradePlanJson = JsonSerializer.Serialize(new
         {
-            look = "None", strength = "Normal", shadowTone = "Lifted", highlightTone = "Softened",
-            reason = "already consistent", planRationale = "no grade"
+            look = "None",
+            strength = "Normal",
+            shadowTone = "Lifted",
+            highlightTone = "Softened",
+            reason = "already consistent",
+            planRationale = "no grade"
         });
 
         StepExecutionContext context = CreateGradeContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace, gradePlanJson);
@@ -2734,8 +2738,12 @@ public class VideoCompileStepExecutorTests
         string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
         string gradePlanJson = JsonSerializer.Serialize(new
         {
-            look = "Sepia", strength = "Normal", shadowTone = "Neutral", highlightTone = "Neutral",
-            reason = "test", planRationale = "test"
+            look = "Sepia",
+            strength = "Normal",
+            shadowTone = "Neutral",
+            highlightTone = "Neutral",
+            reason = "test",
+            planRationale = "test"
         });
 
         StepExecutionContext context = CreateGradeContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace, gradePlanJson);
@@ -2781,8 +2789,12 @@ public class VideoCompileStepExecutorTests
         string decisionJson = BuildDecisionJson(("s0", "s0", "keep"));
         string gradePlanJson = JsonSerializer.Serialize(new
         {
-            look = "Cool", strength = "Normal", shadowTone = "Neutral", highlightTone = "Neutral",
-            reason = "test", planRationale = "test"
+            look = "Cool",
+            strength = "Normal",
+            shadowTone = "Neutral",
+            highlightTone = "Neutral",
+            reason = "test",
+            planRationale = "test"
         });
 
         StepExecutionContext context = CreateGradeContext(artifact, decisionJson, out Mock<IProjectFileWorkspace> workspace, gradePlanJson);

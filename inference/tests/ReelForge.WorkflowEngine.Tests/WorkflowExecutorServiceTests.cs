@@ -274,18 +274,26 @@ namespace ReelForge.WorkflowEngine.Tests
             AgentDefinition agent = new() { Id = Guid.NewGuid(), Name = "Agent", AgentType = AgentType.VideoStoryEditor, SystemPrompt = "" };
             WorkflowStep step1 = new()
             {
-                Id = Guid.NewGuid(), StepOrder = 1, StepType = StepType.Agent,
-                AgentDefinitionId = agent.Id, AgentDefinition = agent
+                Id = Guid.NewGuid(),
+                StepOrder = 1,
+                StepType = StepType.Agent,
+                AgentDefinitionId = agent.Id,
+                AgentDefinition = agent
             };
             WorkflowDefinition definition = new()
             {
-                Id = workflowDefId, Name = "test", ProjectId = projectId,
+                Id = workflowDefId,
+                Name = "test",
+                ProjectId = projectId,
                 Steps = new List<WorkflowStep> { step1 }
             };
             WorkflowExecution execution = new()
             {
-                Id = executionId, WorkflowDefinitionId = workflowDefId, ProjectId = projectId,
-                Status = ExecutionStatus.Queued, WorkflowDefinition = definition
+                Id = executionId,
+                WorkflowDefinitionId = workflowDefId,
+                ProjectId = projectId,
+                Status = ExecutionStatus.Queued,
+                WorkflowDefinition = definition
             };
 
             db.AgentDefinitions.Add(agent);
@@ -595,18 +603,26 @@ namespace ReelForge.WorkflowEngine.Tests
             AgentDefinition agent = new() { Id = Guid.NewGuid(), Name = "Agent", AgentType = AgentType.VideoStoryEditor, SystemPrompt = "" };
             WorkflowStep step1 = new()
             {
-                Id = Guid.NewGuid(), StepOrder = 1, StepType = StepType.Agent,
-                AgentDefinitionId = agent.Id, AgentDefinition = agent
+                Id = Guid.NewGuid(),
+                StepOrder = 1,
+                StepType = StepType.Agent,
+                AgentDefinitionId = agent.Id,
+                AgentDefinition = agent
             };
             WorkflowDefinition definition = new()
             {
-                Id = workflowDefId, Name = "test", ProjectId = projectId,
+                Id = workflowDefId,
+                Name = "test",
+                ProjectId = projectId,
                 Steps = new List<WorkflowStep> { step1 }
             };
             WorkflowExecution execution = new()
             {
-                Id = executionId, WorkflowDefinitionId = workflowDefId, ProjectId = projectId,
-                Status = ExecutionStatus.Queued, WorkflowDefinition = definition
+                Id = executionId,
+                WorkflowDefinitionId = workflowDefId,
+                ProjectId = projectId,
+                Status = ExecutionStatus.Queued,
+                WorkflowDefinition = definition
             };
 
             db.AgentDefinitions.Add(agent);
@@ -653,18 +669,26 @@ namespace ReelForge.WorkflowEngine.Tests
             AgentDefinition agent = new() { Id = Guid.NewGuid(), Name = "Agent", AgentType = AgentType.VideoStoryEditor, SystemPrompt = "" };
             WorkflowStep step1 = new()
             {
-                Id = Guid.NewGuid(), StepOrder = 1, StepType = StepType.Agent,
-                AgentDefinitionId = agent.Id, AgentDefinition = agent
+                Id = Guid.NewGuid(),
+                StepOrder = 1,
+                StepType = StepType.Agent,
+                AgentDefinitionId = agent.Id,
+                AgentDefinition = agent
             };
             WorkflowDefinition definition = new()
             {
-                Id = workflowDefId, Name = "test", ProjectId = projectId,
+                Id = workflowDefId,
+                Name = "test",
+                ProjectId = projectId,
                 Steps = new List<WorkflowStep> { step1 }
             };
             WorkflowExecution execution = new()
             {
-                Id = executionId, WorkflowDefinitionId = workflowDefId, ProjectId = projectId,
-                Status = ExecutionStatus.Queued, WorkflowDefinition = definition
+                Id = executionId,
+                WorkflowDefinitionId = workflowDefId,
+                ProjectId = projectId,
+                Status = ExecutionStatus.Queued,
+                WorkflowDefinition = definition
             };
 
             db.AgentDefinitions.Add(agent);

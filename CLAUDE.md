@@ -9,8 +9,8 @@ ReelForge is a microservices platform for generating promotional videos using [R
 - **`/site`** — Next.js 15 App Router + Tailwind CSS v4 public marketing site, served at the root domain (`/`)
 - **`/web`** — Next.js 15 App Router + Mantine v8 authenticated platform dashboard, served under `/app`
 - **`/api`** — Go REST API (Gorilla Mux, GORM, PostgreSQL)
-- **`/inference/src/ReelForge.Inference.Api`** — .NET 9 REST API for projects, files, agents, workflows CRUD
-- **`/inference/src/ReelForge.WorkflowEngine`** — .NET 9 workflow execution engine consuming from RabbitMQ
+- **`/inference/src/ReelForge.Inference.Api`** — .NET 10 REST API for projects, files, agents, workflows CRUD
+- **`/inference/src/ReelForge.WorkflowEngine`** — .NET 10 workflow execution engine consuming from RabbitMQ
 
 All services are containerized and accessed through an nginx reverse proxy on a single port.
 
@@ -729,10 +729,9 @@ locally.
 - **Config lives at the repo root** so local runs match CI byte for byte:
   `.golangci.yml` (both Go modules — golangci-lint walks up to find it),
   `.hadolint.yaml`, `.github/dependabot.yml`.
-- **`dotnet-format` is advisory** (`continue-on-error: true`): the solution has
-  never been run through `dotnet format`, so gating on it would fail for reasons
-  unrelated to any change. Flip it to blocking once a formatting pass is
-  committed.
+- **`dotnet-format` is blocking**: the solution was run through `dotnet format`
+  during the .NET 10 upgrade and committed clean, so `dotnet format
+  inference/ReelForge.sln --verify-no-changes --severity warn` must stay clean.
 
 ## Configuration
 
