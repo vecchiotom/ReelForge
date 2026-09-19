@@ -1089,11 +1089,12 @@ public class VideoCompileStepExecutor : IStepExecutor
         // A bare JsonSerializer.Deserialize<T> over the whole string chokes on that trailing
         // content even though the JSON itself is perfectly valid, so extract just the balanced
         // {...} object first and ignore everything outside it.
-        // Hoisted to RobustJsonExtractor so ReviewLoopStepExecutor can apply the same hardening
-        // to AgentType.VideoReviewAgent's output — see that class's doc comment for the full
-        // rationale. Kept as an internal alias here so this call site (and any external test
-        // referencing VideoCompileStepExecutor.ExtractJsonObject) is unaffected.
-        string? extracted = ExtractJsonObject(content);
+        // Uses the LAST balanced object, not the first (ExtractJsonObject) — also observed live:
+        // VideoStoryEditor's own chain-of-thought reasoning routinely contains small, complete,
+        // informal brace-pair notation ("{s0,s0}") thousands of characters before the real final
+        // decision JSON, which ExtractJsonObject's first-match strategy would latch onto instead
+        // of the real answer. See RobustJsonExtractor.ExtractLastJsonObject's doc comment.
+        string? extracted = RobustJsonExtractor.ExtractLastJsonObject(content);
         return extracted is null
             ? (null, $"{label} input did not contain a recognizable JSON object.")
             : (extracted, null);

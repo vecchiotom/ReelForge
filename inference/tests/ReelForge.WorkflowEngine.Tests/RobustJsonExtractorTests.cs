@@ -34,6 +34,57 @@ public class RobustJsonExtractorTests
     }
 
     [Fact]
+    public void ExtractLastJsonObject_skips_incidental_early_braces_from_chain_of_thought()
+    {
+        // Regression test: found live producing a real promo video. VideoStoryEditor's own
+        // reasoning used small, complete, informal brace-pair shorthand ("{s0,s0}") for candidate
+        // spans thousands of characters before the real final decision — ExtractJsonObject's
+        // first-match strategy would latch onto that instead of the real answer.
+        string raw =
+            "Let me think about spans: {s0,s0} and {s1,s1}. Hmm, two single-shot spans. " +
+            "After weighing it, here is my decision:\n{\"keep\":[{\"fromId\":\"s0\",\"toId\":\"s0\",\"reason\":\"open\"}],\"editRationale\":\"test\",\"suggestedTitle\":\"Title\"}";
+
+        string? extracted = RobustJsonExtractor.ExtractLastJsonObject(raw);
+
+        extracted.Should().NotBeNull();
+        JsonDocument doc = JsonDocument.Parse(extracted!);
+        doc.RootElement.GetProperty("suggestedTitle").GetString().Should().Be("Title");
+        doc.RootElement.GetProperty("keep").GetArrayLength().Should().Be(1);
+    }
+
+    [Fact]
+    public void ExtractLastJsonObject_strips_leading_and_trailing_prose_with_only_one_object()
+    {
+        string raw = "Sure, here you go:\n{\"a\": 1}\nHope that helps!";
+
+        RobustJsonExtractor.ExtractLastJsonObject(raw).Should().Be("{\"a\": 1}");
+    }
+
+    [Fact]
+    public void ExtractLastJsonObject_returns_null_when_no_brace_present()
+    {
+        RobustJsonExtractor.ExtractLastJsonObject("no json here").Should().BeNull();
+    }
+
+    [Fact]
+    public void ExtractLastJsonObject_returns_null_when_unbalanced()
+    {
+        RobustJsonExtractor.ExtractLastJsonObject("{\"a\": {\"b\": 1}").Should().BeNull();
+    }
+
+    [Fact]
+    public void ExtractLastJsonObject_ignores_string_literal_braces_when_finding_the_last_object()
+    {
+        string raw = "{\"skip\": \"a { fake } brace\"} then more talk {\"real\": true}";
+
+        string? extracted = RobustJsonExtractor.ExtractLastJsonObject(raw);
+
+        extracted.Should().NotBeNull();
+        JsonDocument doc = JsonDocument.Parse(extracted!);
+        doc.RootElement.GetProperty("real").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
     public void NormalizeQuotedStrings_converts_a_simple_python_dict_literal_to_strict_json()
     {
         string raw = "{'summary': 'a quiet room', 'tags': ['calm', 'indoor']}";

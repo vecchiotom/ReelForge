@@ -52,6 +52,60 @@ internal static class RobustJsonExtractor
     }
 
     /// <summary>
+    /// Like <see cref="ExtractJsonObject"/> but returns the LAST top-level balanced <c>{...}</c>
+    /// object in <paramref name="raw"/> instead of the first. Needed for a caller whose model
+    /// reliably reasons extensively BEFORE emitting its real structured answer — observed live
+    /// from <c>AgentType.VideoStoryEditor</c>: its chain-of-thought used small, complete, informal
+    /// brace-pair shorthand (<c>"{s0,s0} and {s1,s1}"</c>, mid-reasoning notation for candidate
+    /// spans) thousands of characters before the real final decision JSON at the very end of the
+    /// response. <see cref="ExtractJsonObject"/>'s first-match strategy latches onto that
+    /// incidental early object instead of the real answer; scanning for the last one that actually
+    /// closes (tracking depth exactly like <see cref="ExtractJsonObject"/>, forward in one pass —
+    /// scanning backward would need unreliable backward escape-sequence lookahead) finds the real
+    /// answer regardless of how much brace-heavy reasoning precedes it. Returns null if no balanced
+    /// object is found anywhere in <paramref name="raw"/>.
+    /// </summary>
+    public static string? ExtractLastJsonObject(string raw)
+    {
+        int depth = 0;
+        bool inString = false;
+        bool escape = false;
+        int start = -1;
+        string? lastComplete = null;
+
+        for (int i = 0; i < raw.Length; i++)
+        {
+            char c = raw[i];
+            if (inString)
+            {
+                if (escape) escape = false;
+                else if (c == '\\') escape = true;
+                else if (c == '"') inString = false;
+                continue;
+            }
+
+            if (c == '"') { inString = true; continue; }
+            if (c == '{')
+            {
+                if (depth == 0) start = i;
+                depth++;
+            }
+            else if (c == '}')
+            {
+                if (depth == 0) continue; // unmatched close outside any object — ignore
+                depth--;
+                if (depth == 0 && start >= 0)
+                {
+                    lastComplete = raw.Substring(start, i - start + 1);
+                    start = -1;
+                }
+            }
+        }
+
+        return lastComplete;
+    }
+
+    /// <summary>
     /// Best-effort repair for near-miss JSON that uses single quotes as string delimiters —
     /// observed live from a local/open vision-language model that didn't honor a JSON-schema
     /// response format and instead emitted Python-dict-style output, e.g.
