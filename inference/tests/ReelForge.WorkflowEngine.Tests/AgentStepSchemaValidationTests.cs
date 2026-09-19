@@ -10,6 +10,7 @@ using Moq;
 using ReelForge.Shared.Data.Models;
 using ReelForge.Shared.Data.OutputSchemas;
 using ReelForge.WorkflowEngine.Agents;
+using ReelForge.WorkflowEngine.Agents.Tools;
 using ReelForge.WorkflowEngine.Execution;
 using ReelForge.WorkflowEngine.Execution.StepExecutors;
 using Xunit;
@@ -74,6 +75,61 @@ public class AgentStepSchemaValidationTests
         result.Status.Should().Be(StepStatus.Completed);
     }
 
+    [Fact]
+    public async Task An_agent_that_called_FailWorkflow_actually_aborts_its_step()
+    {
+        // FailWorkflow throws AgentWorkflowException, but FunctionInvokingChatClient catches a
+        // tool's exception and hands it back to the model as a tool result, so the abort never
+        // propagates on its own. Seen live: a Colorist step looped read_project_file ->
+        // fail_workflow for over forty minutes without ever failing, while the tool's own
+        // documentation promised it would abort the workflow immediately. The executor must honor
+        // the recorded abort reason after the run.
+        var accessor = new WorkflowExecutionContextAccessor();
+        var agent = new StubAgent("...reasoning, no decision...", typeof(VideoEditDecisionOutput));
+
+        var registry = new Mock<IAgentRegistry>();
+        registry.Setup(r => r.GetByType(It.IsAny<AgentType>(), It.IsAny<Guid?>())).Returns(agent);
+
+        var tools = new WorkflowControlAgentTools(
+            accessor, NullLogger<WorkflowControlAgentTools>.Instance);
+
+        var executor = new AgentStepExecutor(
+            registry.Object, accessor,
+            Mock.Of<IMotionGraphicsPlacementAnnotator>(),
+            NullLogger<AgentStepExecutor>.Instance);
+
+        // Stand in for the model calling the tool mid-run and the tool layer swallowing the throw.
+        agent.OnRun = () =>
+        {
+            try { tools.FailWorkflow("analysis view unusable").GetAwaiter().GetResult(); }
+            catch (AgentWorkflowException) { /* swallowed, exactly as the tool layer does */ }
+        };
+
+        var step = new WorkflowStep
+        {
+            StepOrder = 4,
+            StepType = StepType.Agent,
+            AgentDefinition = new AgentDefinition { Name = "Colorist", AgentType = AgentType.Colorist }
+        };
+        var context = new StepExecutionContext
+        {
+            Execution = new WorkflowExecution { Id = Guid.NewGuid(), ProjectId = Guid.NewGuid() },
+            Step = step,
+            AllSteps = new List<WorkflowStep> { step },
+            AccumulatedOutput = string.Empty,
+            StepOutputHistory = new List<StepOutputHistoryEntry>(),
+            CurrentStepIndex = 0,
+            IterationCount = 0,
+            CorrelationId = "test",
+            CancellationToken = CancellationToken.None
+        };
+
+        AgentWorkflowException thrown = await Assert.ThrowsAsync<AgentWorkflowException>(
+            () => executor.ExecuteAsync(context));
+
+        thrown.Reason.Should().Be("analysis view unusable");
+    }
+
     private static async Task<StepExecutionResult> RunAgentReturning(string output, Type? outputSchemaType)
     {
         var agent = new StubAgent(output, outputSchemaType);
@@ -133,7 +189,12 @@ public class AgentStepSchemaValidationTests
         public string? OutputSchemaJson => null;
         public Type? OutputSchemaType { get; }
 
-        public Task<AgentRunResult> RunAsync(string prompt, Guid? agentDefinitionId = null, CancellationToken ct = default) =>
-            Task.FromResult(new AgentRunResult { Output = _output, TokensUsed = 1 });
+        public Action? OnRun { get; set; }
+
+        public Task<AgentRunResult> RunAsync(string prompt, Guid? agentDefinitionId = null, CancellationToken ct = default)
+        {
+            OnRun?.Invoke();
+            return Task.FromResult(new AgentRunResult { Output = _output, TokensUsed = 1 });
+        }
     }
 }

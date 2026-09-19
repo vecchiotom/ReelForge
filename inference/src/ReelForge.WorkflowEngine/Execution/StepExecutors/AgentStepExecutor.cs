@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using ReelForge.Shared.Data.Models;
 using ReelForge.WorkflowEngine.Agents;
+using ReelForge.WorkflowEngine.Agents.Tools;
 
 namespace ReelForge.WorkflowEngine.Execution.StepExecutors;
 
@@ -105,6 +106,23 @@ public class AgentStepExecutor : IStepExecutor
             CreatePreview(result.Output, 300));
 
         string? outputStorageKey = _executionContextAccessor.Current?.PendingOutputStorageKey;
+
+        // An agent that called FailWorkflow has asked to abort, and that request must be honored
+        // here: the AgentWorkflowException the tool throws is caught by FunctionInvokingChatClient
+        // and handed back to the model as a tool result, so it never propagates on its own. Seen
+        // live as a Colorist step looping read_project_file -> fail_workflow for over forty
+        // minutes, never failing, while the tool documented itself as aborting immediately.
+        // Rethrowing here puts it back on the path ExecuteStepWithRetryAsync already has for this
+        // exception, which deliberately does NOT retry -- an agent that declared the situation
+        // unrecoverable should not be asked the same question twice.
+        string? abortReason = _executionContextAccessor.Current?.AbortReason;
+        if (!string.IsNullOrWhiteSpace(abortReason))
+        {
+            _logger.LogWarning(
+                "Agent step {StepOrder}: {AgentName} requested workflow abort: {Reason}",
+                context.Step.StepOrder, agent.Name, abortReason);
+            throw new AgentWorkflowException(abortReason);
+        }
 
         if (!result.Success)
         {
