@@ -318,16 +318,16 @@ public class InferenceProviderResolverTests
         bool isDefault,
         string name,
         InferenceProviderCapability capability = InferenceProviderCapability.Chat) => new()
-    {
-        Id = Guid.NewGuid(),
-        Name = name,
-        Kind = InferenceProviderKind.AzureOpenAI,
-        Endpoint = "https://provider.example",
-        ModelName = "gpt-4o-mini",
-        IsDefault = isDefault,
-        IsEnabled = true,
-        Capability = capability
-    };
+        {
+            Id = Guid.NewGuid(),
+            Name = name,
+            Kind = InferenceProviderKind.AzureOpenAI,
+            Endpoint = "https://provider.example",
+            ModelName = "gpt-4o-mini",
+            IsDefault = isDefault,
+            IsEnabled = true,
+            Capability = capability
+        };
 
     private static InferenceProviderResolver CreateResolver(
         IReadOnlyList<InferenceProvider> providers,

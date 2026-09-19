@@ -144,21 +144,21 @@ public static class ColorGradeFilterBuilder
         switch (normalizedHighlight)
         {
             case "Softened":
-            {
-                string v = FfmpegArgvFormat.Number(Math.Round(1.0 - 0.05 * mult, 4));
-                levels.Add($"romax={v}");
-                levels.Add($"gomax={v}");
-                levels.Add($"bomax={v}");
-                break;
-            }
+                {
+                    string v = FfmpegArgvFormat.Number(Math.Round(1.0 - 0.05 * mult, 4));
+                    levels.Add($"romax={v}");
+                    levels.Add($"gomax={v}");
+                    levels.Add($"bomax={v}");
+                    break;
+                }
             case "Brightened":
-            {
-                string v = FfmpegArgvFormat.Number(Math.Round(1.0 - 0.06 * mult, 4));
-                levels.Add($"rimax={v}");
-                levels.Add($"gimax={v}");
-                levels.Add($"bimax={v}");
-                break;
-            }
+                {
+                    string v = FfmpegArgvFormat.Number(Math.Round(1.0 - 0.06 * mult, 4));
+                    levels.Add($"rimax={v}");
+                    levels.Add($"gimax={v}");
+                    levels.Add($"bimax={v}");
+                    break;
+                }
         }
 
         if (levels.Count > 0)

@@ -110,5 +110,5 @@ public class RemotionComponentTranslatorAgent : ReelForgeAgentBase
             agentId: null,
             outputSchemaType: typeof(RemotionProjectBuildOutput),
             defaultModelSettings: new AgentModelSettings(Temperature: 0.3f, ReasoningEffort: "xhigh"))
-   { }
+    { }
 }

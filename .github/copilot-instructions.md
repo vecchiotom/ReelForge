@@ -25,8 +25,8 @@ High-level flow:
 ### Core services
 - `web/` (`Next.js 15`, App Router, Mantine v8): UI for authentication, projects, files, workflows, agents, admin.
 - `api/` (Go, Gorilla Mux, GORM): auth authority, user/admin endpoints, workflow stats/events (SSE).
-- `inference/src/ReelForge.Inference.Api/` (.NET 9): CRUD for projects/files/agents/workflows, file summarization, publishes execution requests.
-- `inference/src/ReelForge.WorkflowEngine/` (.NET 9): executes workflows, coordinates built-in agents, consumes/publishes MassTransit events.
+- `inference/src/ReelForge.Inference.Api/` (.NET 10): CRUD for projects/files/agents/workflows, file summarization, publishes execution requests.
+- `inference/src/ReelForge.WorkflowEngine/` (.NET 10): executes workflows, coordinates built-in agents, consumes/publishes MassTransit events.
 - `sandbox/` (Go): sandbox lifecycle and command execution in hardened Docker containers for Remotion-related build/render work.
 
 ### Infrastructure
@@ -70,7 +70,7 @@ High-level flow:
 - SSE endpoints for workflow events
 
 ### Inference + Workflow Engine (`inference/`)
-- .NET 9 Web APIs
+- .NET 10 Web APIs
 - EF Core
 - MassTransit + RabbitMQ
 - OpenTelemetry instrumentation

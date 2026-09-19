@@ -1406,38 +1406,38 @@ public class VideoAnalyzeStepExecutor : IStepExecutor
         switch (source.Kind)
         {
             case VideoSourceKind.PreviousStepOutput:
-            {
-                StepOutputHistoryEntry? entry = context.StepOutputHistory
-                    .LastOrDefault(h => !string.IsNullOrWhiteSpace(h.OutputStorageKey));
-                return entry is null
-                    ? (null, "Source=PreviousStepOutput but no prior step in this execution produced a video/media OutputStorageKey.")
-                    : (entry.OutputStorageKey, null);
-            }
+                {
+                    StepOutputHistoryEntry? entry = context.StepOutputHistory
+                        .LastOrDefault(h => !string.IsNullOrWhiteSpace(h.OutputStorageKey));
+                    return entry is null
+                        ? (null, "Source=PreviousStepOutput but no prior step in this execution produced a video/media OutputStorageKey.")
+                        : (entry.OutputStorageKey, null);
+                }
 
             case VideoSourceKind.StepOutput:
-            {
-                if (!source.StepOrder.HasValue)
-                    return (null, "Source=StepOutput requires StepOrder.");
+                {
+                    if (!source.StepOrder.HasValue)
+                        return (null, "Source=StepOutput requires StepOrder.");
 
-                StepOutputHistoryEntry? entry = context.StepOutputHistory
-                    .FirstOrDefault(h => h.StepOrder == source.StepOrder.Value);
-                return entry is null || string.IsNullOrWhiteSpace(entry.OutputStorageKey)
-                    ? (null, $"Step {source.StepOrder.Value} did not produce a video/media OutputStorageKey.")
-                    : (entry.OutputStorageKey, null);
-            }
+                    StepOutputHistoryEntry? entry = context.StepOutputHistory
+                        .FirstOrDefault(h => h.StepOrder == source.StepOrder.Value);
+                    return entry is null || string.IsNullOrWhiteSpace(entry.OutputStorageKey)
+                        ? (null, $"Step {source.StepOrder.Value} did not produce a video/media OutputStorageKey.")
+                        : (entry.OutputStorageKey, null);
+                }
 
             case VideoSourceKind.ProjectFile:
-            {
-                if (!source.ProjectFileId.HasValue)
-                    return (null, "Source=ProjectFile requires ProjectFileId.");
+                {
+                    if (!source.ProjectFileId.HasValue)
+                        return (null, "Source=ProjectFile requires ProjectFileId.");
 
-                IReadOnlyList<ProjectWorkspaceFile> files =
-                    await _workspace.ListFilesAsync(context.Execution.ProjectId, context.CancellationToken);
-                ProjectWorkspaceFile? file = files.FirstOrDefault(f => f.Id == source.ProjectFileId.Value);
-                return file is null
-                    ? (null, $"ProjectFile '{source.ProjectFileId.Value}' was not found in this project.")
-                    : (file.StorageKey, null);
-            }
+                    IReadOnlyList<ProjectWorkspaceFile> files =
+                        await _workspace.ListFilesAsync(context.Execution.ProjectId, context.CancellationToken);
+                    ProjectWorkspaceFile? file = files.FirstOrDefault(f => f.Id == source.ProjectFileId.Value);
+                    return file is null
+                        ? (null, $"ProjectFile '{source.ProjectFileId.Value}' was not found in this project.")
+                        : (file.StorageKey, null);
+                }
 
             default:
                 return (null, $"Unknown VideoSourceKind '{source.Kind}'.");

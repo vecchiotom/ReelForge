@@ -136,7 +136,10 @@ public class VisionShotCaptionerTests
         string longText = new string('z', 500);
         VideoShotCaption caption = Caption() with
         {
-            TimeOfDay = longText, Lighting = longText, VisualStyle = longText, Framing = longText
+            TimeOfDay = longText,
+            Lighting = longText,
+            VisualStyle = longText,
+            Framing = longText
         };
 
         VideoShotCaption result = VisionShotCaptioner.ApplyCaps(caption, maxCaptionChars: 50);
