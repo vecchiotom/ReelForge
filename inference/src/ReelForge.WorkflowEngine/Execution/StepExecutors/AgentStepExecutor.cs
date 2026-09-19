@@ -112,16 +112,38 @@ public class AgentStepExecutor : IStepExecutor
         // and handed back to the model as a tool result, so it never propagates on its own. Seen
         // live as a Colorist step looping read_project_file -> fail_workflow for over forty
         // minutes, never failing, while the tool documented itself as aborting immediately.
-        // Rethrowing here puts it back on the path ExecuteStepWithRetryAsync already has for this
-        // exception, which deliberately does NOT retry -- an agent that declared the situation
-        // unrecoverable should not be asked the same question twice.
+        //
+        // But an abort only counts when the agent left no usable answer. A schema-declaring agent
+        // that DID produce a parseable object has, by its own output, contradicted the abort --
+        // and models call this tool spuriously: observed live from VideoStoryEditor, which invoked
+        // fail_workflow with the reason "No decision needed - proceeding with selection. (This
+        // call is not made; see JSON below.)" while emitting a perfectly good decision. Honoring
+        // that would throw away real work over a hallucinated control-flow call, so the real
+        // answer wins and the stray abort is logged instead.
         string? abortReason = _executionContextAccessor.Current?.AbortReason;
         if (!string.IsNullOrWhiteSpace(abortReason))
         {
-            _logger.LogWarning(
-                "Agent step {StepOrder}: {AgentName} requested workflow abort: {Reason}",
-                context.Step.StepOrder, agent.Name, abortReason);
-            throw new AgentWorkflowException(abortReason);
+            bool hasUsableAnswer =
+                agent.OutputSchemaType != null &&
+                RobustJsonExtractor.ExtractLastJsonObject(result.Output ?? string.Empty) != null;
+
+            if (hasUsableAnswer)
+            {
+                _logger.LogWarning(
+                    "Agent step {StepOrder}: {AgentName} called FailWorkflow but also returned a valid " +
+                    "{Schema}; treating the abort as spurious and keeping the answer. Reason was: {Reason}",
+                    context.Step.StepOrder, agent.Name, agent.OutputSchemaType!.Name, abortReason);
+            }
+            else
+            {
+                // Rethrowing puts this back on the path ExecuteStepWithRetryAsync already has for
+                // this exception, which deliberately does NOT retry -- an agent that declared the
+                // situation unrecoverable should not be asked the same question twice.
+                _logger.LogWarning(
+                    "Agent step {StepOrder}: {AgentName} requested workflow abort: {Reason}",
+                    context.Step.StepOrder, agent.Name, abortReason);
+                throw new AgentWorkflowException(abortReason);
+            }
         }
 
         if (!result.Success)

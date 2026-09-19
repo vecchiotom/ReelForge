@@ -105,6 +105,7 @@ public class AgentStepSchemaValidationTests
             catch (AgentWorkflowException) { /* swallowed, exactly as the tool layer does */ }
         };
 
+
         var step = new WorkflowStep
         {
             StepOrder = 4,
@@ -128,6 +129,58 @@ public class AgentStepSchemaValidationTests
             () => executor.ExecuteAsync(context));
 
         thrown.Reason.Should().Be("analysis view unusable");
+    }
+
+    [Fact]
+    public async Task A_spurious_FailWorkflow_does_not_discard_a_valid_answer()
+    {
+        // Models call this tool by mistake. Observed live from VideoStoryEditor, which invoked
+        // fail_workflow with the reason "No decision needed - proceeding with selection. (This
+        // call is not made; see JSON below.)" while emitting a perfectly good decision -- and an
+        // unconditional abort threw that real work away. When the agent produced a parseable
+        // object for its declared schema, that answer wins over the stray control-flow call.
+        var accessor = new WorkflowExecutionContextAccessor();
+        var agent = new StubAgent(
+            "{\"keep\":[{\"shotId\":\"s0\"}],\"editRationale\":\"opens on the hero\"}",
+            typeof(VideoEditDecisionOutput));
+
+        var registry = new Mock<IAgentRegistry>();
+        registry.Setup(r => r.GetByType(It.IsAny<AgentType>(), It.IsAny<Guid?>())).Returns(agent);
+
+        var tools = new WorkflowControlAgentTools(accessor, NullLogger<WorkflowControlAgentTools>.Instance);
+        agent.OnRun = () =>
+        {
+            try { tools.FailWorkflow("No decision needed - this call is not made").GetAwaiter().GetResult(); }
+            catch (AgentWorkflowException) { }
+        };
+
+        var executor = new AgentStepExecutor(
+            registry.Object, accessor,
+            Mock.Of<IMotionGraphicsPlacementAnnotator>(),
+            NullLogger<AgentStepExecutor>.Instance);
+
+        var step = new WorkflowStep
+        {
+            StepOrder = 2,
+            StepType = StepType.Agent,
+            AgentDefinition = new AgentDefinition { Name = "VideoStoryEditor", AgentType = AgentType.VideoStoryEditor }
+        };
+        var context = new StepExecutionContext
+        {
+            Execution = new WorkflowExecution { Id = Guid.NewGuid(), ProjectId = Guid.NewGuid() },
+            Step = step,
+            AllSteps = new List<WorkflowStep> { step },
+            AccumulatedOutput = string.Empty,
+            StepOutputHistory = new List<StepOutputHistoryEntry>(),
+            CurrentStepIndex = 0,
+            IterationCount = 0,
+            CorrelationId = "test",
+            CancellationToken = CancellationToken.None
+        };
+
+        StepExecutionResult result = await executor.ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed);
     }
 
     private static async Task<StepExecutionResult> RunAgentReturning(string output, Type? outputSchemaType)
