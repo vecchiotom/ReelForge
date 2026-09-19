@@ -23,7 +23,7 @@
     "@types/react-dom": "^19.0.0",
     "@types/three": "^0.186.0",
     "eslint": "^9",
-    "eslint-config-next": "^15.3.0",
+    "eslint-config-next": "^16.3.5",
     "png-to-ico": "^3.0.2",
     "postcss": "^8.5.0",
     "sharp": "^0.35.4",
