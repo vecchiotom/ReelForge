@@ -44,13 +44,13 @@ type appConfig struct {
 	// APIToken is the shared secret every API caller must present. There is no
 	// default and an empty value is fatal at startup: this service can start
 	// containers and read and write files, so it must never run open.
-	APIToken      string
-	MaxSandboxes  int
-	SandboxTTL    time.Duration
-	ExecTimeout   time.Duration
-	MemoryLimit   string
-	CPULimit      string
-	PIDsLimit     int
+	APIToken     string
+	MaxSandboxes int
+	SandboxTTL   time.Duration
+	ExecTimeout  time.Duration
+	MemoryLimit  string
+	CPULimit     string
+	PIDsLimit    int
 }
 
 func loadConfig() appConfig {
@@ -144,7 +144,6 @@ var (
 	errInvalidPath    = errors.New("invalid path")
 	errBadExec        = errors.New("command not allowed")
 	errBadExecution   = errors.New("invalid workflowExecutionId")
-	errBadPackage     = errors.New("invalid package name")
 	errTooManySandbox = errors.New("sandbox limit reached")
 	allowedNPMScript  = map[string]struct{}{
 		"build":        {},
@@ -602,7 +601,7 @@ func asPathError(err error) error {
 	if errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	return fmt.Errorf("%w: %v", errInvalidPath, err)
+	return fmt.Errorf("%w: %w", errInvalidPath, err)
 }
 
 func (m *sandboxManager) listFiles(workflowExecutionID, relPath string) ([]fileEntry, error) {
@@ -1262,5 +1261,10 @@ func main() {
 
 	addr := ":" + cfg.Port
 	log.Printf("ReelForge Sandbox Executor %s listening on %s", Version, addr)
-	log.Fatal(http.ListenAndServe(addr, router))
+	if err := http.ListenAndServe(addr, router); err != nil {
+		// Unwind the deferred cancel() ourselves: log.Fatal calls os.Exit,
+		// which skips defers.
+		cancel()
+		log.Fatal(err) //nolint:gocritic // exitAfterDefer: cancel() is invoked explicitly above
+	}
 }

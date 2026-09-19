@@ -1,0 +1,71 @@
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: gomod
+    directory: /api
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps(api)"
+
+  - package-ecosystem: gomod
+    directory: /sandbox
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps(sandbox)"
+
+  - package-ecosystem: nuget
+    directory: /inference
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps(inference)"
+    groups:
+      # These ship as one coordinated wave; separate PRs just create conflicts.
+      microsoft-extensions:
+        patterns:
+          - "Microsoft.Extensions.*"
+          - "Microsoft.Agents.*"
+      opentelemetry:
+        patterns:
+          - "OpenTelemetry*"
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps(web)"
+    groups:
+      mantine:
+        patterns:
+          - "@mantine/*"
+
+  - package-ecosystem: npm
+    directory: /site
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps(site)"
+
+  - package-ecosystem: docker
+    directories:
+      - /api
+      - /web
+      - /site
+      - /sandbox
+      - /nginx
+      - /inference/src/ReelForge.Inference.Api
+      - /inference/src/ReelForge.WorkflowEngine
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps(docker)"

@@ -4,6 +4,8 @@
 # Go
 /api/reelforge
 /api/reelforge.exe
+/sandbox/sandbox
+/sandbox/sandbox.exe
 
 # .NET
 inference/**/bin/
@@ -17,6 +19,8 @@ web/out/
 site/node_modules/
 site/.next/
 site/out/
+# TypeScript incremental build cache — a local build artifact, never committed.
+*.tsbuildinfo
 
 # IDE
 .vs/

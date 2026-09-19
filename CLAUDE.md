@@ -668,6 +668,34 @@ docker compose --profile tls up -d caddy  # Obtain/renew a real cert once DOMAIN
 - MinIO Console: `http://localhost:9001` (direct)
 - RabbitMQ Management: `http://localhost:15672` (direct)
 
+## CI
+
+GitHub Actions, CI only — there is no CD, since ReelForge runs locally via
+`docker compose`. Nothing is pushed, released, or deployed. See
+[`docs/ci.md`](docs/ci.md) for the full job table and how to run each gate
+locally.
+
+- **`.github/workflows/ci.yml`** — on push to `master`, every PR, and manual
+  dispatch. Jobs: `go` and `golangci-lint` (matrixed over the two Go modules
+  `api/` and `sandbox/`), `dotnet` (build + test of `inference/ReelForge.sln`),
+  `node` (matrixed over `web`/`site`: `tsc --noEmit`, ESLint, `next build`),
+  `docker` (buildx-builds all eight images, no push), and `infra-lint`
+  (actionlint, ShellCheck, hadolint, `docker compose config`). A `changes` job
+  (`dorny/paths-filter`) scopes PR runs to the stacks actually touched; pushes to
+  `master` run everything. The aggregate `ci` job is the single check to put
+  branch protection on.
+- **`.github/workflows/codeql.yml`** — CodeQL `security-and-quality` over `go`,
+  `csharp`, `javascript-typescript`, and `actions`. The compiled languages use
+  `build-mode: manual` (autobuild mis-detects two sibling Go modules and a
+  solution nested under `inference/`).
+- **Config lives at the repo root** so local runs match CI byte for byte:
+  `.golangci.yml` (both Go modules — golangci-lint walks up to find it),
+  `.hadolint.yaml`, `.github/dependabot.yml`.
+- **`dotnet-format` is advisory** (`continue-on-error: true`): the solution has
+  never been run through `dotnet format`, so gating on it would fail for reasons
+  unrelated to any change. Flip it to blocking once a formatting pass is
+  committed.
+
 ## Configuration
 
 All configuration is driven by `.env` at the repo root (copy `.env.example` to `.env`). The `.env` file is git-ignored.

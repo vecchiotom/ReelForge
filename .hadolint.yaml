@@ -1,0 +1,16 @@
+# Hadolint config shared by every Dockerfile in the repo (see .github/workflows/ci.yml).
+failure-threshold: warning
+
+ignored:
+  # DL3018 / DL3008 — "pin versions in apk add / apt-get install".
+  # Deliberately off: pinning Alpine/Debian package versions here means the
+  # images stop building the moment the distro rolls a patch release, and the
+  # base image tags (node:22-alpine, golang:1.25-alpine, …) already bound what
+  # we get. Reproducibility comes from the base image digest, not from apk pins.
+  - DL3018
+  - DL3008
+
+trustedRegistries:
+  - docker.io
+  - mcr.microsoft.com
+  - ghcr.io

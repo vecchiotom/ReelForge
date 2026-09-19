@@ -82,6 +82,9 @@ USER node
 # ─────────────────────────────────────────────────────────────────────────────
 FROM sandbox-runtime AS control-plane
 
+# The control plane talks to the Docker socket and must run as root; that is
+# the documented trust boundary for this stage (see docs/sandbox-service.md).
+# hadolint ignore=DL3002
 USER root
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
