@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/aspnet:9.0-alpine AS base
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine AS base
 USER root
 # The Data Protection key ring (used to encrypt/decrypt inference-provider API keys, shared with
 # the WorkflowEngine via the same volume) must be pre-owned by the non-root app user here, in the
