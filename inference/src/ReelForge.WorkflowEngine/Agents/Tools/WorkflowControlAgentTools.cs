@@ -40,11 +40,8 @@ public class WorkflowControlAgentTools
             context?.CorrelationId,
             reason);
 
-        // Record the abort as state BEFORE throwing. The throw alone is not sufficient:
-        // FunctionInvokingChatClient catches a tool's exception and returns it to the model as a
-        // tool result, so this exception never reaches the step executor and the agent just keeps
-        // going (seen live as a 40-minute read/fail loop). AgentStepExecutor reads this flag after
-        // the run and fails the step for real.
+        // Recorded for diagnostics only -- AgentStepExecutor deliberately does not act on it.
+        // See the long comment there for why enforcing this signal was tried and reverted.
         if (context is not null)
             context.AbortReason = reason;
 

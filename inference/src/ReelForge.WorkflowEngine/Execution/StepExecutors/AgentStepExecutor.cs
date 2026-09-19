@@ -107,44 +107,24 @@ public class AgentStepExecutor : IStepExecutor
 
         string? outputStorageKey = _executionContextAccessor.Current?.PendingOutputStorageKey;
 
-        // An agent that called FailWorkflow has asked to abort, and that request must be honored
-        // here: the AgentWorkflowException the tool throws is caught by FunctionInvokingChatClient
-        // and handed back to the model as a tool result, so it never propagates on its own. Seen
-        // live as a Colorist step looping read_project_file -> fail_workflow for over forty
-        // minutes, never failing, while the tool documented itself as aborting immediately.
+        // FailWorkflow is deliberately NOT enforced here, and that is a considered decision
+        // rather than an oversight. The tool throws AgentWorkflowException, but
+        // FunctionInvokingChatClient catches a tool's exception and returns it to the model as a
+        // tool result, so the abort never propagates on its own.
         //
-        // But an abort only counts when the agent left no usable answer. A schema-declaring agent
-        // that DID produce a parseable object has, by its own output, contradicted the abort --
-        // and models call this tool spuriously: observed live from VideoStoryEditor, which invoked
-        // fail_workflow with the reason "No decision needed - proceeding with selection. (This
-        // call is not made; see JSON below.)" while emitting a perfectly good decision. Honoring
-        // that would throw away real work over a hallucinated control-flow call, so the real
-        // answer wins and the stray abort is logged instead.
-        string? abortReason = _executionContextAccessor.Current?.AbortReason;
-        if (!string.IsNullOrWhiteSpace(abortReason))
-        {
-            bool hasUsableAnswer =
-                agent.OutputSchemaType != null &&
-                RobustJsonExtractor.ExtractLastJsonObject(result.Output ?? string.Empty) != null;
-
-            if (hasUsableAnswer)
-            {
-                _logger.LogWarning(
-                    "Agent step {StepOrder}: {AgentName} called FailWorkflow but also returned a valid " +
-                    "{Schema}; treating the abort as spurious and keeping the answer. Reason was: {Reason}",
-                    context.Step.StepOrder, agent.Name, agent.OutputSchemaType!.Name, abortReason);
-            }
-            else
-            {
-                // Rethrowing puts this back on the path ExecuteStepWithRetryAsync already has for
-                // this exception, which deliberately does NOT retry -- an agent that declared the
-                // situation unrecoverable should not be asked the same question twice.
-                _logger.LogWarning(
-                    "Agent step {StepOrder}: {AgentName} requested workflow abort: {Reason}",
-                    context.Step.StepOrder, agent.Name, abortReason);
-                throw new AgentWorkflowException(abortReason);
-            }
-        }
+        // Enforcing it was tried and reverted. This stack's model calls the tool spuriously and
+        // routinely: once with the reason "No decision needed - proceeding with selection. (This
+        // call is not made; see JSON below.)" and once as a bare "No-op check: proceeding with
+        // decision instead." -- it pokes the tool to see what happens. Honoring those killed two
+        // consecutive VideoStoryEditor steps that were otherwise fine, and a guard that ignored
+        // the abort whenever a valid answer existed did not help, because the model makes the call
+        // on turns where it has not emitted its JSON yet.
+        //
+        // The failure enforcement was meant to fix -- an agent looping tool calls forever -- is
+        // already bounded from two directions: the per-agent run timeout ends the run, and that
+        // timeout is not retried (see ExecuteStepWithRetryAsync), while the schema check below
+        // fails any run that ends without a usable answer. Those are cheaper than trusting a
+        // control-flow signal this model does not use reliably.
 
         if (!result.Success)
         {
