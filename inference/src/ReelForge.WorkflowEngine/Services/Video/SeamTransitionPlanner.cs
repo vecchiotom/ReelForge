@@ -223,8 +223,8 @@ public static class SeamTransitionPlanner
         SeamTreatment treatment, VideoCompileStepConfig config) => treatment switch
         {
             SeamTreatment.HardCut => (0, 0, ""),
-            SeamTreatment.AudioOnly => (2 * Math.Max(0, config.AudioSeamRampMs) / 1000.0, 0, ""),
-            SeamTreatment.DipCut => (2 * Math.Max(0, config.DipCutMs) / 1000.0, 0, ""),
+            SeamTreatment.AudioOnly => (2 * SecOf(config.AudioSeamRampMs), 0, ""),
+            SeamTreatment.DipCut => (2 * SecOf(config.DipCutMs), 0, ""),
             SeamTreatment.SoftCut => (SecOf(config.SoftCutMs), SecOf(config.SoftCutMs), "fade"),
             SeamTreatment.Dissolve => (SecOf(config.DissolveMs), SecOf(config.DissolveMs), "fade"),
             SeamTreatment.DipToBlack => (SecOf(config.DipToBlackMs), SecOf(config.DipToBlackMs), "fadeblack"),
