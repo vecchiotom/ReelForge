@@ -145,12 +145,10 @@ silently ignored.
 the SDK, leaving the Azure and OpenAI-compatible paths byte-identical. The consequence is that a
 per-agent reasoning effort is **not** applied on the Anthropic path today.
 
-What that means in practice: ReelForge never sets `ChatOptions.Reasoning`, so no
-`output_config.effort` is sent. Under the SDK's default `AnthropicThinkingMode.Adaptive` the model
-still thinks, at its own default effort — thinking is **on**, not off, and thinking tokens count
-against `max_tokens` (see below). This is also why nothing here ever sets
-`ReasoningEffort.None`: that would send `thinking.type=disabled`, which models that always think
-reject with an HTTP 400.
+What that means in practice: ReelForge never sets `ChatOptions.Reasoning`, so no reasoning
+configuration is sent at all and the model is left at its own defaults. Any reasoning tokens it
+spends still count against `max_tokens` (see below). Nothing here ever sets `ReasoningEffort.None`
+either — that maps to `thinking.type=disabled`, which models that always think reject with a 400.
 
 Forwarding effort properly would mean mapping ReelForge's vocabulary onto
 `ChatOptions.Reasoning` / `ReasoningOptions.Effort` — a worthwhile follow-up, deliberately out of
@@ -167,40 +165,35 @@ risks an HTTP timeout. Agents run through `AIAgent.RunAsync`, which does not str
 
 ## Dependency note
 
-The `Anthropic` package declares three dependencies in its `net9.0` group:
+The `Anthropic` package is **pinned to 12.9.0, and the ceiling is load-bearing.** The constraint is
+its `Microsoft.Extensions.AI` dependency, not its own API:
 
-| Package | Version | Note |
+| Anthropic | requires Abstractions | effect |
 |---|---|---|
-| `Microsoft.Extensions.AI.Abstractions` | 10.5.1 | **Not a benign bump** — see below |
-| `System.Net.ServerSentEvents` | 10.0.1 | Already present transitively at 10.0.3 |
-| `System.Text.Json` | 10.0.6 | Widest blast radius — a 10.x assembly in a `net9.0` app, affecting every `JsonSerializer` call in the engine, not just the Anthropic path |
+| 12.9.0 | 10.2.0 | unifies to the 10.3.0 `Microsoft.Agents.AI.OpenAI` already brings — nothing else moves |
+| 12.10.0+ | 10.4.0+ | **breaks every room step at run time** |
 
-### Why `Microsoft.Extensions.AI` is pinned to 10.5.1
+Abstractions **10.4.0 removed seven public types** (`FunctionApproval{Request,Response}Content`,
+`McpServerToolApproval{Request,Response}Content`, `UserInput{Request,Response}Content`,
+`IToolReductionStrategy`). `Microsoft.Agents.AI.Workflows` 1.0.0-rc2 was compiled against 10.3.0 and
+still references them from `Specialized.AIAgentHostExecutor.ConfigureUserInputHandling`.
 
-Forcing Abstractions to 10.5.1 is what makes this dependency interesting. 10.5.1 **renamed seven
-public types** that `Microsoft.Extensions.AI` 10.3.0 still references:
+Nothing in this solution names that executor — but `InProcessExecution.RunStreamingAsync`
+instantiates it to host an `AIAgent`, which is exactly what `EditRoom`, `GraphicsRoom` and
+`ColorGradeRoom` do. So a newer Anthropic package produces:
 
-| Removed in 10.5.1 | Replaced by |
-|---|---|
-| `FunctionApprovalRequestContent` / `FunctionApprovalResponseContent` | `ToolApprovalRequestContent` / `ToolApprovalResponseContent` |
-| `McpServerToolApprovalRequestContent` / `McpServerToolApprovalResponseContent` | `ToolApprovalRequestContent` / `ToolApprovalResponseContent` |
-| `UserInputRequestContent` / `UserInputResponseContent` | `InputRequestContent` / `InputResponseContent` |
-| `IToolReductionStrategy` | *(removed)* |
+```
+System.TypeLoadException : Could not load type 'Microsoft.Extensions.AI.UserInputResponseContent'
+  from assembly 'Microsoft.Extensions.AI.Abstractions, Version=10.5.0.0'
+    at Microsoft.Agents.AI.Workflows.Specialized.AIAgentHostExecutor.ConfigureUserInputHandling
+```
 
-Those references live in `FunctionInvokingChatClient` — the client `IChatClient.AsAIAgent()` puts on
-**every** agent's request path, for **every** provider. Left unpinned, NuGet resolves Abstractions
-to 10.5.1 while `Microsoft.Extensions.AI` stays at 10.3.0, and the first agent run throws
-`TypeLoadException` — on Azure OpenAI and vLLM too, not just Anthropic. `dotnet build` and
-`dotnet test` both pass, so nothing catches it before runtime.
+…in all 13 room tests, while `dotnet build` passes clean. This was found by CI, not by review.
 
-`Microsoft.Extensions.AI.OpenAI` is deliberately **left at 10.3.0**: 10.5.1 requires
-`OpenAI >= 2.10.0`, which would NU1605 against the pinned `OpenAI 2.8.0` (`Azure.AI.OpenAI` tops out
-at `2.9.0-beta.1`). Its own dangling references are confined to three Responses-API conversion
-helpers (`ToOpenAIResponseItems`, `ToChatMessages`, `FromOpenAIStreamingResponseUpdatesAsync`), and
-this solution uses Chat Completions via `ChatClient.AsIChatClient()`, so they are never JITted.
-
-Verify the resolved graph with `dotnet list package` (include-transitive flag) and exercise a real
-agent run — not just the test suite — before merging.
+Lifting the ceiling is a separate piece of work: the `Microsoft.Agents.AI` family is now at 1.22.0
+(this repo is on `1.0.0-rc2`), and 1.17.0+ requires Abstractions ≥ 10.7.0 while
+`Microsoft.Agents.AI.OpenAI` 1.22.0 requires `OpenAI` 2.13.0 against the pinned 2.8.0 — so it pulls
+in the OpenAI and Azure.AI.OpenAI packages too, and touches every agent and all three rooms.
 
 ## No schema migration
 

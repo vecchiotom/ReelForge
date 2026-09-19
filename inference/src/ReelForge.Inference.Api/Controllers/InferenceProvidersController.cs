@@ -735,11 +735,11 @@ public class InferenceProvidersController : ControllerBase
     /// Output-token budget for a one-word connectivity ping. 128 is ample headroom for "ping" plus
     /// a short reasoning preamble on an OpenAI-shaped backend.
     /// <para>
-    /// Anthropic needs far more. The SDK's default <c>AnthropicThinkingMode.Adaptive</c> leaves
-    /// thinking ON at the model's default effort, and thinking tokens are charged against
-    /// <c>max_tokens</c> — so a 128-token ceiling is realistically consumed before any visible
-    /// content, and a correctly configured provider would report the misleading "Provider returned
-    /// an empty response", which is then persisted to LastTestError.
+    /// Anthropic needs more headroom: a current Claude model may spend reasoning tokens before
+    /// emitting visible content, and those are charged against <c>max_tokens</c> — so a 128-token
+    /// ceiling risks being consumed before any content appears, making a correctly configured
+    /// provider report the misleading "Provider returned an empty response", which is then
+    /// persisted to LastTestError.
     /// </para>
     /// </summary>
     private static int PingMaxOutputTokens(InferenceProviderKind kind) =>

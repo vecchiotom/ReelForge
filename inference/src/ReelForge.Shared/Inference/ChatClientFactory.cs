@@ -32,9 +32,9 @@ public sealed class ChatClientFactory : IChatClientFactory
     /// Sized for the largest structured outputs the workflow engine produces (video edit decisions,
     /// motion-graphics plans) while staying well under the point where a NON-streaming request
     /// risks an HTTP timeout — agents run through <c>AIAgent.RunAsync</c>, which does not stream.
-    /// It also has to leave room for thinking: the SDK's default <c>AnthropicThinkingMode.Adaptive</c>
-    /// means the model thinks at its own default effort, and thinking tokens count against this
-    /// ceiling.
+    /// It also leaves room for any reasoning the model does on its own: ReelForge sends no
+    /// reasoning configuration, and whatever thinking tokens the model spends count against this
+    /// same ceiling.
     /// </para>
     /// </summary>
     private const int AnthropicDefaultMaxOutputTokens = 16_384;

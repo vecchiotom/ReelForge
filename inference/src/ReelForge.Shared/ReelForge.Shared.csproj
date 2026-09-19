@@ -9,45 +9,33 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="9.0.14" />
     <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.0.0-rc2" />
-    <!--
-      MUST move in lockstep with Microsoft.Extensions.AI.Abstractions.
-
-      The `Anthropic` package below forces Abstractions from 10.3.0 up to 10.5.1, and 10.5.1
-      RENAMED seven public types that Microsoft.Extensions.AI 10.3.0 still references:
-      FunctionApproval{Request,Response}Content, McpServerToolApproval{Request,Response}Content,
-      UserInput{Request,Response}Content and IToolReductionStrategy became
-      ToolApproval{Request,Response}Content / Input{Request,Response}Content.
-
-      Those references sit in FunctionInvokingChatClient (ExtractAndRemoveApprovalRequestsAndResponses,
-      TryReplaceFunctionCallsWithApprovalRequests, ...) — the client that `IChatClient.AsAIAgent()`
-      puts on EVERY agent's request path, for every provider. Left at 10.3.0 against Abstractions
-      10.5.1, the first agent run throws TypeLoadException on Azure OpenAI and vLLM too, not just
-      Anthropic — and `dotnet build`/`dotnet test` both pass, so nothing catches it before runtime.
-
-      Deliberately NOT bumping Microsoft.Extensions.AI.OpenAI to 10.5.1 alongside: it requires
-      OpenAI >= 2.10.0, which would NU1605 against the pinned OpenAI 2.8.0 (Azure.AI.OpenAI tops out
-      at 2.9.0-beta.1). Its own dangling references are confined to the Responses-API conversion
-      helpers (ToOpenAIResponseItems, ToChatMessages, FromOpenAIStreamingResponseUpdatesAsync), and
-      this solution uses Chat Completions via ChatClient.AsIChatClient(), so they are never JITted.
-    -->
-    <PackageReference Include="Microsoft.Extensions.AI" Version="10.5.1" />
     <PackageReference Include="Azure.AI.OpenAI" Version="2.8.0-beta.1" />
     <PackageReference Include="OpenAI" Version="2.8.0" />
     <!--
-      Official Anthropic .NET SDK (the `Anthropic` package is first-party from v10 onward; 3.x and
-      below were the community tryAGI build, now `tryAGI.Anthropic`).
+      PINNED, and the version ceiling is load-bearing. Do not bump without reading this.
 
-      Transitive dependencies it declares for net9.0, all of which unify UPWARDS across the
-      solution — verify with `dotnet list package` with the include-transitive flag after changing this:
-        - Microsoft.Extensions.AI.Abstractions 10.5.1  (NOT a benign minor bump over the 10.3.0
-          that Microsoft.Agents.AI.OpenAI pulls in — it renamed seven public types, which is why
-          Microsoft.Extensions.AI is pinned to 10.5.1 above; see that comment)
-        - System.Net.ServerSentEvents 10.0.1           (already present transitively at 10.0.3)
-        - System.Text.Json 10.0.6                      (WIDEST BLAST RADIUS: a 10.x assembly in a
-          net9.0 app, affecting every JsonSerializer call in the engine — the video-analysis
-          artifacts, ExtractStepConfig, every structured-output schema — not just Anthropic calls)
+      The `Anthropic` package is first-party from v10 onward (3.x and below were the community
+      tryAGI build, now `tryAGI.Anthropic`). Its constraint here is its Microsoft.Extensions.AI
+      dependency, NOT its own API:
+
+        Anthropic 12.9.0  -> Microsoft.Extensions.AI.Abstractions 10.2.0  (unifies to the 10.3.0
+                             Microsoft.Agents.AI.OpenAI already brings; nothing else moves)
+        Anthropic 12.10.0 -> Microsoft.Extensions.AI.Abstractions 10.4.0  (BREAKS THE BUILD, below)
+
+      Abstractions 10.4.0 REMOVED seven public types (FunctionApproval{Request,Response}Content,
+      McpServerToolApproval{Request,Response}Content, UserInput{Request,Response}Content,
+      IToolReductionStrategy). Microsoft.Agents.AI.Workflows 1.0.0-rc2 was compiled against 10.3.0
+      and still references them from Specialized.AIAgentHostExecutor.ConfigureUserInputHandling.
+      Nothing in this solution names that executor, but InProcessExecution.RunStreamingAsync
+      instantiates it to host an AIAgent — which is exactly what every room step
+      (EditRoom/GraphicsRoom/ColorGradeRoom) does. So a newer Anthropic throws
+      TypeLoadException at run time in all 13 room tests, while `dotnet build` passes clean.
+
+      Lifting the ceiling means upgrading the whole Microsoft.Agents.AI family (rc2 -> 1.22.0),
+      which in turn requires OpenAI 2.8.0 -> 2.13.0 and a matching Azure.AI.OpenAI. That is a
+      separate piece of work, not a version bump.
     -->
-    <PackageReference Include="Anthropic" Version="12.49.0" />
+    <PackageReference Include="Anthropic" Version="12.9.0" />
     <PackageReference Include="Microsoft.AspNetCore.DataProtection.Abstractions" Version="9.0.14" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="9.0.9" />
   </ItemGroup>

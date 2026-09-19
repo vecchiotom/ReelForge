@@ -16,20 +16,24 @@ namespace ReelForge.Shared.Inference;
 /// </para>
 /// <list type="number">
 /// <item>
-/// <b>Sampling parameters.</b> Anthropic marks <c>temperature</c>, <c>top_p</c> and <c>top_k</c>
-/// deprecated, and the SDK's own <c>[Obsolete]</c> text is explicit that this is not merely
-/// advisory: "Models released after Claude Opus 4.6 do not support setting temperature. A value of
-/// 1.0 will be accepted for backwards compatibility, all other values will be rejected with a 400
-/// error" (and likewise: any <c>top_k</c> is rejected, <c>top_p</c> is rejected below 0.99).
-/// EVERY agent in this solution sets a <c>Temperature</c> (0.2–0.8) and some set <c>TopP</c>, so
-/// forwarding them would make every agent run against a current Claude model fail with an HTTP 400.
+/// <b>Sampling parameters.</b> Anthropic deprecated <c>temperature</c>, <c>top_p</c> and
+/// <c>top_k</c> SERVER-side, and it is not merely advisory — newer releases of the Anthropic SDK
+/// mark these properties <c>[Obsolete]</c> with the wording "Models released after Claude Opus 4.6
+/// do not support setting temperature. A value of 1.0 will be accepted for backwards
+/// compatibility, all other values will be rejected with a 400 error" (and likewise: any
+/// <c>top_k</c> is rejected, <c>top_p</c> is rejected below 0.99). The pinned SDK version predates
+/// those annotations, but the API behaviour is the same — it is enforced by the service, not the
+/// client. EVERY agent in this solution sets a <c>Temperature</c> (0.2–0.8) and some set
+/// <c>TopP</c>, so forwarding them would make every agent run against a current Claude model fail
+/// with an HTTP 400.
 /// </item>
 /// <item>
 /// <b>The raw representation.</b> <see cref="ChatOptions.RawRepresentationFactory"/> is how the
 /// per-agent <c>ReasoningEffort</c> reaches the wire, and it produces an
-/// <c>OpenAI.Chat.ChatCompletionOptions</c> — the wrong SDK's type. The Anthropic adapter does read
-/// this property (its own docs offer it as the escape hatch for full control over thinking
-/// configuration), and a foreign type there is at best silently ignored.
+/// <c>OpenAI.Chat.ChatCompletionOptions</c> — the wrong SDK's type. Anthropic's adapter documents
+/// this property as its own escape hatch for provider-native options, so handing it a foreign SDK's
+/// type is at best silently ignored. Nothing is lost by dropping it: it carries only the
+/// <c>ReasoningEffort</c>, which the Anthropic path does not forward anyway.
 /// </item>
 /// </list>
 /// <para>
@@ -39,14 +43,11 @@ namespace ReelForge.Shared.Inference;
 /// </para>
 /// <para>
 /// Consequences worth knowing. A per-agent temperature and reasoning effort are NOT applied on the
-/// Anthropic path. For effort that is the safe default: ReelForge never sets
-/// <see cref="ChatOptions.Reasoning"/>, so no <c>output_config.effort</c> is sent and the model
-/// thinks at its own default effort under <c>thinking.type=adaptive</c> (the SDK's default mode).
-/// Note that this means thinking is ON by default, and thinking tokens count against
-/// <c>max_tokens</c> — see <c>ChatClientFactory.AnthropicDefaultMaxOutputTokens</c>. Forwarding
-/// effort properly would mean mapping ReelForge's vLLM/Qwen-flavoured vocabulary
-/// (<c>none/low/medium/xhigh</c>) onto <see cref="ReasoningOptions.Effort"/>, a deliberate
-/// follow-up rather than part of this seam.
+/// Anthropic path: ReelForge never sets <see cref="ChatOptions.Reasoning"/>, so no reasoning
+/// configuration is sent and the model is left at its own defaults. Forwarding effort properly
+/// would mean mapping ReelForge's vLLM/Qwen-flavoured vocabulary (<c>none/low/medium/xhigh</c>)
+/// onto <see cref="ReasoningOptions.Effort"/>, a deliberate follow-up rather than part of this
+/// seam.
 /// </para>
 /// </remarks>
 public sealed class AnthropicChatOptionsAdapter(IChatClient innerClient)
