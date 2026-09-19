@@ -186,6 +186,14 @@ builder.Services.AddSingleton<IStepExecutor, ColorGradeRoomStepExecutor>();
 // ExecutionCancellationRegistry's doc comment.
 builder.Services.AddSingleton<ExecutionCancellationRegistry>();
 builder.Services.AddScoped<WorkflowExecutorService>();
+
+// Singleton + hosted service: owns the process-lifetime cancellation token every execution runs
+// under, and the semaphore that is now the real MaxConcurrency limit. Registered as BOTH so the
+// consumer can inject it directly and the host still drives StartAsync/StopAsync on the same
+// instance (AddHostedService alone would construct a second one). See WorkflowExecutionRunner's
+// summary for why executions no longer run inline inside the MassTransit consumer.
+builder.Services.AddSingleton<WorkflowExecutionRunner>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<WorkflowExecutionRunner>());
 builder.Services.AddScoped<IWorkflowEventPublisher, WorkflowEventPublisher>();
 
 // --- MassTransit / RabbitMQ ---
