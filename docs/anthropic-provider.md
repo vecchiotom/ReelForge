@@ -171,12 +171,36 @@ The `Anthropic` package declares three dependencies in its `net9.0` group:
 
 | Package | Version | Note |
 |---|---|---|
-| `Microsoft.Extensions.AI.Abstractions` | 10.5.1 | Minor bump over the 10.3.0 `Microsoft.Agents.AI.OpenAI` already brings in; NuGet unifies both on 10.5.1 |
+| `Microsoft.Extensions.AI.Abstractions` | 10.5.1 | **Not a benign bump** — see below |
 | `System.Net.ServerSentEvents` | 10.0.1 | Already present transitively at 10.0.3 |
-| `System.Text.Json` | 10.0.6 | **Widest blast radius** — a 10.x assembly in a `net9.0` app, affecting every `JsonSerializer` call in the engine, not just the Anthropic path |
+| `System.Text.Json` | 10.0.6 | Widest blast radius — a 10.x assembly in a `net9.0` app, affecting every `JsonSerializer` call in the engine, not just the Anthropic path |
 
-Run `dotnet list package --include-transitive` and exercise the structured-output paths (video
-analysis artifacts, `ExtractStepConfig`, the word-enum plan outputs) before merging.
+### Why `Microsoft.Extensions.AI` is pinned to 10.5.1
+
+Forcing Abstractions to 10.5.1 is what makes this dependency interesting. 10.5.1 **renamed seven
+public types** that `Microsoft.Extensions.AI` 10.3.0 still references:
+
+| Removed in 10.5.1 | Replaced by |
+|---|---|
+| `FunctionApprovalRequestContent` / `FunctionApprovalResponseContent` | `ToolApprovalRequestContent` / `ToolApprovalResponseContent` |
+| `McpServerToolApprovalRequestContent` / `McpServerToolApprovalResponseContent` | `ToolApprovalRequestContent` / `ToolApprovalResponseContent` |
+| `UserInputRequestContent` / `UserInputResponseContent` | `InputRequestContent` / `InputResponseContent` |
+| `IToolReductionStrategy` | *(removed)* |
+
+Those references live in `FunctionInvokingChatClient` — the client `IChatClient.AsAIAgent()` puts on
+**every** agent's request path, for **every** provider. Left unpinned, NuGet resolves Abstractions
+to 10.5.1 while `Microsoft.Extensions.AI` stays at 10.3.0, and the first agent run throws
+`TypeLoadException` — on Azure OpenAI and vLLM too, not just Anthropic. `dotnet build` and
+`dotnet test` both pass, so nothing catches it before runtime.
+
+`Microsoft.Extensions.AI.OpenAI` is deliberately **left at 10.3.0**: 10.5.1 requires
+`OpenAI >= 2.10.0`, which would NU1605 against the pinned `OpenAI 2.8.0` (`Azure.AI.OpenAI` tops out
+at `2.9.0-beta.1`). Its own dangling references are confined to three Responses-API conversion
+helpers (`ToOpenAIResponseItems`, `ToChatMessages`, `FromOpenAIStreamingResponseUpdatesAsync`), and
+this solution uses Chat Completions via `ChatClient.AsIChatClient()`, so they are never JITted.
+
+Verify the resolved graph with `dotnet list package` (include-transitive flag) and exercise a real
+agent run — not just the test suite — before merging.
 
 ## No schema migration
 
