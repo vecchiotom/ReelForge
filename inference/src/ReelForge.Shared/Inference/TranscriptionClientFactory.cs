@@ -37,6 +37,18 @@ public sealed class TranscriptionClientFactory : ITranscriptionClientFactory
     {
         InferenceProviderKind.AzureOpenAI => BuildAzureOpenAI(provider),
         InferenceProviderKind.OpenAICompatible => BuildOpenAICompatible(provider),
+
+        // Anthropic ships no speech-to-text endpoint, so there is nothing to build here. This
+        // should be unreachable — InferenceProvidersController rejects the combination when the
+        // row is created or updated — but a row predating that validation, or written straight to
+        // the database, would arrive here, and a bare "unsupported kind" would send whoever hits
+        // it looking for a bug in the wrong place.
+        InferenceProviderKind.Anthropic => throw new NotSupportedException(
+            $"Inference provider '{provider.Name}' is an Anthropic provider, which cannot serve " +
+            "the Transcription capability — Anthropic exposes no speech-to-text API. Configure a " +
+            "Transcription provider of kind AzureOpenAI or OpenAICompatible (for example the " +
+            "bundled `whisper` service) instead."),
+
         _ => throw new NotSupportedException($"Unsupported inference provider kind '{provider.Kind}'.")
     };
 

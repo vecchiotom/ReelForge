@@ -104,7 +104,7 @@ public class InferenceProvidersController : ControllerBase
 
         if (!TryParseKind(request.Kind, out InferenceProviderKind kind))
         {
-            return BadRequest(new { error = $"Invalid kind '{request.Kind}'. Expected 'AzureOpenAI' or 'OpenAICompatible'." });
+            return BadRequest(new { error = $"Invalid kind '{request.Kind}'. Expected one of {KnownKinds}." });
         }
 
         // Default to Chat when omitted, for backward compatibility with any existing frontend
@@ -113,6 +113,11 @@ public class InferenceProvidersController : ControllerBase
         if (!string.IsNullOrWhiteSpace(request.Capability) && !TryParseCapability(request.Capability, out capability))
         {
             return BadRequest(new { error = $"Invalid capability '{request.Capability}'. Expected 'Chat', 'Transcription', or 'Vision'." });
+        }
+
+        if (IsUnsupportedCombination(kind, capability, out string unsupported))
+        {
+            return BadRequest(new { error = unsupported });
         }
 
         bool nameTaken = await _db.InferenceProviders.AnyAsync(p => p.Name == request.Name, ct);
@@ -193,7 +198,7 @@ public class InferenceProvidersController : ControllerBase
         {
             if (!TryParseKind(request.Kind, out InferenceProviderKind kind))
             {
-                return BadRequest(new { error = $"Invalid kind '{request.Kind}'. Expected 'AzureOpenAI' or 'OpenAICompatible'." });
+                return BadRequest(new { error = $"Invalid kind '{request.Kind}'. Expected one of {KnownKinds}." });
             }
 
             entity.Kind = kind;
@@ -224,6 +229,15 @@ public class InferenceProvidersController : ControllerBase
             }
 
             entity.Capability = capability;
+        }
+
+        // Checked against the POST-UPDATE state rather than against the request, because kind and
+        // capability are applied in separate blocks above and either may be absent: a request that
+        // only flips kind to Anthropic on a row that is already Transcription would otherwise slip
+        // through, as would the mirror case.
+        if (IsUnsupportedCombination(entity.Kind, entity.Capability, out string unsupported))
+        {
+            return BadRequest(new { error = unsupported });
         }
 
         // string? fields follow the Go admin-user "omit = unchanged" convention: null/absent
@@ -419,13 +433,18 @@ public class InferenceProvidersController : ControllerBase
 
         if (string.IsNullOrWhiteSpace(kindStr) || !TryParseKind(kindStr, out InferenceProviderKind kind))
         {
-            return BadRequest(new { error = $"Invalid or missing kind '{kindStr}'. Expected 'AzureOpenAI' or 'OpenAICompatible'." });
+            return BadRequest(new { error = $"Invalid or missing kind '{kindStr}'. Expected one of {KnownKinds}." });
         }
 
         InferenceProviderCapability capability = InferenceProviderCapability.Chat;
         if (!string.IsNullOrWhiteSpace(capabilityStr) && !TryParseCapability(capabilityStr, out capability))
         {
             return BadRequest(new { error = $"Invalid capability '{capabilityStr}'. Expected 'Chat', 'Transcription', or 'Vision'." });
+        }
+
+        if (IsUnsupportedCombination(kind, capability, out string unsupportedCombination))
+        {
+            return BadRequest(new { error = unsupportedCombination });
         }
 
         TestInferenceProviderResponse result;
@@ -696,6 +715,36 @@ public class InferenceProvidersController : ControllerBase
                 (b[0] == 172 && b[1] >= 16 && b[1] <= 31) ||
                 (b[0] == 192 && b[1] == 168) ||
                 (b[0] == 169 && b[1] == 254)));
+    }
+
+    /// <summary>
+    /// Rendered from the enum rather than hand-listed, so adding a provider kind cannot leave an
+    /// error message quietly advertising a stale set of valid values.
+    /// </summary>
+    private static readonly string KnownKinds =
+        string.Join(", ", Enum.GetNames<InferenceProviderKind>().Select(n => $"'{n}'"));
+
+    /// <summary>
+    /// Rejects kind/capability combinations that cannot ever work, at the boundary where the row
+    /// is written rather than hours later inside a workflow step. Today that is exactly one pair:
+    /// Anthropic exposes no speech-to-text API, so it can never serve Transcription. Chat and
+    /// Vision both resolve through <c>IChatClientFactory</c> and are fine.
+    /// </summary>
+    private static bool IsUnsupportedCombination(
+        InferenceProviderKind kind,
+        InferenceProviderCapability capability,
+        out string error)
+    {
+        if (kind == InferenceProviderKind.Anthropic && capability == InferenceProviderCapability.Transcription)
+        {
+            error = "Anthropic providers cannot serve the Transcription capability — Anthropic " +
+                    "exposes no speech-to-text API. Use a provider of kind 'AzureOpenAI' or " +
+                    "'OpenAICompatible' for transcription.";
+            return true;
+        }
+
+        error = string.Empty;
+        return false;
     }
 
     private static bool TryParseKind(string? value, out InferenceProviderKind kind) =>

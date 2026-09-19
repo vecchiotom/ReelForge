@@ -133,6 +133,22 @@ public class TranscriptionClientFactoryTests
         provider.CacheKey.Should().NotContain(secret);
     }
 
+    [Fact]
+    public void Get_rejects_an_Anthropic_provider_with_an_explanatory_message()
+    {
+        // Anthropic exposes no speech-to-text API. InferenceProvidersController refuses to create
+        // or update such a row, so this should be unreachable — but a row written directly to the
+        // database, or predating that validation, would land here, and a bare "unsupported kind"
+        // would send whoever hits it hunting for a bug in the wrong place.
+        TranscriptionClientFactory factory = new();
+        ResolvedTranscriptionProvider provider = MakeProvider(InferenceProviderKind.Anthropic, apiKey: "sk-ant-api03-x");
+
+        Action act = () => factory.Get(provider);
+
+        act.Should().Throw<NotSupportedException>()
+            .WithMessage("*no speech-to-text API*");
+    }
+
     private static ResolvedTranscriptionProvider MakeProvider(
         InferenceProviderKind kind,
         string apiKey,
