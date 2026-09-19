@@ -84,6 +84,32 @@ public class ProjectFileAgentTools
                 "Tool result read_project_file for reference {FileReference} refused: {Message}", fileReference, ex.Message);
             return $"Error: {ex.Message}";
         }
+        catch (KeyNotFoundException ex)
+        {
+            // Same catch-and-degrade discipline as the binary-file guardrail above, for the other
+            // way this tool routinely fails: the reference simply does not resolve to a
+            // project_files row. Left uncaught this killed the entire step, and the trigger is not
+            // hypothetical — a VideoAnalyze step's bounded view hands the agent
+            // meta.artifactStorageKey ("projects/{id}/agentFiles/video-analysis/{execId}/step-N-
+            // analysis.json"), which is an S3 object but deliberately NOT a project file, so an
+            // agent that follows that key straight into this tool takes the step down with it.
+            // Observed live twice: once failing a VideoStoryEditor step outright, and once as the
+            // stated reason a SoundDesigner step gave up ("step-1-analysis.json not found in
+            // project scope").
+            //
+            // The message tells the agent what to do instead, because the analysis view it was
+            // already given in its prompt IS the authoritative, bounded form of that artifact —
+            // without that hint an agent tends to retry the same unreadable key or, worse,
+            // conclude it cannot do the task at all.
+            _logger.LogInformation(
+                "Tool result read_project_file for reference {FileReference} not found: {Message}", fileReference, ex.Message);
+            return
+                $"Error: {ex.Message} " +
+                "Note: analysis artifacts (agentFiles/video-analysis/...) and step outputs are not project files " +
+                "and cannot be read with this tool. The analysis view already included in your prompt is the " +
+                "authoritative, bounded form of that data — use it directly rather than trying to open the artifact. " +
+                "Call ListProjectFiles to see what this project actually contains.";
+        }
     }
 
     [Description("Search project files semantically using vector index and return the most relevant file snippets for the current project.")]
