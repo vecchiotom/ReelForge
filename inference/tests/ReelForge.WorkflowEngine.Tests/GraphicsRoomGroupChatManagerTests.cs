@@ -88,17 +88,19 @@ public class GraphicsRoomGroupChatManagerTests
         return (transcript!, captured!);
     }
 
-    // The director is registered TWICE, deliberately — see RoomGroupChatManager's constructor
-    // remarks. Microsoft.Agents.AI.Workflows 1.22.0's group-chat host refuses to re-invoke the SAME
-    // registered participant on two consecutive turns, so the round-robin-then-always-the-director
-    // schedule needs two functionally-identical director registrations to alternate between once
-    // the round-robin phase ends. Both must mirror RoomStepExecutorBase.RunRoomAsync's own
-    // participant list shape (seats, then the director twice) for these tests to exercise the same
-    // contract production code actually builds.
+    // EVERY participant is registered RoomGroupChatManager.ParticipantAliasCount times — see that
+    // class's constructor remarks. Microsoft.Agents.AI.Workflows 1.22.0's group-chat host refuses
+    // to re-invoke the SAME registered participant on two consecutive turns, so the scheduler
+    // alternates between a participant's interchangeable aliases. These fixtures must mirror
+    // RoomStepExecutorBase.RunRoomAsync's own participant-list shape (consecutive pairs, seats
+    // first and the director last) for these tests to exercise the contract production builds.
     private static IReadOnlyList<AIAgent> BuildParticipants(string directorText = "moderating") =>
     [
         new FakeAgent("Seat0", "The lower third at p0 works."),
+        new FakeAgent("Seat0", "The lower third at p0 works."),
         new FakeAgent("Seat1", "Agreed, and p1 for the title."),
+        new FakeAgent("Seat1", "Agreed, and p1 for the title."),
+        new FakeAgent("Seat2", "Sounds good to me."),
         new FakeAgent("Seat2", "Sounds good to me."),
         new FakeAgent("Director", directorText),
         new FakeAgent("Director", directorText)
@@ -139,7 +141,10 @@ public class GraphicsRoomGroupChatManagerTests
         IReadOnlyList<AIAgent> participants =
         [
             new FakeAgent("Seat0", "Keep the lower third at p0."),
+            new FakeAgent("Seat0", "Keep the lower third at p0."),
             new FakeAgent("Seat1", "And p1 for the closing title."),
+            new FakeAgent("Seat1", "And p1 for the closing title."),
+            new FakeAgent("Seat2", "Agreed on p0 and p1."),
             new FakeAgent("Seat2", "Agreed on p0 and p1."),
             new FakeAgent("Director", "Still discussing."),
             new FakeAgent("Director", "Still discussing.")

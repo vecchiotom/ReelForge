@@ -59,8 +59,15 @@ public class ColorGradeRoomGroupChatManagerTests
     {
         var config = new ColorGradeRoomStepConfig(
             Seats: [new EditRoomSeat("Seat0", "first"), new EditRoomSeat("Seat1", "second")]);
+        // Consecutive alias pairs, seats first then the director — the shape
+        // RoomStepExecutorBase.RunRoomAsync builds and RoomGroupChatManager's constructor now
+        // validates (a list length that is not a multiple of ParticipantAliasCount is rejected).
         var manager = new TestableManager(
-            [new StubAgent("Seat0"), new StubAgent("Seat1"), new StubAgent("Director")],
+            [
+                new StubAgent("Seat0"), new StubAgent("Seat0"),
+                new StubAgent("Seat1"), new StubAgent("Seat1"),
+                new StubAgent("Director"), new StubAgent("Director")
+            ],
             config, OfferedIds, "Director");
 
         Func<Task> act = async () => await manager.ShouldTerminatePublic([], CancellationToken.None);

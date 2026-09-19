@@ -10,6 +10,7 @@ using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
 using ReelForge.Shared.Workflows;
 using ReelForge.WorkflowEngine.Agents.EditRoom;
+using ReelForge.WorkflowEngine.Agents.Rooms;
 using Xunit;
 
 namespace ReelForge.WorkflowEngine.Tests;
@@ -89,17 +90,19 @@ public class EditRoomGroupChatManagerTests
         return (transcript!, captured!);
     }
 
-    // The director is registered TWICE, deliberately — see RoomGroupChatManager's constructor
-    // remarks. Microsoft.Agents.AI.Workflows 1.22.0's group-chat host refuses to re-invoke the SAME
-    // registered participant on two consecutive turns, so the round-robin-then-always-the-director
-    // schedule needs two functionally-identical director registrations to alternate between once
-    // the round-robin phase ends. Both must mirror RoomStepExecutorBase.RunRoomAsync's own
-    // participant list shape (seats, then the director twice) for these tests to exercise the same
-    // contract production code actually builds.
+    // EVERY participant is registered RoomGroupChatManager.ParticipantAliasCount times — see that
+    // class's constructor remarks. Microsoft.Agents.AI.Workflows 1.22.0's group-chat host refuses
+    // to re-invoke the SAME registered participant on two consecutive turns, so the scheduler
+    // alternates between a participant's interchangeable aliases. These fixtures must mirror
+    // RoomStepExecutorBase.RunRoomAsync's own participant-list shape (consecutive pairs, seats
+    // first and the director last) for these tests to exercise the contract production builds.
     private static IReadOnlyList<AIAgent> BuildParticipants(string directorText = "moderating") =>
     [
         new FakeAgent("Seat0", "I think we should keep s1."),
+        new FakeAgent("Seat0", "I think we should keep s1."),
         new FakeAgent("Seat1", "Agreed, and also s2."),
+        new FakeAgent("Seat1", "Agreed, and also s2."),
+        new FakeAgent("Seat2", "Sounds good to me."),
         new FakeAgent("Seat2", "Sounds good to me."),
         new FakeAgent("Director", directorText),
         new FakeAgent("Director", directorText)
@@ -117,6 +120,74 @@ public class EditRoomGroupChatManagerTests
         List<string?> speakers = transcript.Skip(1).Select(m => m.AuthorName).ToList();
         speakers.Should().Equal("Seat0", "Seat1", "Seat2", "Seat0", "Seat1", "Seat2", "Director", "Director");
         manager.TerminationReason.Should().BeNull("FixedTurns never sets a termination reason — only the ceiling ends the room");
+    }
+
+    [Fact]
+    public async Task A_single_seat_room_still_speaks_every_round_before_the_director()
+    {
+        // Regression: the scheduler used to alternate aliases ONLY in the director phase, so the
+        // round-robin phase could still return the same registration twice running whenever a room
+        // was configured with exactly one seat and Rounds >= 2 (the default). Under 1.22.0's
+        // group-chat host that silently ended the room at turn 1 — before the director ever spoke —
+        // collapsing the whole deliberation rather than merely shortening it. No shipped template
+        // hits this (every built-in seat list has three entries), but Seats is user-supplied config
+        // and Rounds is unvalidated.
+        var config = new EditRoomStepConfig(
+            Seats: [new EditRoomSeat("Seat0", "the only seat")],
+            Rounds: 2,
+            MaxTurns: 4,
+            Termination: EditRoomTerminationMode.FixedTurns);
+
+        IReadOnlyList<AIAgent> participants =
+        [
+            new FakeAgent("Seat0", "Keep s1."),
+            new FakeAgent("Seat0", "Keep s1."),
+            new FakeAgent("Director", "moderating"),
+            new FakeAgent("Director", "moderating")
+        ];
+
+        (IReadOnlyList<ChatMessage> transcript, _) = await RunRoomAsync(config, participants);
+
+        List<string?> speakers = transcript.Skip(1).Select(m => m.AuthorName).ToList();
+        speakers.Should().Equal("Seat0", "Seat0", "Director", "Director");
+    }
+
+    [Theory]
+    [InlineData(1, 2)]
+    [InlineData(1, 3)]
+    [InlineData(2, 1)]
+    [InlineData(2, 3)]
+    [InlineData(3, 2)]
+    public async Task Runs_the_full_ceiling_for_any_seat_and_round_combination(int seatCount, int rounds)
+    {
+        // The property the aliasing scheme exists to uphold, stated the way it is actually
+        // observable: if SelectNextAgentAsync ever returns the same REGISTRATION twice running,
+        // 1.22.0's group-chat host ends the room at that point instead of sending the turn, so the
+        // transcript comes up short. Asserting the full ceiling is reached therefore catches a
+        // repeat in either phase, for seat/round combinations no shipped template covers — driven
+        // through the real engine rather than by re-deriving the selection arithmetic here, which
+        // would pass even if production got it wrong.
+        int maxTurns = (seatCount * rounds) + 2;
+
+        var config = new EditRoomStepConfig(
+            Seats: Enumerable.Range(0, seatCount).Select(i => new EditRoomSeat($"Seat{i}", "a seat")).ToList(),
+            Rounds: rounds,
+            MaxTurns: maxTurns,
+            Termination: EditRoomTerminationMode.FixedTurns);
+
+        List<AIAgent> participants = [];
+        for (int seat = 0; seat < seatCount; seat++)
+        {
+            for (int alias = 0; alias < RoomGroupChatManager.ParticipantAliasCount; alias++)
+                participants.Add(new FakeAgent($"Seat{seat}", "Keep s1."));
+        }
+
+        for (int alias = 0; alias < RoomGroupChatManager.ParticipantAliasCount; alias++)
+            participants.Add(new FakeAgent("Director", "moderating"));
+
+        (IReadOnlyList<ChatMessage> transcript, _) = await RunRoomAsync(config, participants);
+
+        (transcript.Count - 1).Should().Be(maxTurns);
     }
 
     [Fact]
@@ -140,7 +211,10 @@ public class EditRoomGroupChatManagerTests
         IReadOnlyList<AIAgent> participants =
         [
             new FakeAgent("Seat0", "Keep s1 through the intro."),
+            new FakeAgent("Seat0", "Keep s1 through the intro."),
             new FakeAgent("Seat1", "And s2 for the close."),
+            new FakeAgent("Seat1", "And s2 for the close."),
+            new FakeAgent("Seat2", "Agreed on s1 and s2."),
             new FakeAgent("Seat2", "Agreed on s1 and s2."),
             new FakeAgent("Director", "Still discussing."),
             new FakeAgent("Director", "Still discussing.")
