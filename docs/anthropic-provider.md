@@ -55,9 +55,8 @@ Applied to ReelForge:
 The practical rule: a subscription credential is fine while you are the only person whose work it
 runs. The moment ReelForge executes workflows for anyone else, that row needs a Console API key.
 
-Two mechanical footnotes if you go the subscription route:
-`claude setup-token` mints a one-year token, but it is **not read in `--bare` mode** (the mode you
-would want for reproducible runs), and it grants model requests only.
+If you go the subscription route, `claude setup-token` mints a one-year token that grants model
+requests only.
 
 ## Configuring a provider
 
@@ -67,7 +66,7 @@ Admin → Inference Providers → New, or `POST /api/v1/inference-providers`:
 |---|---|
 | Kind | `Anthropic` |
 | Capability | `Chat` or `Vision` (**not** `Transcription` — see below) |
-| Base URL | `https://api.anthropic.com` (prefilled; override only for a gateway) |
+| Base URL | `https://api.anthropic.com` (prefilled, and required — override only for a gateway, which must be a public address: `IsDisallowedEndpoint` rejects loopback and RFC1918, so an in-cluster gateway will not pass) |
 | Model | e.g. `claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5` |
 | API key | See the three modes below |
 | Timeout | Defaults to 300s |
@@ -80,15 +79,27 @@ which makes it the cheapest way to try Claude on one step without moving the who
 
 `ChatClientFactory.BuildAnthropic` branches on the stored key:
 
-1. **Blank** — neither `ApiKey` nor `AuthToken` is set, and the Anthropic SDK falls back to its own
-   resolution: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or an `ant auth login` profile. This is
-   the local-development path: export the variable, leave the field empty, and **no secret is ever
-   persisted in the database**.
+1. **The literal `env:`** — neither `ApiKey` nor `AuthToken` is set on the client, so the Anthropic
+   SDK falls back to its own resolution: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or an
+   `ant auth login` profile. This is the local-development path: export the variable, store `env:`
+   as the key, and **no secret is ever persisted in the database**.
 2. **Starts with `sk-ant-oat`** — sent as `Authorization: Bearer`. This is the OAuth/subscription
    shape (`oat` = OAuth token, as minted by `claude setup-token`). Read the permitted-use table
    above before using it.
 3. **Anything else** — sent as `x-api-key`. The normal Console API key path, and the only one
    suitable for a deployed ReelForge.
+
+**An empty key is an error, not mode 1.** `AnthropicClient.ShouldAutoResolveCredentials` is
+get-only and defaults to `true`, so leaving both properties null makes the SDK quietly use whatever
+credential the container's environment carries. Three different faults produce an empty key — a
+blank field, a whitespace-only paste, and a Data Protection key-ring mismatch (the resolver
+deliberately degrades a failed decrypt to an empty string rather than throwing) — and under an
+"empty means ambient" rule all three would silently reroute billing to the host's account. Since
+*executing* a workflow needs no admin rights, any authenticated user could then spend it. So the
+factory throws unless the `env:` sentinel says ambient use was actually intended.
+
+To move a row back to mode 1 from the UI you must set the key field to `env:` explicitly; leaving
+the field blank on edit means "leave the stored key unchanged", not "clear it".
 
 Stored keys are encrypted at rest with ASP.NET Core Data Protection (`ISecretProtector`) on the
 shared `dpkeys` volume, exactly like every other provider kind, and are never returned in
@@ -105,20 +116,41 @@ explanatory `NotSupportedException` as a second line of defence for rows written
 database. Keep using the bundled `whisper` service (or any OpenAI-compatible ASR endpoint) for
 transcription.
 
-## Reasoning effort is not forwarded
+## Sampling parameters and reasoning effort are not forwarded
 
-`ReelForgeAgentBase.BuildChatOptions` carries a per-agent `ReasoningEffort` (`none`/`low`/`medium`/
-`xhigh` — a vLLM/Qwen chat-template vocabulary) onto the wire through
+`ReelForgeAgentBase.BuildChatOptions` builds one `ChatOptions` per agent, in the constructor of a
+singleton, and reuses it for every run — while the provider behind it is resolved per run. So the
+agent cannot know what it is about to talk to, and the options it produces are shaped for an
+OpenAI-style backend in two ways that Claude cannot accept.
+
+**Sampling parameters would hard-fail.** Every agent sets a `Temperature` (0.2–0.8) and some set
+`TopP`/`TopK`. The Anthropic SDK's own `[Obsolete]` text is unambiguous that this is not merely
+advisory:
+
+> Models released after Claude Opus 4.6 do not support setting temperature. A value of 1.0 will be
+> accepted for backwards compatibility, **all other values will be rejected with a 400 error**.
+
+…and likewise any `top_k`, and any `top_p` below 0.99. Forwarding them would make **every** agent
+run against a current Claude model fail. `AnthropicChatOptionsAdapter` therefore nulls all three, so
+a per-agent temperature has no effect on the Anthropic path.
+
+**The raw representation is the wrong SDK's type.** A per-agent `ReasoningEffort` (`none`/`low`/
+`medium`/`xhigh` — a vLLM/Qwen chat-template vocabulary) reaches the wire through
 `ChatOptions.RawRepresentationFactory`, which produces an **OpenAI-SDK-typed**
-`ChatCompletionOptions`. Those options are built once in the agent's constructor, long before the
-per-run provider is resolved, so the agent cannot know what it is about to talk to.
+`ChatCompletionOptions`. The Anthropic adapter does read that property — its own docs offer it as
+the escape hatch for full control over thinking configuration — so a foreign type there is at best
+silently ignored.
 
-`OpenAIRawOptionsStrippingChatClient` wraps the Anthropic client and drops that factory before it
-reaches the SDK, leaving the Azure and OpenAI-compatible paths byte-identical. The consequence is
-that a per-agent reasoning effort is **not** applied on the Anthropic path today. That is the
-correct default: the SDK's `AnthropicThinkingMode.Adaptive` sends no thinking configuration at all,
-which is how Anthropic documents current models should be called, and it avoids the HTTP 400 that
-`thinking.type=disabled` returns on models that always think.
+`AnthropicChatOptionsAdapter` wraps the Anthropic client and drops that factory before it reaches
+the SDK, leaving the Azure and OpenAI-compatible paths byte-identical. The consequence is that a
+per-agent reasoning effort is **not** applied on the Anthropic path today.
+
+What that means in practice: ReelForge never sets `ChatOptions.Reasoning`, so no
+`output_config.effort` is sent. Under the SDK's default `AnthropicThinkingMode.Adaptive` the model
+still thinks, at its own default effort — thinking is **on**, not off, and thinking tokens count
+against `max_tokens` (see below). This is also why nothing here ever sets
+`ReasoningEffort.None`: that would send `thinking.type=disabled`, which models that always think
+reject with an HTTP 400.
 
 Forwarding effort properly would mean mapping ReelForge's vocabulary onto
 `ChatOptions.Reasoning` / `ReasoningOptions.Effort` — a worthwhile follow-up, deliberately out of
@@ -127,17 +159,24 @@ scope here because it changes shared `ChatOptions` construction and so touches t
 ## Max output tokens
 
 Anthropic's Messages API requires `max_tokens` on every request, unlike Chat Completions where it is
-optional. Nothing in this codebase sets `ChatOptions.MaxOutputTokens`, so the factory supplies a
-default of **16,384** — sized for the largest structured outputs the engine produces (video edit
+optional. No *agent* run sets `ChatOptions.MaxOutputTokens`, so the factory supplies a default of
+**16,384** — sized for the largest structured outputs the engine produces (video edit
 decisions, motion-graphics plans) while staying clear of the range where a *non-streaming* request
 risks an HTTP timeout. Agents run through `AIAgent.RunAsync`, which does not stream. A per-request
 `ChatOptions.MaxOutputTokens` still overrides it.
 
 ## Dependency note
 
-The `Anthropic` package pulls `Microsoft.Extensions.AI.Abstractions` 10.5.1, a minor bump over the
-10.3.0 that `Microsoft.Agents.AI.OpenAI` already brings in. Same major version, so NuGet unifies
-both on 10.5.1.
+The `Anthropic` package declares three dependencies in its `net9.0` group:
+
+| Package | Version | Note |
+|---|---|---|
+| `Microsoft.Extensions.AI.Abstractions` | 10.5.1 | Minor bump over the 10.3.0 `Microsoft.Agents.AI.OpenAI` already brings in; NuGet unifies both on 10.5.1 |
+| `System.Net.ServerSentEvents` | 10.0.1 | Already present transitively at 10.0.3 |
+| `System.Text.Json` | 10.0.6 | **Widest blast radius** — a 10.x assembly in a `net9.0` app, affecting every `JsonSerializer` call in the engine, not just the Anthropic path |
+
+Run `dotnet list package --include-transitive` and exercise the structured-output paths (video
+analysis artifacts, `ExtractStepConfig`, the word-enum plan outputs) before merging.
 
 ## No schema migration
 

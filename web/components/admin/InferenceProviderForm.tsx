@@ -113,6 +113,18 @@ export function InferenceProviderForm({ opened, onClose, onSuccess, provider }: 
   const { endpointLabel, modelLabel, endpointPlaceholder, modelPlaceholder } =
     KIND_FIELD_HINTS[form.values.kind] ?? KIND_FIELD_HINTS.OpenAICompatible;
 
+  // Anthropic rejects a blank key outright rather than falling back to the container's environment,
+  // so the `env:` sentinel is the only way to ask for that — worth saying here, since it is not
+  // discoverable and the failure otherwise only shows up at run time.
+  const apiKeyDescription = [
+    isEdit ? 'Leave blank to keep the current key.' : null,
+    form.values.kind === 'Anthropic'
+      ? 'Enter env: to use the ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN environment variables instead of storing a key.'
+      : null,
+  ]
+    .filter(Boolean)
+    .join(' ') || undefined;
+
   const unsupportedCapabilities = CAPABILITIES_UNSUPPORTED_BY_KIND[form.values.kind] ?? [];
   const capabilityOptions = CAPABILITY_OPTIONS.filter((o) => !unsupportedCapabilities.includes(o.value));
 
@@ -132,6 +144,9 @@ export function InferenceProviderForm({ opened, onClose, onSuccess, provider }: 
 
     if (kind === 'Anthropic' && !form.values.endpoint.trim()) {
       form.setFieldValue('endpoint', ANTHROPIC_DEFAULT_ENDPOINT);
+    } else if (kind !== 'Anthropic' && form.values.endpoint.trim() === ANTHROPIC_DEFAULT_ENDPOINT) {
+      // Only clear the value we prefilled ourselves — never a URL the user typed.
+      form.setFieldValue('endpoint', '');
     }
   };
 
@@ -238,7 +253,7 @@ export function InferenceProviderForm({ opened, onClose, onSuccess, provider }: 
             label="API Key"
             type="password"
             placeholder={provider?.apiKeyLastFour ? `•••• ${provider.apiKeyLastFour}` : 'sk-...'}
-            description={isEdit ? 'Leave blank to keep the current key' : undefined}
+            description={apiKeyDescription}
             {...form.getInputProps('apiKey')}
           />
           <NumberInput

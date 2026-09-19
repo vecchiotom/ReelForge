@@ -337,6 +337,16 @@ public class InferenceProvidersController : ControllerBase
         InferenceProvider? entity = await _db.InferenceProviders.FirstOrDefaultAsync(p => p.Id == id, ct);
         if (entity == null) return NotFound();
 
+        // The same guard Create/Update/TestUnsaved apply. Without it, an unsupported row — only
+        // reachable by a direct database write, which is exactly the case the factory's defensive
+        // arm exists for — reaches the factory, whose explanatory NotSupportedException is then
+        // swallowed by the catch-all below and reported as the generic "Provider test failed.".
+        // That defeats the purpose of the one endpoint whose job is to explain misconfiguration.
+        if (IsUnsupportedCombination(entity.Kind, entity.Capability, out string unsupportedSaved))
+        {
+            return BadRequest(new { error = unsupportedSaved });
+        }
+
         string apiKey = string.Empty;
         if (!string.IsNullOrEmpty(entity.ApiKeyEncrypted))
         {
@@ -482,10 +492,8 @@ public class InferenceProvidersController : ControllerBase
             // Reasoning models (e.g. Qwen3 with thinking mode on) spend output tokens on a
             // hidden reasoning chain before emitting any visible content — a too-tight budget
             // gets exhausted mid-thought and comes back with content: null, which used to read
-            // as success here (no emptiness check) even though nothing useful was returned. 128
-            // gives a non-reasoning model plenty of headroom for "ping" while still comfortably
-            // covering a short reasoning preamble.
-            ChatOptions options = new() { MaxOutputTokens = 128 };
+            // as success here (no emptiness check) even though nothing useful was returned.
+            ChatOptions options = new() { MaxOutputTokens = PingMaxOutputTokens(provider.Kind) };
 
             ChatResponse response = await chatClient.GetResponseAsync(messages, options, ct);
             stopwatch.Stop();
@@ -566,7 +574,7 @@ public class InferenceProvidersController : ControllerBase
                 });
             // See the matching comment in RunTestAsync — a reasoning model needs headroom beyond
             // its hidden chain-of-thought before content ever appears.
-            ChatOptions options = new() { MaxOutputTokens = 128 };
+            ChatOptions options = new() { MaxOutputTokens = PingMaxOutputTokens(provider.Kind) };
 
             ChatResponse response = await chatClient.GetResponseAsync(new[] { message }, options, ct);
             stopwatch.Stop();
@@ -674,7 +682,10 @@ public class InferenceProvidersController : ControllerBase
             return;
         }
 
-        if (apiKey.Length == 0)
+        // Whitespace-only counts as clearing, not as storing. Storing it would show the admin a
+        // confident `hasApiKey: true` with a last-four, while every consumer trims the value back
+        // to empty and behaves as though no key were configured at all.
+        if (apiKey.Trim().Length == 0)
         {
             // Explicit empty string: clear the key.
             entity.ApiKeyEncrypted = null;
@@ -682,6 +693,9 @@ public class InferenceProvidersController : ControllerBase
             return;
         }
 
+        // Trimmed before storage so the stored value matches what consumers actually use, and so
+        // a stray pasted space cannot produce a second, redundant client-cache entry.
+        apiKey = apiKey.Trim();
         entity.ApiKeyEncrypted = _secretProtector.Protect(apiKey);
         entity.ApiKeyLastFour = apiKey.Length <= 4 ? apiKey : apiKey[^4..];
     }
@@ -716,6 +730,20 @@ public class InferenceProvidersController : ControllerBase
                 (b[0] == 192 && b[1] == 168) ||
                 (b[0] == 169 && b[1] == 254)));
     }
+
+    /// <summary>
+    /// Output-token budget for a one-word connectivity ping. 128 is ample headroom for "ping" plus
+    /// a short reasoning preamble on an OpenAI-shaped backend.
+    /// <para>
+    /// Anthropic needs far more. The SDK's default <c>AnthropicThinkingMode.Adaptive</c> leaves
+    /// thinking ON at the model's default effort, and thinking tokens are charged against
+    /// <c>max_tokens</c> — so a 128-token ceiling is realistically consumed before any visible
+    /// content, and a correctly configured provider would report the misleading "Provider returned
+    /// an empty response", which is then persisted to LastTestError.
+    /// </para>
+    /// </summary>
+    private static int PingMaxOutputTokens(InferenceProviderKind kind) =>
+        kind == InferenceProviderKind.Anthropic ? 4096 : 128;
 
     /// <summary>
     /// Rendered from the enum rather than hand-listed, so adding a provider kind cannot leave an

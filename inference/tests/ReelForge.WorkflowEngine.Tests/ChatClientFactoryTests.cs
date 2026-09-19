@@ -98,17 +98,38 @@ public class ChatClientFactoryTests
         act.Should().NotThrow();
     }
 
-    [Fact]
-    public void Get_constructs_an_Anthropic_client_without_throwing_when_api_key_is_empty()
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Get_throws_for_an_Anthropic_provider_with_no_usable_key(string apiKey)
     {
-        // Empty is meaningful rather than broken for this kind: both ApiKey and AuthToken are left
-        // null and the Anthropic SDK falls back to its own credential resolution (ANTHROPIC_API_KEY
-        // / an `ant auth login` profile), which is how a developer runs against their own
-        // credentials without persisting a secret. It must not throw the way the OpenAI-compatible
-        // arm would without its NoKeyPlaceholder (Risk R5).
+        // An empty key must NOT fall through to the Anthropic SDK's ambient credential resolution.
+        // AnthropicClient.ShouldAutoResolveCredentials is get-only and defaults to true, so both
+        // properties left null means requests silently go out on whatever ANTHROPIC_API_KEY the
+        // container happens to carry. Since executing a workflow requires no admin rights, that
+        // would let any authenticated user spend the host's credential — and a Data Protection key
+        // ring mismatch (which the resolver degrades to an empty key) would reroute billing rather
+        // than failing. Ambient use has to be asked for explicitly instead.
         ChatClientFactory factory = new();
         ResolvedInferenceProvider provider = MakeProvider(
-            InferenceProviderKind.Anthropic, apiKey: string.Empty, modelName: "claude-opus-5");
+            InferenceProviderKind.Anthropic, apiKey: apiKey, modelName: "claude-opus-5");
+
+        Action act = () => factory.Get(provider);
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*no usable API key*");
+    }
+
+    [Fact]
+    public void Get_constructs_an_Anthropic_client_when_ambient_credentials_are_explicitly_requested()
+    {
+        // The deliberate opt-in: the operator stored the sentinel, so deferring to the SDK's own
+        // env/profile resolution is what they asked for.
+        ChatClientFactory factory = new();
+        ResolvedInferenceProvider provider = MakeProvider(
+            InferenceProviderKind.Anthropic,
+            apiKey: ChatClientFactory.AnthropicAmbientCredentialSentinel,
+            modelName: "claude-opus-5");
 
         Action act = () => factory.Get(provider);
 

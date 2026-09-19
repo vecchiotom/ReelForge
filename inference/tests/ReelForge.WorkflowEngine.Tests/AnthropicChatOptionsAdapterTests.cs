@@ -12,20 +12,22 @@ using Xunit;
 namespace ReelForge.WorkflowEngine.Tests;
 
 /// <summary>
-/// <c>ReelForgeAgentBase.BuildChatOptions</c> attaches an <c>OpenAI.Chat.ChatCompletionOptions</c>
-/// via <see cref="ChatOptions.RawRepresentationFactory"/> for every agent configured with a
-/// <c>ReasoningEffort</c>, and those options are built once per agent and reused on every run —
-/// long before the per-run provider is known. These tests pin the two properties that make routing
-/// such an agent to a non-OpenAI backend safe: the raw factory never reaches the inner client, and
-/// the caller's own <see cref="ChatOptions"/> instance is never mutated in the process.
+/// <c>ReelForgeAgentBase.BuildChatOptions</c> builds one <see cref="ChatOptions"/> per agent, in
+/// the constructor of a singleton, and reuses it on every run — long before the per-run provider is
+/// known. It sets a Temperature for every agent (and sometimes TopP/TopK), plus an
+/// <c>OpenAI.Chat.ChatCompletionOptions</c> through
+/// <see cref="ChatOptions.RawRepresentationFactory"/> for any agent with a <c>ReasoningEffort</c>.
+/// Claude rejects all three sampling parameters with an HTTP 400 on models released after Opus 4.6,
+/// so these tests pin what makes routing such an agent to Anthropic safe: the rejected settings
+/// never reach the inner client, and the caller's shared instance is never mutated in the process.
 /// </summary>
-public class OpenAIRawOptionsStrippingChatClientTests
+public class AnthropicChatOptionsAdapterTests
 {
     [Fact]
     public async Task GetResponseAsync_strips_the_raw_representation_factory()
     {
         RecordingChatClient inner = new();
-        OpenAIRawOptionsStrippingChatClient client = new(inner);
+        AnthropicChatOptionsAdapter client = new(inner);
         ChatOptions options = new() { RawRepresentationFactory = _ => new object() };
 
         await client.GetResponseAsync([new ChatMessage(ChatRole.User, "hi")], options);
@@ -41,7 +43,7 @@ public class OpenAIRawOptionsStrippingChatClientTests
         // reasoning_effort for every later run of that agent, including runs that resolve back to
         // an OpenAI provider.
         RecordingChatClient inner = new();
-        OpenAIRawOptionsStrippingChatClient client = new(inner);
+        AnthropicChatOptionsAdapter client = new(inner);
         Func<IChatClient, object?> factory = _ => new object();
         ChatOptions options = new() { RawRepresentationFactory = factory };
 
@@ -52,15 +54,48 @@ public class OpenAIRawOptionsStrippingChatClientTests
     }
 
     [Fact]
-    public async Task GetResponseAsync_preserves_every_other_option()
+    public async Task GetResponseAsync_strips_the_sampling_parameters_Claude_rejects()
+    {
+        // The Anthropic SDK's own [Obsolete] text: "Models released after Claude Opus 4.6 do not
+        // support setting temperature. A value of 1.0 will be accepted for backwards compatibility,
+        // all other values will be rejected with a 400 error" — and likewise any top_k, and top_p
+        // below 0.99. Every agent in this solution sets a Temperature, so forwarding these would
+        // 400 every single agent run against a current Claude model.
+        RecordingChatClient inner = new();
+        AnthropicChatOptionsAdapter client = new(inner);
+        ChatOptions options = new() { Temperature = 0.7f, TopP = 0.9f, TopK = 40 };
+
+        await client.GetResponseAsync([new ChatMessage(ChatRole.User, "hi")], options);
+
+        inner.LastOptions!.Temperature.Should().BeNull();
+        inner.LastOptions.TopP.Should().BeNull();
+        inner.LastOptions.TopK.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetResponseAsync_strips_sampling_parameters_even_with_no_raw_factory()
+    {
+        // Guards against a fast path keyed only on RawRepresentationFactory: an agent with no
+        // ReasoningEffort still sets a Temperature, and would still 400.
+        RecordingChatClient inner = new();
+        AnthropicChatOptionsAdapter client = new(inner);
+        ChatOptions options = new() { Temperature = 0.3f };
+
+        await client.GetResponseAsync([new ChatMessage(ChatRole.User, "hi")], options);
+
+        inner.LastOptions.Should().NotBeSameAs(options);
+        inner.LastOptions!.Temperature.Should().BeNull();
+        options.Temperature.Should().Be(0.3f);
+    }
+
+    [Fact]
+    public async Task GetResponseAsync_preserves_the_options_Claude_does_accept()
     {
         RecordingChatClient inner = new();
-        OpenAIRawOptionsStrippingChatClient client = new(inner);
+        AnthropicChatOptionsAdapter client = new(inner);
         ChatOptions options = new()
         {
             Temperature = 0.7f,
-            TopP = 0.9f,
-            TopK = 40,
             MaxOutputTokens = 1234,
             ModelId = "claude-opus-5",
             RawRepresentationFactory = _ => new object()
@@ -68,10 +103,7 @@ public class OpenAIRawOptionsStrippingChatClientTests
 
         await client.GetResponseAsync([new ChatMessage(ChatRole.User, "hi")], options);
 
-        inner.LastOptions!.Temperature.Should().Be(0.7f);
-        inner.LastOptions.TopP.Should().Be(0.9f);
-        inner.LastOptions.TopK.Should().Be(40);
-        inner.LastOptions.MaxOutputTokens.Should().Be(1234);
+        inner.LastOptions!.MaxOutputTokens.Should().Be(1234);
         inner.LastOptions.ModelId.Should().Be("claude-opus-5");
     }
 
@@ -80,8 +112,8 @@ public class OpenAIRawOptionsStrippingChatClientTests
     {
         // The common case must not clone: cloning would be pure overhead on every single call.
         RecordingChatClient inner = new();
-        OpenAIRawOptionsStrippingChatClient client = new(inner);
-        ChatOptions options = new() { Temperature = 0.5f };
+        AnthropicChatOptionsAdapter client = new(inner);
+        ChatOptions options = new() { MaxOutputTokens = 512, ModelId = "claude-opus-5" };
 
         await client.GetResponseAsync([new ChatMessage(ChatRole.User, "hi")], options);
 
@@ -92,7 +124,7 @@ public class OpenAIRawOptionsStrippingChatClientTests
     public async Task GetResponseAsync_tolerates_null_options()
     {
         RecordingChatClient inner = new();
-        OpenAIRawOptionsStrippingChatClient client = new(inner);
+        AnthropicChatOptionsAdapter client = new(inner);
 
         await client.GetResponseAsync([new ChatMessage(ChatRole.User, "hi")], options: null);
 
@@ -105,7 +137,7 @@ public class OpenAIRawOptionsStrippingChatClientTests
         // The streaming path is the one an agent run actually takes when a caller streams, so it
         // needs the same treatment — an easy half to forget.
         RecordingChatClient inner = new();
-        OpenAIRawOptionsStrippingChatClient client = new(inner);
+        AnthropicChatOptionsAdapter client = new(inner);
         ChatOptions options = new() { RawRepresentationFactory = _ => new object() };
 
         await foreach (var _ in client.GetStreamingResponseAsync([new ChatMessage(ChatRole.User, "hi")], options))

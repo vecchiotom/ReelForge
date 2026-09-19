@@ -24,15 +24,18 @@ public sealed class ChatClientFactory : IChatClientFactory
     private const string NoKeyPlaceholder = "not-required";
 
     /// <summary>
-    /// Anthropic's Messages API requires <c>max_tokens</c> on every request, unlike Chat
-    /// Completions where it is optional. Nothing in this codebase sets
+    /// The default ceiling on generated tokens for an Anthropic request. No AGENT run sets
     /// <see cref="Microsoft.Extensions.AI.ChatOptions.MaxOutputTokens"/> (<c>BuildChatOptions</c>
-    /// sets only Temperature/TopP/TopK), so the value supplied here is what every agent run
-    /// actually gets. It is sized for the largest structured outputs the workflow engine produces
-    /// (video edit decisions, motion-graphics plans) while staying well under the point where a
-    /// non-streaming request risks an HTTP timeout — agents are run through
-    /// <c>AIAgent.RunAsync</c>, which does not stream. A per-request
-    /// <see cref="Microsoft.Extensions.AI.ChatOptions.MaxOutputTokens"/> still overrides it.
+    /// sets only Temperature/TopP/TopK), so this is what every agent run actually gets; the
+    /// provider-test endpoints do set it per request, and that still overrides this.
+    /// <para>
+    /// Sized for the largest structured outputs the workflow engine produces (video edit decisions,
+    /// motion-graphics plans) while staying well under the point where a NON-streaming request
+    /// risks an HTTP timeout — agents run through <c>AIAgent.RunAsync</c>, which does not stream.
+    /// It also has to leave room for thinking: the SDK's default <c>AnthropicThinkingMode.Adaptive</c>
+    /// means the model thinks at its own default effort, and thinking tokens count against this
+    /// ceiling.
+    /// </para>
     /// </summary>
     private const int AnthropicDefaultMaxOutputTokens = 16_384;
 
@@ -44,6 +47,25 @@ public sealed class ChatClientFactory : IChatClientFactory
     /// own, so the prefix is the discriminator. See docs/anthropic-provider.md.
     /// </summary>
     private const string AnthropicOAuthTokenPrefix = "sk-ant-oat";
+
+    /// <summary>
+    /// Explicit opt-in to the Anthropic SDK's own credential resolution (<c>ANTHROPIC_API_KEY</c> /
+    /// <c>ANTHROPIC_AUTH_TOKEN</c> / an <c>ant auth login</c> profile) instead of a key stored on
+    /// the provider row. Store this literal as the row's API key to use it.
+    /// </summary>
+    /// <remarks>
+    /// A sentinel rather than "an empty key means ambient", because that inference fails open in
+    /// three ways that all look identical from the admin UI: a key saved as whitespace, a Data
+    /// Protection key-ring mismatch (<c>InferenceProviderResolver</c> deliberately degrades a
+    /// failed decrypt to an empty string rather than throwing), and a genuinely blank field. Under
+    /// the inference, each of those silently reroutes billing to whatever credential happens to be
+    /// in the container's environment — and since executing a workflow needs no admin rights, any
+    /// authenticated user could then spend it. <c>AnthropicClient.ShouldAutoResolveCredentials</c>
+    /// is get-only, so the SDK's fallback cannot simply be turned off; making the intent explicit
+    /// here is what separates "the operator asked for ambient credentials" from "something went
+    /// wrong with the stored key".
+    /// </remarks>
+    public const string AnthropicAmbientCredentialSentinel = "env:";
 
     private readonly ConcurrentDictionary<string, IChatClient> _clients = new();
 
@@ -96,33 +118,49 @@ public sealed class ChatClientFactory : IChatClientFactory
     /// <summary>
     /// Builds a client against Anthropic's first-party Messages API through the official
     /// <c>Anthropic</c> SDK. Unlike the two OpenAI arms this is not a Chat Completions endpoint,
-    /// so the result is wrapped in <see cref="OpenAIRawOptionsStrippingChatClient"/> — see that
-    /// type for why an agent's OpenAI-typed raw options must not reach it.
+    /// so the result is wrapped in <see cref="AnthropicChatOptionsAdapter"/> — see that type for
+    /// why an agent's sampling parameters and OpenAI-typed raw options must not reach it.
     /// </summary>
     private static IChatClient BuildAnthropic(ResolvedInferenceProvider provider)
     {
         string key = provider.ApiKey?.Trim() ?? string.Empty;
+        bool useAmbient = string.Equals(key, AnthropicAmbientCredentialSentinel, StringComparison.OrdinalIgnoreCase);
+
+        // Fail loudly rather than falling back to whatever credential happens to sit in the
+        // container's environment. An empty key here is not "no credential needed" — unlike the
+        // OpenAI-compatible arm, where a keyless self-hosted vLLM is a normal deployment — it means
+        // the row is misconfigured, or its stored key could not be decrypted (see
+        // AnthropicAmbientCredentialSentinel). Silently succeeding on someone else's account is a
+        // far worse outcome than an error naming the provider.
+        if (!useAmbient && key.Length == 0)
+        {
+            throw new InvalidOperationException(
+                $"Inference provider '{provider.Name}' (kind Anthropic) has no usable API key. Set " +
+                $"one on the provider, or store the literal '{AnthropicAmbientCredentialSentinel}' " +
+                "as its key to deliberately use the ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN " +
+                "environment variables instead. If a key IS configured, it failed to decrypt — " +
+                "check that both services share the same DataProtection:KeysPath (the `dpkeys` " +
+                "volume).");
+        }
+
         bool isOAuthToken = key.StartsWith(AnthropicOAuthTokenPrefix, StringComparison.OrdinalIgnoreCase);
 
         AnthropicClient client = new()
         {
-            // Exactly one of these is ever set. Leaving BOTH null is meaningful rather than
-            // broken: the SDK then falls back to its own credential resolution
-            // (ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / an `ant auth login` profile), which is
-            // how a developer runs against their own credentials without persisting a secret in
-            // the database at all. See docs/anthropic-provider.md.
-            ApiKey = key.Length > 0 && !isOAuthToken ? key : null,
-            AuthToken = key.Length > 0 && isOAuthToken ? key : null,
+            // At most one of these is set. Both are null only under the explicit ambient sentinel,
+            // where the SDK resolves credentials itself. See docs/anthropic-provider.md.
+            ApiKey = !useAmbient && !isOAuthToken ? key : null,
+            AuthToken = !useAmbient && isOAuthToken ? key : null,
 
-            // Null means the SDK's production default (https://api.anthropic.com). Endpoint is
-            // optional for this kind precisely so the common case needs no value; a non-empty one
-            // points at a gateway.
+            // Null means the SDK's production default (https://api.anthropic.com). The API requires
+            // a non-empty endpoint on create, so in practice this is always set; the null branch
+            // covers a row written directly to the database or the legacy config fallback.
             BaseUrl = string.IsNullOrWhiteSpace(provider.Endpoint) ? null : provider.Endpoint.Trim(),
 
             Timeout = TimeSpan.FromSeconds(provider.TimeoutSeconds)
         };
 
-        return new OpenAIRawOptionsStrippingChatClient(
+        return new AnthropicChatOptionsAdapter(
             client.AsIChatClient(provider.ModelName, AnthropicDefaultMaxOutputTokens));
     }
 }

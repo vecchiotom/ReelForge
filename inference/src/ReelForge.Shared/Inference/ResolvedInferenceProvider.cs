@@ -37,6 +37,14 @@ public sealed record ResolvedInferenceProvider(
         return Sha256Hex(material);
     }
 
+    /// <summary>
+    /// Suppresses the compiler-generated record <c>ToString()</c>, which would print every
+    /// positional member — including <c>ApiKey</c> in plaintext. Nothing logs a whole provider
+    /// today, but this type is one `LogError("... {Provider}", provider)` away from leaking a
+    /// credential into the log stream.
+    /// </summary>
+    public override string ToString() => $"{Name} ({Kind}/{ModelName})";
+
     private static string Sha256Hex(string value)
     {
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(value));

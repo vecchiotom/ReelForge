@@ -13,10 +13,16 @@
     <PackageReference Include="OpenAI" Version="2.8.0" />
     <!--
       Official Anthropic .NET SDK (the `Anthropic` package is first-party from v10 onward; 3.x and
-      below were the community tryAGI build, now `tryAGI.Anthropic`). Brings
-      Microsoft.Extensions.AI.Abstractions 10.5.1, a minor bump over the 10.3.0 that
-      Microsoft.Agents.AI.OpenAI already pulls in — same major, so the two coexist on the
-      unified 10.5.1.
+      below were the community tryAGI build, now `tryAGI.Anthropic`).
+
+      Transitive dependencies it declares for net9.0, all of which unify UPWARDS across the
+      solution — verify with `dotnet list package --include-transitive` after changing this:
+        - Microsoft.Extensions.AI.Abstractions 10.5.1  (minor bump over the 10.3.0 that
+          Microsoft.Agents.AI.OpenAI already pulls in; same major)
+        - System.Net.ServerSentEvents 10.0.1           (already present transitively at 10.0.3)
+        - System.Text.Json 10.0.6                      (WIDEST BLAST RADIUS: a 10.x assembly in a
+          net9.0 app, affecting every JsonSerializer call in the engine — the video-analysis
+          artifacts, ExtractStepConfig, every structured-output schema — not just Anthropic calls)
     -->
     <PackageReference Include="Anthropic" Version="12.49.0" />
     <PackageReference Include="Microsoft.AspNetCore.DataProtection.Abstractions" Version="9.0.14" />
