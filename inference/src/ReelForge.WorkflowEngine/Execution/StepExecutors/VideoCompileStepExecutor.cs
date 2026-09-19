@@ -376,7 +376,7 @@ public class VideoCompileStepExecutor : IStepExecutor
             VideoEditDecisionOutput? decision;
             try
             {
-                decision = JsonSerializer.Deserialize<VideoEditDecisionOutput>(decisionJson, DecisionJsonOptions);
+                decision = DeserializeWithQuoteFallback<VideoEditDecisionOutput>(decisionJson, DecisionJsonOptions);
             }
             catch (JsonException ex)
             {
@@ -1103,6 +1103,32 @@ public class VideoCompileStepExecutor : IStepExecutor
     internal static string? ExtractJsonObject(string raw) => RobustJsonExtractor.ExtractJsonObject(raw);
 
     /// <summary>
+    /// Deserializes a Decision/GraphicsPlan/ColorGradePlan/MusicPlan/SfxPlan JSON object, falling
+    /// back to <see cref="RobustJsonExtractor.NormalizeQuotedStrings"/> and retrying once if the
+    /// strict parse fails. Needed because <see cref="ResolveDecisionJson"/>'s own prose/fence
+    /// stripping (<see cref="RobustJsonExtractor.ExtractJsonObject"/>) only strips what surrounds a
+    /// balanced <c>{...}</c> object — it never repairs single-quoted, Python-dict-style content
+    /// INSIDE it, the exact near-miss-JSON failure mode <see cref="VisionShotCaptioner"/> already
+    /// guards against for vision captions, observed live here from a story-editor decision instead.
+    /// Rethrows the original <see cref="JsonException"/> (preserving every existing call site's own
+    /// catch/degrade behavior unchanged) when normalization can't help either.
+    /// </summary>
+    private static T? DeserializeWithQuoteFallback<T>(string json, JsonSerializerOptions options) where T : class
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<T>(json, options);
+        }
+        catch (JsonException ex)
+        {
+            string? normalized = RobustJsonExtractor.NormalizeQuotedStrings(json);
+            return normalized is not null
+                ? JsonSerializer.Deserialize<T>(normalized, options)
+                : throw ex;
+        }
+    }
+
+    /// <summary>
     /// The source video is whatever the referenced VideoAnalyze step actually analyzed —
     /// <see cref="VideoCompileStepConfig"/> does not carry its own <see cref="VideoSourceRef"/>
     /// so as not to duplicate (and risk drifting from) the analyze step's own config. This reads
@@ -1631,7 +1657,7 @@ public class VideoCompileStepExecutor : IStepExecutor
         MotionGraphicsPlanOutput? plan;
         try
         {
-            plan = JsonSerializer.Deserialize<MotionGraphicsPlanOutput>(planJson, DecisionJsonOptions);
+            plan = DeserializeWithQuoteFallback<MotionGraphicsPlanOutput>(planJson, DecisionJsonOptions);
         }
         catch (JsonException ex)
         {
@@ -1943,7 +1969,7 @@ public class VideoCompileStepExecutor : IStepExecutor
         MotionGraphicsPlanOutput? plan;
         try
         {
-            plan = JsonSerializer.Deserialize<MotionGraphicsPlanOutput>(planJson, DecisionJsonOptions);
+            plan = DeserializeWithQuoteFallback<MotionGraphicsPlanOutput>(planJson, DecisionJsonOptions);
         }
         catch (JsonException ex)
         {
@@ -2238,7 +2264,7 @@ public class VideoCompileStepExecutor : IStepExecutor
         ColorGradePlanOutput? plan = null;
         try
         {
-            plan = JsonSerializer.Deserialize<ColorGradePlanOutput>(planJson, DecisionJsonOptions);
+            plan = DeserializeWithQuoteFallback<ColorGradePlanOutput>(planJson, DecisionJsonOptions);
         }
         catch (JsonException ex)
         {
@@ -2407,7 +2433,7 @@ public class VideoCompileStepExecutor : IStepExecutor
                 MusicPlanOutput? plan = null;
                 try
                 {
-                    plan = JsonSerializer.Deserialize<MusicPlanOutput>(planJson, DecisionJsonOptions);
+                    plan = DeserializeWithQuoteFallback<MusicPlanOutput>(planJson, DecisionJsonOptions);
                 }
                 catch (JsonException ex)
                 {
@@ -2732,7 +2758,7 @@ public class VideoCompileStepExecutor : IStepExecutor
         SfxPlanOutput? plan = null;
         try
         {
-            plan = JsonSerializer.Deserialize<SfxPlanOutput>(planJson, DecisionJsonOptions);
+            plan = DeserializeWithQuoteFallback<SfxPlanOutput>(planJson, DecisionJsonOptions);
         }
         catch (JsonException ex)
         {

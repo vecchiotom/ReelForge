@@ -147,6 +147,27 @@ public class VideoCompileStepExecutorTests
     }
 
     [Fact]
+    public async Task Single_quoted_python_dict_style_decision_is_repaired_and_parsed()
+    {
+        // Regression test: found live producing a real promo video. The local model can return
+        // Python-dict-style single-quoted JSON for a story-editor decision — the exact near-miss
+        // JSON failure mode VisionShotCaptioner already guards against for vision captions —
+        // which RobustJsonExtractor.ExtractJsonObject's own prose/fence stripping does NOT repair
+        // (it only strips what surrounds a balanced object, never single quotes inside it).
+        VideoAnalysisArtifact artifact = BuildArtifact(
+            shots: new[] { ("s0", 0.0, 10.0) },
+            offeredIds: new[] { "s0" });
+
+        const string singleQuotedDecisionJson =
+            "{'keep': [{'fromId': 's0', 'toId': 's0', 'reason': 'keep'}], 'editRationale': 'test', 'suggestedTitle': 'Test'}";
+        StepExecutionContext context = CreateContext(artifact, singleQuotedDecisionJson, out Mock<IProjectFileWorkspace> workspace);
+
+        StepExecutionResult result = await CreateExecutor(workspace).ExecuteAsync(context);
+
+        result.Status.Should().Be(StepStatus.Completed, because: result.ErrorDetails ?? result.Output);
+    }
+
+    [Fact]
     public async Task SentenceCheck_reports_applicable_false_when_last_kept_id_is_not_a_transcript_segment()
     {
         VideoAnalysisArtifact artifact = BuildArtifact(
