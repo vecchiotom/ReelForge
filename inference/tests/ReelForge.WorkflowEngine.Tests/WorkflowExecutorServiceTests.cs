@@ -67,6 +67,57 @@ namespace ReelForge.WorkflowEngine.Tests
             fakeHelper.Called.Should().BeTrue();
         }
 
+        private sealed class TimingOutExecutor : IStepExecutor
+        {
+            public int CallCount { get; private set; }
+            public StepType StepType => StepType.Agent;
+
+            public Task<StepExecutionResult> ExecuteAsync(StepExecutionContext context)
+            {
+                CallCount++;
+                throw new TimeoutException("Agent 'RemotionComponentTranslator' timed out after 10800 seconds.");
+            }
+        }
+
+        [Fact]
+        public async Task ExecuteStepWithRetry_does_not_retry_a_timed_out_agent_run()
+        {
+            // No partial progress carries over between attempts, so a retry restarts the identical
+            // workload under the identical budget and times out again. With per-agent budgets in
+            // hours, retrying turned one translator timeout into a multi-hour window of repeats.
+            var executor = new TimingOutExecutor();
+            var service = new WorkflowExecutorService(
+                scopeFactory: null!,
+                eventPublisher: null!,
+                logger: NullLogger<WorkflowExecutorService>.Instance,
+                executors: new[] { new ThrowingExecutor() },
+                rabbitHelper: new RabbitMqHelper(new ConfigurationBuilder().Build()),
+                hardeningOptions: Options.Create(new WorkflowHardeningOptions { MaxStepRetries = 3 }),
+                cancellationRegistry: new ReelForge.WorkflowEngine.Execution.ExecutionCancellationRegistry());
+
+            var step = new WorkflowStep { StepOrder = 1, StepType = StepType.Agent };
+            var context = new StepExecutionContext
+            {
+                Execution = new WorkflowExecution(),
+                Step = step,
+                AllSteps = new System.Collections.Generic.List<WorkflowStep> { step },
+                AccumulatedOutput = string.Empty,
+                StepOutputHistory = new System.Collections.Generic.List<StepOutputHistoryEntry>(),
+                CurrentStepIndex = 0,
+                IterationCount = 0,
+                CorrelationId = "",
+                CancellationToken = CancellationToken.None
+            };
+
+            // The real timeout message must survive, not be flattened into a generic
+            // "failed after N attempts" that hides why it actually stopped.
+            TimeoutException thrown = await Assert.ThrowsAsync<TimeoutException>(
+                () => service.ExecuteStepWithRetryAsync(executor, context, step, CancellationToken.None));
+
+            thrown.Message.Should().Contain("timed out");
+            executor.CallCount.Should().Be(1);
+        }
+
         [Fact]
         public async Task ExecuteStepWithRetry_throwsImmediately_when_AgentWorkflowException()
         {

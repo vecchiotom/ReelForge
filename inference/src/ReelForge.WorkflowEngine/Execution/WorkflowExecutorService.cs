@@ -778,6 +778,23 @@ public class WorkflowExecutorService
                     step.StepOrder, awf.Reason);
                 throw;
             }
+            // A timed-out agent run is not retried. Retrying costs the FULL per-attempt budget
+            // again for a near-certain repeat: no partial progress carries over between attempts
+            // (see AgentStepExecutor), so attempt 2 restarts the identical workload with the
+            // identical budget. With a raised per-agent budget the waste is severe — a 3-hour
+            // RemotionComponentTranslator timeout retried 3x is 9 hours of the same wall — and it
+            // is what turned one translator timeout into the multi-hour window that the old
+            // 120-minute transport kill then landed inside. Fail fast with the real reason
+            // instead, so the operator can raise Agents:<name>:RunTimeoutSeconds or reduce the
+            // step's workload rather than waiting out N identical attempts.
+            catch (TimeoutException tex)
+            {
+                _logger.LogWarning(tex,
+                    "Step {StepOrder} ({StepType}) timed out on attempt {Attempt}/{Max}; not retrying, " +
+                    "because a from-scratch retry would repeat the same workload under the same budget",
+                    step.StepOrder, step.StepType, attemptNumber, maxRetries);
+                throw;
+            }
             catch (Exception ex) when (ex is not InvalidOperationException && ex is not AgentWorkflowException && attemptNumber < maxRetries)
             {
                 lastException = ex;
