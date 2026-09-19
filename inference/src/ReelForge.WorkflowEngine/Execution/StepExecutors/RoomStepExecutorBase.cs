@@ -526,10 +526,32 @@ public abstract class RoomStepExecutorBase<TDecision> : IStepExecutor where TDec
                 config.ReasoningEffort, OnTurnCompleted));
         }
 
-        AIAgent directorInner = await BuildInnerAgentAsync(DirectorAgentType, config.DirectorAgentDefinitionId, ct);
-        allParticipants.Add(new RoomSeatAgent(
-            directorInner, DirectorSeatName, DirectorTurnDirective, config.DirectorTemperature,
-            Math.Max(16, config.MaxTurnTokens), config.ReasoningEffort, OnTurnCompleted));
+        // The director is registered TWICE, deliberately, as two SEPARATE inner-agent instances —
+        // see RoomGroupChatManager's constructor remarks for why one registration is no longer
+        // enough under Microsoft.Agents.AI.Workflows 1.22.0 (the group-chat host now refuses to
+        // re-invoke the SAME registered participant on two consecutive turns, which the ceiling
+        // phase — the director speaks every remaining turn — would otherwise hit the very first
+        // time the director spoke twice in a row).
+        //
+        // Building two INDEPENDENT inner agents here (rather than one inner agent wrapped by two
+        // RoomSeatAgent instances) is load-bearing, not cosmetic: AIAgent.Id defaults to a fresh
+        // random GUID per instance, but DelegatingAIAgent (what RoomSeatAgent is) forwards IdCore
+        // to InnerAgent.Id, so two wrappers around the SAME inner agent would carry the IDENTICAL
+        // Id. AgentWorkflowBuilder derives each participant's internal executor-binding id from
+        // Name + Id, and both aliases must keep the SAME Name ("Director" — the transcript/sentinel
+        // detection depend on it), so a shared inner agent collides and
+        // GroupChatWorkflowBuilder.Build() throws "Cannot bind executor with ID '...' because an
+        // executor with the same ID but different instance is already bound." (confirmed by
+        // decompiling and exercising the real 1.22.0 assembly). Two separate BuildInnerAgentAsync
+        // calls give each alias its own random Id while resolving through the identical chat
+        // client/instructions/tools — functionally still "the director", just two object instances.
+        for (int alias = 0; alias < 2; alias++)
+        {
+            AIAgent directorInner = await BuildInnerAgentAsync(DirectorAgentType, config.DirectorAgentDefinitionId, ct);
+            allParticipants.Add(new RoomSeatAgent(
+                directorInner, DirectorSeatName, DirectorTurnDirective, config.DirectorTemperature,
+                Math.Max(16, config.MaxTurnTokens), config.ReasoningEffort, OnTurnCompleted));
+        }
 
         HashSet<string> offeredIdsReadOnly = offeredIds;
         RoomGroupChatManager? capturedManager = null;
